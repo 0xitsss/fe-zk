@@ -19,12 +19,7 @@ use ingot::field::{Bn254Fr, Field}
 /// Constant circuit data shared by all halo2-KZG circuits. Private fields: `Halo2Vk::new`.
 /// The G2 points are validated (on curve, in the subgroup) by `G2::from_coords` before they
 /// get here; the G1 generator by its type.
-pub struct Halo2Vk {
-    transcript_repr: Bn254Fr,
-    g1: G1,
-    g2: G2,
-    s_g2: G2,
-}
+pub struct Halo2Vk { transcript_repr: Bn254Fr, g1: G1, g2: G2, s_g2: G2 }
 impl Copy for Halo2Vk {}
 
 impl Halo2Vk {
@@ -40,6 +35,10 @@ impl Halo2Vk {
     }
     pub fn g1(self) -> G1 {
         self.g1
+    }
+    /// The same SRS with another circuit digest (tests: a wrong vk constant must be rejected).
+    pub fn with_transcript_repr(self, _ transcript_repr: Bn254Fr) -> Halo2Vk {
+        Halo2Vk { transcript_repr, g1: self.g1, g2: self.g2, s_g2: self.s_g2 }
     }
 }
 
@@ -127,7 +126,9 @@ pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call) {
 }
 
 /// Montgomery batch inversion: one modexp for all of `xs`. `None` if any element is zero.
-pub fn batch_inv<const N: usize>(_ xs: [Bn254Fr; N]) -> Option<[Bn254Fr; N]> uses (call: Call) {
+pub fn batch_inv<const N: usize>(_ xs: [Bn254Fr; N]) -> Option<[Bn254Fr; N]>
+uses (call: Call)
+{
     var pre = xs
     var acc = Bn254Fr::one()
     var i: usize = 0
@@ -155,7 +156,9 @@ pub fn batch_inv<const N: usize>(_ xs: [Bn254Fr; N]) -> Option<[Bn254Fr; N]> use
 
 /// `e(left, [s]H) * e(right, -H) == 1` with success flag, length and result checks (rule 6)
 /// inside `pairing_check`.
-pub fn final_pairing(_ vk: Halo2Vk, _ left: G1, _ right: G1) -> bool uses (call: Call) {
+pub fn final_pairing(_ vk: Halo2Vk, _ left: G1, _ right: G1) -> bool
+uses (call: Call)
+{
     pairing_check([left, right], [vk.s_g2, vk.g2.neg()])
 }
 

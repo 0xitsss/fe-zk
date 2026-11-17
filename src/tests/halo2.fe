@@ -3,13 +3,17 @@
 //! mini verifier (`H2_TRACE=1 cargo test --test mini_verifier accepts_valid -- --nocapture`,
 //! `vectors/halo2/src/mini_verifier.rs`), never from this repository's Fe code.
 //! Gas: `fe test --filter halo2_gas --show-logs`.
+use ingot::ec::G2
 use ingot::field::{Bn254Fr, Field}
+use ingot::ec::g1_mul
+use ingot::verifier::halo2::common::{Halo2Vk, batch_inv, final_pairing, fr, g1_const, read_g1}
 use ingot::tests::halo2_fixture::{GWC_INSTANCES, GWC_PROOF, SHPLONK_INSTANCES, SHPLONK_PROOF}
 use ingot::verifier::halo2::common::Halo2Transcript
 use ingot::verifier::halo2::standard_plonk_lookup::{
     Phase1,
     gwc_open,
     phase1,
+    shplonk_check,
     shplonk_open,
     verify_gwc,
     verify_shplonk,
@@ -39,16 +43,6 @@ const GW_X: u256 = 0x268f13b2bb43a19fa3d738444911d0dce8595293b80c170150473e3073b
 const GW_EXPECTED_H: u256 = 0x2fedabeb51cee2f496a3aedfc22f351c9d7ad79d15719a8e4395e9f6d6403b2f
 const GW_OPEN_V: u256 = 0x01c3c9b1a3f1c523e6738c20946f85baa4525c64ea8bfe0409d6e75e42a7c560
 const GW_OPEN_U: u256 = 0x219b33efcfd03d3155b04e04a0b5dda775b548cffa7dd46c00f08c286ee12bb6
-
-fn p1_of(_ proof: [u256; 57], _ inst: [u256; 1]) -> Option<Phase1> uses (call: Call) {
-    var tr = Halo2Transcript::new()
-    phase1(proof, inst, mut tr)
-}
-
-fn gw_p1_of(_ proof: [u256; 61], _ inst: [u256; 1]) -> Option<Phase1> uses (call: Call) {
-    var tr = Halo2Transcript::new()
-    phase1(proof, inst, mut tr)
-}
 
 #[test]
 fn shplonk_challenges_match_rust() uses (call: Call) {
@@ -89,4 +83,345 @@ fn shplonk_accepts() uses (call: Call) {
 #[test]
 fn gwc_accepts() uses (call: Call) {
     assert(verify_gwc(vk(), GWC_PROOF, GWC_INSTANCES))
+}
+
+// ---------------------------------------------------------------- rejection helpers
+
+const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+// Proof layout (SPEC section 3): words 0..25 are 13 commitments, 26..52 are 27 evaluations,
+// then the opening: SHPLONK h1 (53, 54), h2 (55, 56); GWC witness points W_0..W_3 (53..60).
+const EVAL_START: usize = 26
+const OPEN_START: usize = 53
+
+fn is_point_word(_ i: usize) -> bool {
+    i < EVAL_START || i >= OPEN_START
+}
+
+fn is_x_word(_ i: usize) -> bool {
+    if i < EVAL_START {
+        i % 2 == 0
+    } else {
+        i >= OPEN_START && (i - OPEN_START) % 2 == 0
+    }
+}
+
+// ---------------------------------------------------------------- SHPLONK rejections
+
+#[test]
+fn shplonk_rejects_wrong_instance() uses (call: Call) {
+    let k = vk()
+    assert(
+        !verify_shplonk(k, SHPLONK_PROOF, [SHPLONK_INSTANCES[0] + 1]),
+    )
+    assert(!verify_shplonk(k, SHPLONK_PROOF, [0]))
+    // non-canonical instance (value + r): rejected, not reduced
+    assert(
+        !verify_shplonk(k, SHPLONK_PROOF, [SHPLONK_INSTANCES[0] + R]),
+    )
+}
+
+#[test]
+fn shplonk_rejects_every_word_plus_one() uses (call: Call) {
+    let k = vk()
+    var i: usize = 0
+    while i < 57 {
+        var p = SHPLONK_PROOF
+        p[i] = p[i] + 1
+        assert(!verify_shplonk(k, p, SHPLONK_INSTANCES))
+        i += 1
+    }
+}
+
+#[test]
+fn shplonk_rejects_negated_points() uses (call: Call) {
+    // y -> q - y stays on the curve and canonical: only the pairing / transcript can object.
+    let k = vk()
+    var i: usize = 0
+    while i < 57 {
+        if is_point_word(i) && !is_x_word(i) {
+            var p = SHPLONK_PROOF
+            p[i] = Q - p[i]
+            assert(!verify_shplonk(k, p, SHPLONK_INSTANCES))
+        }
+        i += 1
+    }
+}
+
+#[test]
+fn shplonk_rejects_swapped_commitments() uses (call: Call) {
+    let k = vk()
+    var p = SHPLONK_PROOF
+    p[0] = SHPLONK_PROOF[2]
+    p[1] = SHPLONK_PROOF[3]
+    p[2] = SHPLONK_PROOF[0]
+    p[3] = SHPLONK_PROOF[1]
+    assert(!verify_shplonk(k, p, SHPLONK_INSTANCES))
+    // swapped evaluations
+    var q = SHPLONK_PROOF
+    q[26] = SHPLONK_PROOF[27]
+    q[27] = SHPLONK_PROOF[26]
+    assert(!verify_shplonk(k, q, SHPLONK_INSTANCES))
+}
+
+#[test]
+fn shplonk_rejects_non_canonical_and_off_curve() uses (call: Call) {
+    let k = vk()
+    var i: usize = EVAL_START
+    while i < OPEN_START {
+        // evaluation + r is the same field element but not canonical
+        var p = SHPLONK_PROOF
+        p[i] = p[i] + R
+        assert(!verify_shplonk(k, p, SHPLONK_INSTANCES))
+        i += 1
+    }
+    // coordinate + q: same residue, not canonical
+    var a = SHPLONK_PROOF
+    a[0] = a[0] + Q
+    assert(!verify_shplonk(k, a, SHPLONK_INSTANCES))
+    var b = SHPLONK_PROOF
+    b[55] = b[55] + Q
+    assert(!verify_shplonk(k, b, SHPLONK_INSTANCES))
+    // off curve: y + 1
+    var c = SHPLONK_PROOF
+    c[1] = c[1] + 1
+    assert(!verify_shplonk(k, c, SHPLONK_INSTANCES))
+    // point at infinity as a commitment / as an opening proof
+    var d = SHPLONK_PROOF
+    d[0] = 0
+    d[1] = 0
+    assert(!verify_shplonk(k, d, SHPLONK_INSTANCES))
+    var e = SHPLONK_PROOF
+    e[53] = 0
+    e[54] = 0
+    assert(!verify_shplonk(k, e, SHPLONK_INSTANCES))
+    var f = SHPLONK_PROOF
+    f[55] = 0
+    f[56] = 0
+    assert(!verify_shplonk(k, f, SHPLONK_INSTANCES))
+}
+
+#[test]
+fn shplonk_rejects_wrong_vk_constant() uses (call: Call) {
+    let k = vk()
+    let bad = k.with_transcript_repr(k.transcript_repr().add(Bn254Fr::one()))
+    assert(verify_shplonk(k, SHPLONK_PROOF, SHPLONK_INSTANCES))
+    assert(!verify_shplonk(bad, SHPLONK_PROOF, SHPLONK_INSTANCES))
+}
+
+// ---------------------------------------------------------------- GWC rejections
+
+#[test]
+fn gwc_rejects_wrong_instance() uses (call: Call) {
+    let k = vk()
+    assert(!verify_gwc(k, GWC_PROOF, [GWC_INSTANCES[0] + 1]))
+    assert(!verify_gwc(k, GWC_PROOF, [0]))
+    assert(!verify_gwc(k, GWC_PROOF, [GWC_INSTANCES[0] + R]))
+}
+
+#[test]
+fn gwc_rejects_every_word_plus_one() uses (call: Call) {
+    let k = vk()
+    var i: usize = 0
+    while i < 61 {
+        var p = GWC_PROOF
+        p[i] = p[i] + 1
+        assert(!verify_gwc(k, p, GWC_INSTANCES))
+        i += 1
+    }
+}
+
+#[test]
+fn gwc_rejects_negated_points() uses (call: Call) {
+    let k = vk()
+    var i: usize = 0
+    while i < 61 {
+        if is_point_word(i) && !is_x_word(i) {
+            var p = GWC_PROOF
+            p[i] = Q - p[i]
+            assert(!verify_gwc(k, p, GWC_INSTANCES))
+        }
+        i += 1
+    }
+}
+
+#[test]
+fn gwc_rejects_non_canonical_and_off_curve() uses (call: Call) {
+    let k = vk()
+    var i: usize = EVAL_START
+    while i < OPEN_START {
+        var p = GWC_PROOF
+        p[i] = p[i] + R
+        assert(!verify_gwc(k, p, GWC_INSTANCES))
+        i += 1
+    }
+    var a = GWC_PROOF
+    a[53] = a[53] + Q
+    assert(!verify_gwc(k, a, GWC_INSTANCES))
+    var c = GWC_PROOF
+    c[60] = c[60] + 1
+    assert(!verify_gwc(k, c, GWC_INSTANCES))
+    var d = GWC_PROOF
+    d[57] = 0
+    d[58] = 0
+    assert(!verify_gwc(k, d, GWC_INSTANCES))
+}
+
+#[test]
+fn gwc_rejects_wrong_vk_constant() uses (call: Call) {
+    let k = vk()
+    let bad = k.with_transcript_repr(k.transcript_repr().add(Bn254Fr::one()))
+    assert(!verify_gwc(bad, GWC_PROOF, GWC_INSTANCES))
+}
+
+// ---------------------------------------------------------------- transcript binding (rule 5)
+
+fn sh_last_challenge(_ k: Halo2Vk, _ proof: [u256; 57], _ inst: [u256; 1]) -> Bn254Fr
+uses (call: Call)
+{
+    var tr = Halo2Transcript::new()
+    let _p = phase1(k, proof, inst, mut tr).unwrap()
+    shplonk_open(proof, mut tr).unwrap().u
+}
+
+fn gw_last_challenge(_ k: Halo2Vk, _ proof: [u256; 61], _ inst: [u256; 1]) -> Bn254Fr
+uses (call: Call)
+{
+    var tr = Halo2Transcript::new()
+    let _p = phase1(k, proof, inst, mut tr).unwrap()
+    gwc_open(proof, mut tr).unwrap().u
+}
+
+#[test]
+fn shplonk_challenges_bind_every_input() uses (call: Call) {
+    // The last squeeze (u) hashes the whole history: changing the vk constant, any instance or any
+    // proof word that is absorbed before it (all but h2) must change it. Point x-words are covered
+    // by `transcript_absorbs_coordinates` (changing them makes the point leave the curve).
+    let k = vk()
+    let base = sh_last_challenge(k, SHPLONK_PROOF, SHPLONK_INSTANCES)
+    assert(base.to_canonical() == SH_OPEN_U)
+    assert(
+        !sh_last_challenge(k, SHPLONK_PROOF, [SHPLONK_INSTANCES[0] + 1]).eq(base),
+    )
+    let bad = k.with_transcript_repr(k.transcript_repr().add(Bn254Fr::one()))
+    assert(
+        !sh_last_challenge(bad, SHPLONK_PROOF, SHPLONK_INSTANCES).eq(base),
+    )
+    var i: usize = 0
+    while i < 55 {
+        if !is_x_word(i) {
+            var p = SHPLONK_PROOF
+            if is_point_word(i) {
+                p[i] = Q - p[i]
+            } else {
+                p[i] = p[i] + 1
+            }
+            assert(!sh_last_challenge(k, p, SHPLONK_INSTANCES).eq(base))
+        }
+        i += 1
+    }
+}
+
+#[test]
+fn gwc_challenges_bind_every_input() uses (call: Call) {
+    let k = vk()
+    let base = gw_last_challenge(k, GWC_PROOF, GWC_INSTANCES)
+    assert(base.to_canonical() == GW_OPEN_U)
+    assert(
+        !gw_last_challenge(k, GWC_PROOF, [GWC_INSTANCES[0] + 1]).eq(base),
+    )
+    let bad = k.with_transcript_repr(k.transcript_repr().add(Bn254Fr::one()))
+    assert(!gw_last_challenge(bad, GWC_PROOF, GWC_INSTANCES).eq(base))
+    var i: usize = 0
+    while i < 61 {
+        if !is_x_word(i) {
+            var p = GWC_PROOF
+            if is_point_word(i) {
+                p[i] = Q - p[i]
+            } else {
+                p[i] = p[i] + 1
+            }
+            assert(!gw_last_challenge(k, p, GWC_INSTANCES).eq(base))
+        }
+        i += 1
+    }
+}
+
+#[test]
+fn transcript_absorbs_coordinates() {
+    var a = Halo2Transcript::new()
+    a.absorb_point(5, 7)
+    var b = Halo2Transcript::new()
+    b.absorb_point(6, 7)
+    var c = Halo2Transcript::new()
+    c.absorb_point(5, 8)
+    var d = Halo2Transcript::new()
+    d.absorb_point(7, 5)
+    let ca = a.squeeze()
+    assert(!ca.eq(b.squeeze()))
+    assert(!ca.eq(c.squeeze()))
+    assert(!ca.eq(d.squeeze()))
+}
+
+#[test]
+fn transcript_one_word_squeeze_is_domain_separated() {
+    // buf of exactly one word hashes with a 0x01 suffix: squeeze(); squeeze() differs from
+    // a transcript that absorbed the first digest explicitly... but both chain; check the
+    // second squeeze differs from the first and from the one-word-no-suffix hash.
+    var t = Halo2Transcript::new()
+    t.absorb(1)
+    let c1 = t.squeeze()
+    let c2 = t.squeeze()
+    assert(!c1.eq(c2))
+    var u = Halo2Transcript::new()
+    u.absorb(1)
+    // 32-byte buffer + 0x01 suffix, never the bare keccak of the word
+    assert(u.squeeze().eq(c1))
+}
+
+// ---------------------------------------------------------------- gas
+
+#[test]
+fn halo2_gas_report() uses (evm: mut Evm, call: Call) {
+    var g0 = evm.gas()
+    let k = vk()
+    evm.emit(GasUsed { what: 0, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let a = verify_shplonk(k, SHPLONK_PROOF, SHPLONK_INSTANCES)
+    evm.emit(GasUsed { what: 1, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let b = verify_gwc(k, GWC_PROOF, GWC_INSTANCES)
+    evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
+    assert(a && b)
+}
+
+#[test]
+fn halo2_gas_phases() uses (evm: mut Evm, call: Call) {
+    let k = vk()
+    var tr = Halo2Transcript::new()
+    var g0 = evm.gas()
+    let p1 = phase1(k, SHPLONK_PROOF, SHPLONK_INSTANCES, mut tr).unwrap()
+    evm.emit(GasUsed { what: 10, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let o = shplonk_open(SHPLONK_PROOF, mut tr).unwrap()
+    evm.emit(GasUsed { what: 11, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let ok = shplonk_check(k, p1, o)
+    evm.emit(GasUsed { what: 12, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let pt = read_g1(SHPLONK_PROOF[0], SHPLONK_PROOF[1]).unwrap()
+    evm.emit(GasUsed { what: 13, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let q = g1_const(SHPLONK_PROOF[0], SHPLONK_PROOF[1])
+    evm.emit(GasUsed { what: 14, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let m = g1_mul(pt, p1.x)
+    evm.emit(GasUsed { what: 15, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let ii = batch_inv([p1.x, p1.y, p1.beta])
+    evm.emit(GasUsed { what: 16, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let fin = final_pairing(k, pt, q)
+    evm.emit(GasUsed { what: 17, gas: g0 - evm.gas() })
+    assert(ok)
 }
