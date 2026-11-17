@@ -84,6 +84,12 @@ pub enum VkError {
     Identity(String),
     #[error("wrong IC count: expected nPublic + 1 = {expected}, got {got}")]
     IcCount { expected: usize, got: usize },
-    #[error("emission not implemented yet")]
-    NotImplemented,
+}
+
+/// A raw (untrusted) Groth16 proof, used by the generator only to emit test fixtures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Groth16Proof {
+    pub a: G1,
+    pub b: G2,
+    pub c: G1,
 }

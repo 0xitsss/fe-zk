@@ -3,7 +3,7 @@ use ark_ec::AffineRepr;
 use fe_zk_gen::digest::key_preimage;
 use fe_zk_gen::validate::{fq_modulus, g2_from_ark};
 use fe_zk_gen::{
-    emit_fe, key_digest, parse_arkworks, parse_snarkjs, Groth16Vk, VkError, DIGEST_DOMAIN, G1, G2,
+    key_digest, parse_arkworks, parse_snarkjs, Groth16Vk, VkError, DIGEST_DOMAIN, G1, G2,
 };
 use num_bigint::BigUint;
 use serde_json::Value;
@@ -342,10 +342,3 @@ fn digest_refuses_invalid_key() {
     assert!(key_digest(&vk).is_err());
 }
 
-#[test]
-fn emit_is_not_implemented_yet() {
-    assert!(matches!(
-        emit_fe(&snarkjs("multiplier")),
-        Err(VkError::NotImplemented)
-    ));
-}

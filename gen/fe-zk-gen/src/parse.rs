@@ -1,6 +1,6 @@
 //! Parsers for untrusted key files. They only structure the data; `Groth16Vk::validate` judges it.
 
-use crate::model::{Groth16Vk, VkError, G1, G2};
+use crate::model::{Groth16Proof, Groth16Vk, VkError, G1, G2};
 use num_bigint::BigUint;
 use num_traits::{Num, Zero};
 use serde_json::Value;
@@ -181,4 +181,39 @@ pub fn parse_arkworks(json: &str) -> Result<Groth16Vk, VkError> {
         delta_g2: ark_g2(&v["delta_g2"], "delta_g2")?,
         ic,
     })
+}
+
+// ------------------------------------------------------------------ proofs
+
+/// Parse a snarkjs `proof.json` (`pi_a`, `pi_b`, `pi_c`). Untrusted: the generated test only
+/// uses it as a fixture.
+pub fn parse_snarkjs_proof(json: &str) -> Result<Groth16Proof, VkError> {
+    let v: Value = serde_json::from_str(json).map_err(|e| VkError::Parse(e.to_string()))?;
+    Ok(Groth16Proof {
+        a: snarkjs_g1(&v["pi_a"], "pi_a")?,
+        b: snarkjs_g2(&v["pi_b"], "pi_b")?,
+        c: snarkjs_g1(&v["pi_c"], "pi_c")?,
+    })
+}
+
+/// Parse the arkworks proof JSON `{"a": hex, "b": hex, "c": hex}` (see `parse_arkworks`).
+pub fn parse_arkworks_proof(json: &str) -> Result<Groth16Proof, VkError> {
+    let v: Value = serde_json::from_str(json).map_err(|e| VkError::Parse(e.to_string()))?;
+    Ok(Groth16Proof {
+        a: ark_g1(&v["a"], "a")?,
+        b: ark_g2(&v["b"], "b")?,
+        c: ark_g1(&v["c"], "c")?,
+    })
+}
+
+/// Parse a `public.json`: a JSON array of decimal strings.
+pub fn parse_public(json: &str) -> Result<Vec<BigUint>, VkError> {
+    let v: Value = serde_json::from_str(json).map_err(|e| VkError::Parse(e.to_string()))?;
+    let a = v
+        .as_array()
+        .ok_or_else(|| VkError::Parse("public.json: expected array".into()))?;
+    a.iter()
+        .enumerate()
+        .map(|(i, x)| dec(x, &format!("public[{i}]")))
+        .collect()
 }
