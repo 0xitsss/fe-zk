@@ -139,3 +139,12 @@ statement fails to parse with "`let` conditions are only allowed in `if` and `wh
 `scripts/probe/issue_block_after_ident.fe`: when a line ends with an identifier and the next line starts a block
 statement `{ ... }`, the parser reads `ident { ... }` as a struct literal and reports "`a` is not found". A literal
 before the block (`var s: u256 = 1`) compiles. Workaround: `var s: u256 = (a)`. To be reported upstream.
+
+### Compile-time key validation (CTFE)
+
+`scripts/probe/ctfe_validation.fe`: a `const fn` with a 254-iteration `while` loop over `mulmod` runs inside
+`static_assert(...)`; an invalid point fails compilation with `error[8-0081]: static assertion failed`, and the
+resulting constant costs 2 gas at runtime. `assert`, `Option::is_some` and `Option::unwrap` are not allowed in a
+const context, so validity functions return `bool` and constant constructors map invalid input to the point at
+infinity (never to an unchecked point). Generated verifiers use this to validate their verifying key in the Fe
+compiler, on top of the generator's own arkworks validation.
