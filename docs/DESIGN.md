@@ -157,3 +157,19 @@ modexp, final pairing) plus a straight-line per-circuit module emitted by `vecto
 GWC 419.8k execution gas; the snark-verifier Solidity verifier costs 364.7k / 398.6k including the 21k intrinsic
 and calldata, so Fe is about 20% more expensive (wrapper overhead per precompile call). Limits: one circuit shape
 (single phase, one instance column, uncommitted instances); duplicate commitments are rejected by the generator.
+
+## Groth16 and the generator
+
+- `G1`, `G2`, `G2Proof` hold canonical `u256` words. Validity is `const fn` (`g1_is_valid`, `g2_is_valid` with the
+  psi subgroup test, `from_coords_or_infinity`), shared by the runtime constructors and by compile-time constants.
+- `fe-zk-gen groth16` emits an ingot whose key is checked twice: by ark-bn254 in the generator, and by the Fe compiler
+  through `static_assert(g2_is_valid(..))` for every point plus `static_assert(!VK_X.is_infinity())` for alpha, beta,
+  gamma, delta. An invalid key does not compile; a valid key costs no runtime gas. CTFE of three G2 subgroup checks
+  adds about 20 s of compile time.
+- The generated contract has the snarkjs `Verifier.sol` selector `verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[N])`
+  and calldata layout (B as `[[x_imag, x_real], [y_imag, y_real]]`), and forwards to `groth16_verify_raw`; all checks
+  live in the library, so the generator cannot emit a verifier that skips one.
+- Failure policy: invalid input returns `false`; only a precompile violating its output contract reverts.
+- Gas per library `verify`: N=1 190 982, N=2 198 851, N=3 206 158; generated membership contract call 211 433.
+- Fe findings: a dependency that reaches `unsafe` needs `allow_unsafe = true` in the dependent's `[dependencies]`
+  entry; absolute dependency paths are rejected ("invalid path"); `assert` and `Option` methods are not const.
