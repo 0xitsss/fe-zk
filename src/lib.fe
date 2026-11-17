@@ -40,4 +40,5 @@ pub use hash::{
     poseidon_4,
     poseidon_5,
 }
+pub use verifier::Halo2Vk
 pub use verifier::{KzgVk, kzg_batch_verify_gwc, kzg_verify, kzg_verify_shplonk}

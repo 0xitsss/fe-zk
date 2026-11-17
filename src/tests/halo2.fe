@@ -1,0 +1,92 @@
+//! halo2-KZG verifier tests. Proofs: halo2-axiom 0.5.3 (`vectors/halo2/standard_plonk_lookup`,
+//! SHPLONK and GWC, EvmTranscript). Expected challenge values come from the independent Rust
+//! mini verifier (`H2_TRACE=1 cargo test --test mini_verifier accepts_valid -- --nocapture`,
+//! `vectors/halo2/src/mini_verifier.rs`), never from this repository's Fe code.
+//! Gas: `fe test --filter halo2_gas --show-logs`.
+use ingot::field::{Bn254Fr, Field}
+use ingot::tests::halo2_fixture::{GWC_INSTANCES, GWC_PROOF, SHPLONK_INSTANCES, SHPLONK_PROOF}
+use ingot::verifier::halo2::common::Halo2Transcript
+use ingot::verifier::halo2::standard_plonk_lookup::{
+    Phase1,
+    gwc_open,
+    phase1,
+    shplonk_open,
+    verify_gwc,
+    verify_shplonk,
+    vk,
+}
+use std::evm::{Call, Evm}
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+// Rust mini verifier, SHPLONK proof.
+const SH_THETA: u256 = 0x0be996f0a6556899d419f6e223969f25d3d9165e8f35bfeed110dea2ad826c7c
+const SH_BETA: u256 = 0x1c8191baea1068bed20b78aed7f3730135e530c6bad4f3daaf0664693bdc9873
+const SH_GAMMA: u256 = 0x271dac6ac27656906eb825210defcc660ce91d7aa34890e506126b6b95a029a2
+const SH_Y: u256 = 0x2f1db3775eebc90386585c83f320edbae18e33c0afe445d6e0dab72e1671d7ab
+const SH_X: u256 = 0x2cda0230c80ef689c6342163537afa2f38a13f02093e8e62619d26e2dc371b7e
+const SH_EXPECTED_H: u256 = 0x0721708d69b86d1a2262508cb33b783573a0bbf268c4374bf4fc0a36027e6cb5
+const SH_OPEN_Y: u256 = 0x15bbf2e77a3877b2e90b063e923ce1ae1998cf79192343414e5388d48fd9eaa0
+const SH_OPEN_V: u256 = 0x07a5fd123f5f52f7b68d412d8d6bc4e32035151818fa348b7762b3846b1472ea
+const SH_OPEN_U: u256 = 0x154e30044ef143a5109fef4292b11d603103a5fd87972de375b8f786ca0b006d
+// Rust mini verifier, GWC proof.
+const GW_THETA: u256 = 0x28ae124c54007b92b1ec341a777c04d70ebead302f9ff4d7d29f5750e7962955
+const GW_BETA: u256 = 0x0ec9adf91fd9cde1ee0a12c9e88e4570f5c77cbc618346a7092589ab5bc30161
+const GW_GAMMA: u256 = 0x0b92e8fa0b838c9d2f001f3313025699e57a0d6316c01c30c5189ee2213b1c2b
+const GW_Y: u256 = 0x265231d46381dcde594fa614095653346b94558470677b1e198b6ef9a04e6fa4
+const GW_X: u256 = 0x268f13b2bb43a19fa3d738444911d0dce8595293b80c170150473e3073bb05a4
+const GW_EXPECTED_H: u256 = 0x2fedabeb51cee2f496a3aedfc22f351c9d7ad79d15719a8e4395e9f6d6403b2f
+const GW_OPEN_V: u256 = 0x01c3c9b1a3f1c523e6738c20946f85baa4525c64ea8bfe0409d6e75e42a7c560
+const GW_OPEN_U: u256 = 0x219b33efcfd03d3155b04e04a0b5dda775b548cffa7dd46c00f08c286ee12bb6
+
+fn p1_of(_ proof: [u256; 57], _ inst: [u256; 1]) -> Option<Phase1> uses (call: Call) {
+    var tr = Halo2Transcript::new()
+    phase1(proof, inst, mut tr)
+}
+
+fn gw_p1_of(_ proof: [u256; 61], _ inst: [u256; 1]) -> Option<Phase1> uses (call: Call) {
+    var tr = Halo2Transcript::new()
+    phase1(proof, inst, mut tr)
+}
+
+#[test]
+fn shplonk_challenges_match_rust() uses (call: Call) {
+    var tr = Halo2Transcript::new()
+    let p = phase1(vk(), SHPLONK_PROOF, SHPLONK_INSTANCES, mut tr).unwrap()
+    assert(p.theta.to_canonical() == SH_THETA)
+    assert(p.beta.to_canonical() == SH_BETA)
+    assert(p.gamma.to_canonical() == SH_GAMMA)
+    assert(p.y.to_canonical() == SH_Y)
+    assert(p.x.to_canonical() == SH_X)
+    assert(p.expected_h.to_canonical() == SH_EXPECTED_H)
+    let o = shplonk_open(SHPLONK_PROOF, mut tr).unwrap()
+    assert(o.y.to_canonical() == SH_OPEN_Y)
+    assert(o.v.to_canonical() == SH_OPEN_V)
+    assert(o.u.to_canonical() == SH_OPEN_U)
+}
+
+#[test]
+fn gwc_challenges_match_rust() uses (call: Call) {
+    var tr = Halo2Transcript::new()
+    let p = phase1(vk(), GWC_PROOF, GWC_INSTANCES, mut tr).unwrap()
+    assert(p.theta.to_canonical() == GW_THETA)
+    assert(p.beta.to_canonical() == GW_BETA)
+    assert(p.gamma.to_canonical() == GW_GAMMA)
+    assert(p.y.to_canonical() == GW_Y)
+    assert(p.x.to_canonical() == GW_X)
+    assert(p.expected_h.to_canonical() == GW_EXPECTED_H)
+    let o = gwc_open(GWC_PROOF, mut tr).unwrap()
+    assert(o.v.to_canonical() == GW_OPEN_V)
+    assert(o.u.to_canonical() == GW_OPEN_U)
+}
+
+#[test]
+fn shplonk_accepts() uses (call: Call) {
+    assert(verify_shplonk(vk(), SHPLONK_PROOF, SHPLONK_INSTANCES))
+}
+
+#[test]
+fn gwc_accepts() uses (call: Call) {
+    assert(verify_gwc(vk(), GWC_PROOF, GWC_INSTANCES))
+}

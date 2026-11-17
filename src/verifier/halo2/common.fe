@@ -1,0 +1,165 @@
+//! Circuit-independent core of the halo2-KZG verifier (halo2-axiom 0.5.3, BN254, KZG).
+//!
+//! Everything circuit specific (gate and lookup expressions, permutation layout, query list,
+//! SHPLONK rotation sets, GWC point groups) lives in a module emitted by
+//! `vectors/halo2/emit_fe.py` from a `vk.json`; this file holds the pieces every emitted
+//! verifier shares: the snark-verifier `EvmTranscript`, input decoding, batched field inversion
+//! through the modexp precompile and the final pairing. Algorithm: `vectors/halo2/SPEC.md`.
+//!
+//! Typing enforces safety rules 1-3 here as in the rest of fe-zk: proof words become `Bn254Fr`
+//! only through `Bn254Fr::from_canonical`, and `G1` only through `read_g1` (canonical, on the
+//! curve, point at infinity rejected as SPEC section 2 demands).
+use core::ptr::MemBuffer
+use std::evm::Call
+use std::evm::packed::Packed
+use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
+use ingot::ec::precompile::{call_checked, get, put}
+use ingot::field::{Bn254Fr, Field}
+
+/// Constant circuit data shared by all halo2-KZG circuits. Private fields: `Halo2Vk::new`.
+/// The G2 points are validated (on curve, in the subgroup) by `G2::from_coords` before they
+/// get here; the G1 generator by its type.
+pub struct Halo2Vk {
+    transcript_repr: Bn254Fr,
+    g1: G1,
+    g2: G2,
+    s_g2: G2,
+}
+impl Copy for Halo2Vk {}
+
+impl Halo2Vk {
+    /// `None` if any SRS point is the point at infinity (then every pairing check passes).
+    pub fn new(_ transcript_repr: Bn254Fr, _ g1: G1, _ g2: G2, _ s_g2: G2) -> Option<Halo2Vk> {
+        if g1.is_infinity() || g2.is_infinity() || s_g2.is_infinity() {
+            return Option::None
+        }
+        Option::Some(Halo2Vk { transcript_repr, g1, g2, s_g2 })
+    }
+    pub fn transcript_repr(self) -> Bn254Fr {
+        self.transcript_repr
+    }
+    pub fn g1(self) -> G1 {
+        self.g1
+    }
+}
+
+/// Reduction of a vk constant (trusted, emitted by the generator).
+pub fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::reduce(v)
+}
+
+/// A G1 constant of the verifying key. The generator checked it; this re-checks it (cheap)
+/// because a `G1` can only be built by `G1::from_coords`.
+pub fn g1_const(_ x: u256, _ y: u256) -> G1 {
+    match G1::from_coords(x, y) {
+        Option::Some(p) => p,
+        Option::None => {
+            assert(false)
+            G1::infinity()
+        },
+    }
+}
+
+/// A proof point: canonical coordinates, on the curve, and NOT the point at infinity.
+/// (`(0,0)` is rejected like in halo2's own `EvmTranscript::read_point`.)
+pub fn read_g1(_ x: u256, _ y: u256) -> Option<G1> {
+    match G1::from_coords(x, y) {
+        Option::Some(p) => {
+            if p.is_infinity() {
+                Option::None
+            } else {
+                Option::Some(p)
+            }
+        },
+        Option::None => Option::None,
+    }
+}
+
+/// snark-verifier `EvmTranscript` state. The buffer holds the 32-byte big-endian words absorbed
+/// since the last squeeze, prefixed by the previous digest. A squeeze hashes the whole buffer
+/// and the digest becomes the new buffer; there are no labels (SPEC section 2).
+pub struct Halo2Transcript { buf: Packed }
+
+impl Halo2Transcript {
+    pub fn new() -> Halo2Transcript {
+        Halo2Transcript { buf: Packed::with_capacity(bytes: 1024) }
+    }
+
+    /// Absorb one 32-byte word (a canonical scalar or one coordinate).
+    pub fn absorb(mut self, _ w: u256) {
+        self.buf.u256(w)
+    }
+
+    pub fn absorb_point(mut self, _ x: u256, _ y: u256) {
+        self.buf.u256(x)
+        self.buf.u256(y)
+    }
+
+    /// `keccak256(buf)` (plus a `0x01` byte if `buf` is exactly one word), reduced mod r.
+    pub fn squeeze(mut self) -> Bn254Fr {
+        if self.buf.len() == 32 {
+            self.buf.u8(1)
+        }
+        let h = self.buf.keccak256()
+        self.buf = Packed::with_capacity(bytes: 1024)
+        self.buf.u256(h)
+        Bn254Fr::reduce(h)
+    }
+}
+
+/// `1 / a` through the modexp precompile (`a^(r-2)`): about 1.4k gas instead of ~25k for the
+/// square-and-multiply loop. `None` for zero.
+pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call) {
+    if a.is_zero() {
+        return Option::None
+    }
+    var input = MemBuffer::with_capacity(192)
+    put(mut input, 0, 32)
+    put(mut input, 1, 32)
+    put(mut input, 2, 32)
+    put(mut input, 3, a.to_canonical())
+    put(mut input, 4, Bn254Fr::MODULUS - 2)
+    put(mut input, 5, Bn254Fr::MODULUS)
+    var out = MemBuffer::with_capacity(32)
+    call_checked(5, 30000, mut input, 192, mut out, 32)
+    // The result is `< r` by the precompile contract; a zero result is impossible for a != 0.
+    Bn254Fr::from_canonical(get(out, 0))
+}
+
+/// Montgomery batch inversion: one modexp for all of `xs`. `None` if any element is zero.
+pub fn batch_inv<const N: usize>(_ xs: [Bn254Fr; N]) -> Option<[Bn254Fr; N]> uses (call: Call) {
+    var pre = xs
+    var acc = Bn254Fr::one()
+    var i: usize = 0
+    while i < N {
+        pre[i] = acc
+        acc = acc.mul(xs[i])
+        i += 1
+    }
+    var inv = match inv_modexp(acc) {
+        Option::Some(v) => v,
+        Option::None => {
+            return Option::None
+        },
+    }
+    var out = xs
+    var k: usize = 0
+    while k < N {
+        let j = N - 1 - k
+        out[j] = inv.mul(pre[j])
+        inv = inv.mul(xs[j])
+        k += 1
+    }
+    Option::Some(out)
+}
+
+/// `e(left, [s]H) * e(right, -H) == 1` with success flag, length and result checks (rule 6)
+/// inside `pairing_check`.
+pub fn final_pairing(_ vk: Halo2Vk, _ left: G1, _ right: G1) -> bool uses (call: Call) {
+    pairing_check([left, right], [vk.s_g2, vk.g2.neg()])
+}
+
+/// `acc + [s] p`.
+pub fn mul_add(_ acc: G1, _ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
+    g1_add(acc, g1_mul(p, s))
+}
