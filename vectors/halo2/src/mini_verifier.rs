@@ -246,6 +246,11 @@ pub fn verify(vk: &Value, scheme: Scheme, proof: &[u8], instances: &[Vec<Fr>]) -
     let y = t.squeeze();
     let h_comms: Vec<G1Affine> = (0..quotient_chunks).map(|_| t.read_point()).collect::<R<_>>()?;
     let x = t.squeeze();
+    let trace = std::env::var("H2_TRACE").is_ok();
+    let fh = |v: &Fr| { let mut b = v.to_repr(); b.reverse(); hex::encode(b) };
+    if trace {
+        eprintln!("H2T theta {}\nH2T beta {}\nH2T gamma {}\nH2T y {}\nH2T x {}", fh(&theta), fh(&beta), fh(&gamma), fh(&y), fh(&x));
+    }
 
     // ---- evaluations from the proof
     let advice_evals: Vec<Fr> = (0..advq.len()).map(|_| t.read_scalar()).collect::<R<_>>()?;
@@ -357,6 +362,9 @@ pub fn verify(vk: &Value, scheme: Scheme, proof: &[u8], instances: &[Vec<Fr>]) -
     }
     let h_acc = cons.iter().fold(Fr::ZERO, |h, v| h * y + v);
     let expected_h = h_acc * Option::<Fr>::from((xn - Fr::ONE).invert()).ok_or("x^n = 1")?;
+    if trace {
+        eprintln!("H2T l_0 {}\nH2T l_last {}\nH2T l_blind {}\nH2T h_acc {}\nH2T expected_h {}", fh(&l_0), fh(&l_last), fh(&l_blind), fh(&h_acc), fh(&expected_h));
+    }
 
     // ---- commitment table + query list (order = SPEC section 7)
     // table: advice | perm_z | lk_perm_in, lk_perm_tab, lk_z | fixed | sigma | H | random
@@ -437,6 +445,7 @@ pub fn verify(vk: &Value, scheme: Scheme, proof: &[u8], instances: &[Vec<Fr>]) -
             }
             let w: Vec<G1Affine> = (0..groups.len()).map(|_| t.read_point()).collect::<R<_>>()?;
             let u = t.squeeze();
+            if trace { eprintln!("H2T v {}\nH2T u {}", fh(&v), fh(&u)); }
             let mut left = G1::identity();
             let mut right = G1::identity();
             let mut eval_multi = Fr::ZERO;
@@ -465,6 +474,7 @@ pub fn verify(vk: &Value, scheme: Scheme, proof: &[u8], instances: &[Vec<Fr>]) -
             let h1 = t.read_point()?;
             let u = t.squeeze();
             let h2 = t.read_point()?;
+            if trace { eprintln!("H2T sh_y {}\nH2T sh_v {}\nH2T sh_u {}", fh(&y2), fh(&v), fh(&u)); }
             // super point set (distinct points, order irrelevant) and per-commitment point sets
             let mut super_points: Vec<Fr> = vec![];
             for q in &qs {

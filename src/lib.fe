@@ -41,6 +41,7 @@ pub use hash::{
     poseidon_5,
 }
 pub use verifier::{
+    Halo2Vk,
     KzgVk,
     PlonkProof,
     PlonkVk,
