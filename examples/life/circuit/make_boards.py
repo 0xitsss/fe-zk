@@ -13,6 +13,7 @@ import life  # noqa: E402
 PATTERNS = {
     "glider": [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)],
     "blinker": [(5, 4), (5, 5), (5, 6)],
+    # same cells and offset as life-cli: (0,1),(0,2),(1,0),(1,1),(2,1) shifted by (7,7)
     "rpentomino": [(7, 8), (7, 9), (8, 7), (8, 8), (9, 8)],
 }
 

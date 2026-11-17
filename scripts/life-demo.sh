@@ -35,9 +35,18 @@ echo
 echo "Interactive: cd examples/life/cli && cargo run --release -- --pattern rpentomino --gens 200"
 
 # ---------------------------------------------------------------------------
-# TODO(zk): second path, not implemented yet.
-#   1. circom circuit under examples/life/circuit/: N generations from a Poseidon-committed
-#      start board to a committed end board.
-#   2. prove with snarkjs, emit the Fe verifier with `fe-zk-gen groth16 --snarkjs vk.json`.
-#   3. add `--prove` to life-cli and print: gas of N on-chain steps vs one proof verification.
+# zk path. Circuit: examples/life/circuit/life.circom (7 constraints per cell, 1792 per generation).
+# Public signals: [startCommit, endCommit] = Poseidon(lo128, hi128) of the packed boards. The start
+# board is private; N is fixed per circuit. Set ZK=1 to run it (needs circom + snarkjs, see
+# scripts/setup-tools.sh; the first run downloads a PSE ptau of up to 1.2 GB into $CACHE and takes
+# minutes for N=512). Default: reuse the committed fixture vectors/groth16/life_64 (N=64).
+if [ "${ZK:-0}" = 1 ]; then
+  echo
+  echo "== zk path: Groth16 proof of ${ZKGENS:-512} generations (rpentomino) =="
+  "$ROOT/scripts/life-prove.sh" rpentomino "${ZKGENS:-512}"
+fi
+# TODO(zk-integration): emit the Fe verifier with `fe-zk-gen groth16 --snarkjs
+#   vectors/groth16/life_<N>/verification_key.json`, verify vectors/groth16/life_<N>/proof.json
+#   against public.json, and add `--prove` to life-cli to print: gas of N on-chain steps
+#   vs one proof verification (break-even about 450 generations).
 # ---------------------------------------------------------------------------
