@@ -11,21 +11,21 @@ fn perr<T>(m: impl Into<String>) -> Result<T, VkError> {
 
 // ---------------------------------------------------------------- snarkjs
 
-fn dec(v: &Value, what: &str) -> Result<BigUint, VkError> {
+pub(crate) fn dec(v: &Value, what: &str) -> Result<BigUint, VkError> {
     let s = v
         .as_str()
         .ok_or_else(|| VkError::Parse(format!("{what}: expected decimal string")))?;
     BigUint::from_str_radix(s, 10).map_err(|_| VkError::Parse(format!("{what}: bad decimal '{s}'")))
 }
 
-fn arr<'a>(v: &'a Value, what: &str, n: usize) -> Result<&'a Vec<Value>, VkError> {
+pub(crate) fn arr<'a>(v: &'a Value, what: &str, n: usize) -> Result<&'a Vec<Value>, VkError> {
     match v.as_array() {
         Some(a) if a.len() == n => Ok(a),
         _ => perr(format!("{what}: expected array of {n}")),
     }
 }
 
-fn snarkjs_g1(v: &Value, what: &str) -> Result<G1, VkError> {
+pub(crate) fn snarkjs_g1(v: &Value, what: &str) -> Result<G1, VkError> {
     let a = arr(v, what, 3)?;
     let (x, y, z) = (dec(&a[0], what)?, dec(&a[1], what)?, dec(&a[2], what)?);
     if z.is_zero() {
@@ -46,7 +46,7 @@ fn snarkjs_fq2(v: &Value, what: &str) -> Result<[BigUint; 2], VkError> {
     Ok([dec(&a[0], what)?, dec(&a[1], what)?])
 }
 
-fn snarkjs_g2(v: &Value, what: &str) -> Result<G2, VkError> {
+pub(crate) fn snarkjs_g2(v: &Value, what: &str) -> Result<G2, VkError> {
     let a = arr(v, what, 3)?;
     let x = snarkjs_fq2(&a[0], what)?;
     let y = snarkjs_fq2(&a[1], what)?;

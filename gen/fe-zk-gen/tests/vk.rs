@@ -341,4 +341,3 @@ fn digest_refuses_invalid_key() {
     vk.delta_g2 = G2::identity();
     assert!(key_digest(&vk).is_err());
 }
-

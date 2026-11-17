@@ -8,6 +8,7 @@ pub mod digest;
 pub mod emit;
 pub mod model;
 pub mod parse;
+pub mod plonk;
 pub mod validate;
 
 pub use digest::{key_digest, DIGEST_DOMAIN};
@@ -15,6 +16,10 @@ pub use emit::{emit_fe, emit_ingot, EmitOptions, EmittedIngot, TestFixture};
 pub use model::{Groth16Proof, Groth16Vk, VkError, G1, G2};
 pub use parse::{
     parse_arkworks, parse_arkworks_proof, parse_public, parse_snarkjs, parse_snarkjs_proof,
+};
+pub use plonk::{
+    emit_plonk_fe, emit_plonk_ingot, parse_plonk_snarkjs, parse_plonk_snarkjs_proof,
+    plonk_key_digest, PlonkEmitOptions, PlonkFixture, PlonkProof, PlonkVk,
 };
 
 /// Tool version embedded in generated file headers.

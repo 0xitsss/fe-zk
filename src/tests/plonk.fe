@@ -2,13 +2,14 @@
 //! `scripts/regen-plonk-fixtures.sh`), transcribed into `plonk_fixtures.fe` by
 //! `scripts/gen-plonk-fe-fixtures.py`. Reference challenges come from the snarkjs JS verifier
 //! (`vectors/js/plonk-challenges.mjs`). Gas: `fe test --show-logs` prints `GasUsed` events.
-use ingot::ec::{G1, G2}
+use ingot::ec::{G1, G2, g1_is_valid, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
 use ingot::verifier::plonk::{
     PlonkChallenges,
     PlonkProof,
     PlonkVk,
     plonk_challenges,
+    plonk_domain_is_valid,
     plonk_verify,
     plonk_verify_words,
 }
@@ -423,6 +424,92 @@ fn vk_x2_must_be_in_subgroup() {
     )
 }
 
+// ---------------------------------------------------------------- compile-time key
+
+// The multiplier2 key as compile-time constants: every point and the evaluation domain are
+// validated by the Fe compiler (`static_assert`), so building the key costs no gas.
+static_assert(g1_is_valid(M2_QM_X, M2_QM_Y))
+static_assert(g1_is_valid(M2_QL_X, M2_QL_Y))
+static_assert(g1_is_valid(M2_QR_X, M2_QR_Y))
+static_assert(g1_is_valid(M2_QO_X, M2_QO_Y))
+static_assert(g1_is_valid(M2_QC_X, M2_QC_Y))
+static_assert(g1_is_valid(M2_S1_X, M2_S1_Y))
+static_assert(g1_is_valid(M2_S2_X, M2_S2_Y))
+static_assert(g1_is_valid(M2_S3_X, M2_S3_Y))
+static_assert(g2_is_valid(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1))
+static_assert(plonk_domain_is_valid(M2_POWER, M2_W, M2_K1, M2_K2))
+
+fn m2_const_vk() -> PlonkVk<2> {
+    PlonkVk<2>::from_consts(
+        M2_POWER,
+        M2_W,
+        M2_K1,
+        M2_K2,
+        [
+            G1::from_coords_or_infinity(M2_QM_X, M2_QM_Y),
+            G1::from_coords_or_infinity(M2_QL_X, M2_QL_Y),
+            G1::from_coords_or_infinity(M2_QR_X, M2_QR_Y),
+            G1::from_coords_or_infinity(M2_QO_X, M2_QO_Y),
+            G1::from_coords_or_infinity(M2_QC_X, M2_QC_Y),
+            G1::from_coords_or_infinity(M2_S1_X, M2_S1_Y),
+            G1::from_coords_or_infinity(M2_S2_X, M2_S2_Y),
+            G1::from_coords_or_infinity(M2_S3_X, M2_S3_Y),
+        ],
+        G2::from_coords_or_infinity(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1),
+    )
+}
+
+#[test]
+fn const_vk_accepts_and_matches_checked_vk() uses (call: Call) {
+    assert(plonk_verify_words(m2_const_vk(), m2_proof(), m2_pubs()))
+    let a = plonk_challenges(m2_const_vk(), m2_pubs_fr(), m2_p())
+    let b = plonk_challenges(m2_vk(), m2_pubs_fr(), m2_p())
+    assert(a.beta.eq(b.beta) && a.xi.eq(b.xi) && a.u.eq(b.u))
+    var w = m2_proof()
+    w[0] = 1
+    w[1] = 2
+    assert(!plonk_verify_words(m2_const_vk(), w, m2_pubs()))
+}
+
+#[test]
+fn const_domain_check_rejects_bad_parameters() {
+    assert(plonk_domain_is_valid(M2_POWER, M2_W, M2_K1, M2_K2))
+    assert(plonk_domain_is_valid(MB_POWER, MB_W, MB_K1, MB_K2))
+    assert(!plonk_domain_is_valid(4, M2_W, M2_K1, M2_K2))
+    assert(!plonk_domain_is_valid(0, M2_W, M2_K1, M2_K2))
+    assert(!plonk_domain_is_valid(29, M2_W, M2_K1, M2_K2))
+    assert(!plonk_domain_is_valid(3, 1, M2_K1, M2_K2))
+    assert(!plonk_domain_is_valid(3, M2_W + R, M2_K1, M2_K2))
+    assert(!plonk_domain_is_valid(3, M2_W, 1, M2_K2))
+    assert(!plonk_domain_is_valid(3, M2_W, 2, 2))
+    assert(!plonk_domain_is_valid(3, M2_W, 0, M2_K2))
+    assert(!plonk_domain_is_valid(3, M2_W, M2_K1, 0))
+    // k2 = w k1 lies in the same coset as k1
+    assert(
+        !plonk_domain_is_valid(3, M2_W, 2, fr(2).mul(fr(M2_W)).to_canonical()),
+    )
+}
+
+#[test]
+fn const_vk_with_bad_parameters_is_poisoned() uses (call: Call) {
+    // bad domain (k1 = k2): `from_consts` poisons the key and a valid proof is rejected
+    let c = [
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+    ]
+    let bad = PlonkVk<2>::from_consts(3, M2_W, 2, 2, c, G2::generator())
+    assert(!plonk_verify_words(bad, m2_proof(), m2_pubs()))
+    // NP = 0 likewise
+    let z = PlonkVk<0>::from_consts(3, M2_W, M2_K1, M2_K2, c, G2::generator())
+    assert(!plonk_verify_words(z, m2_proof(), []))
+}
+
 // ---------------------------------------------------------------- gas
 
 #[test]
@@ -440,4 +527,16 @@ fn plonk_gas_report() uses (evm: mut Evm, call: Call) {
     let b = plonk_verify(kb, pb, mb_pubs())
     evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
     assert(a && b)
+}
+
+#[test]
+fn plonk_vk_construction_gas() uses (evm: mut Evm) {
+    // runtime-validated key (G2 subgroup check) vs compile-time-validated key
+    var g0 = evm.gas()
+    let k = m2_vk()
+    evm.emit(GasUsed { what: 10, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let kc = m2_const_vk()
+    evm.emit(GasUsed { what: 11, gas: g0 - evm.gas() })
+    assert(plonk_domain_is_valid(M2_POWER, M2_W, M2_K1, M2_K2))
 }

@@ -1,7 +1,9 @@
 use clap::{Args, Parser, Subcommand};
 use fe_zk_gen::{
-    emit_ingot, key_digest, parse_arkworks, parse_arkworks_proof, parse_public, parse_snarkjs,
-    parse_snarkjs_proof, EmitOptions, Groth16Proof, Groth16Vk, TestFixture, TOOL_VERSION,
+    emit_ingot, emit_plonk_ingot, key_digest, parse_arkworks, parse_arkworks_proof,
+    parse_plonk_snarkjs, parse_plonk_snarkjs_proof, parse_public, parse_snarkjs,
+    parse_snarkjs_proof, plonk_key_digest, EmitOptions, EmittedIngot, Groth16Proof, Groth16Vk,
+    PlonkEmitOptions, PlonkFixture, TestFixture, TOOL_VERSION,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -21,6 +23,30 @@ struct Cli {
 enum Cmd {
     /// Groth16 over BN254
     Groth16(Groth16Args),
+    /// PLONK (snarkjs) over BN254 with KZG
+    Plonk(PlonkArgs),
+}
+
+#[derive(Args)]
+struct PlonkArgs {
+    /// snarkjs verification_key.json (protocol plonk)
+    #[arg(long, value_name = "FILE")]
+    snarkjs: String,
+    /// snarkjs plonk proof.json; emits a test with a real proof
+    #[arg(long, value_name = "FILE", requires = "public")]
+    proof: Option<String>,
+    /// public.json: decimal public signals of the proof
+    #[arg(long, value_name = "FILE", requires = "proof")]
+    public: Option<String>,
+    /// Name of the verifier (alphanumeric); contract is `<NAME>Verifier`
+    #[arg(long, default_value = "Plonk")]
+    name: String,
+    /// Output directory for the Fe ingot; without it the key is only validated
+    #[arg(long, value_name = "DIR")]
+    out: Option<String>,
+    /// Path to the fe_zk ingot as written into fe.toml (relative to the output dir)
+    #[arg(long, value_name = "PATH", default_value = "../..")]
+    fe_zk_path: String,
 }
 
 #[derive(Args)]
@@ -58,7 +84,10 @@ fn load(a: &Groth16Args) -> Result<(Groth16Vk, &'static str, String), String> {
             .map(|v| (v, "snarkjs", p.clone()))
             .map_err(|e| e.to_string());
     }
-    let p = a.arkworks.as_ref().ok_or("one of --snarkjs / --arkworks is required")?;
+    let p = a
+        .arkworks
+        .as_ref()
+        .ok_or("one of --snarkjs / --arkworks is required")?;
     parse_arkworks(&read(p)?)
         .map(|v| (v, "arkworks", p.clone()))
         .map_err(|e| e.to_string())
@@ -78,8 +107,93 @@ fn load_fixture(a: &Groth16Args, ark: bool) -> Result<Option<TestFixture>, Strin
     Ok(Some(TestFixture { proof, public }))
 }
 
+fn write_ingot(out: &str, ing: &EmittedIngot) -> std::io::Result<()> {
+    let dir = Path::new(out);
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("fe.toml"), &ing.fe_toml)?;
+    std::fs::write(dir.join("src/lib.fe"), &ing.lib_fe)?;
+    let t = dir.join("src/tests.fe");
+    match &ing.tests_fe {
+        Some(s) => std::fs::write(t, s)?,
+        None => {
+            let _ = std::fs::remove_file(t);
+        }
+    }
+    Ok(())
+}
+
+fn run_plonk(a: PlonkArgs) -> ExitCode {
+    let vk = match read(&a.snarkjs).and_then(|j| parse_plonk_snarkjs(&j).map_err(|e| e.to_string()))
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let digest = match plonk_key_digest(&vk) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: invalid verifying key: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    println!("fe-zk-gen {TOOL_VERSION}: plonk/bn254 key from snarkjs: VALID");
+    println!("  public inputs : {}", vk.n_public);
+    println!("  domain        : 2^{}", vk.power);
+    println!("  key digest    : 0x{}", hex::encode(digest));
+    let Some(out) = &a.out else {
+        return ExitCode::SUCCESS;
+    };
+    let fixture = match (&a.proof, &a.public) {
+        (Some(pp), Some(pu)) => {
+            let f = read(pp)
+                .and_then(|j| parse_plonk_snarkjs_proof(&j).map_err(|e| e.to_string()))
+                .and_then(|proof| {
+                    read(pu)
+                        .and_then(|j| parse_public(&j).map_err(|e| e.to_string()))
+                        .map(|public| PlonkFixture { proof, public })
+                });
+            match f {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        _ => None,
+    };
+    let source = Path::new(&a.snarkjs)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or(a.snarkjs.clone());
+    let opts = PlonkEmitOptions {
+        name: a.name.clone(),
+        source,
+        fe_zk_path: a.fe_zk_path.clone(),
+        fixture,
+    };
+    let ing = match emit_plonk_ingot(&vk, &opts) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = write_ingot(out, &ing) {
+        eprintln!("error: {out}: {e}");
+        return ExitCode::from(2);
+    }
+    println!("  emitted       : {out} (ingot {})", ing.ingot_name);
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
-    let Cmd::Groth16(args) = Cli::parse().cmd;
+    let args = match Cli::parse().cmd {
+        Cmd::Groth16(a) => a,
+        Cmd::Plonk(a) => return run_plonk(a),
+    };
     let (vk, src, src_path) = match load(&args) {
         Ok(x) => x,
         Err(e) => {
@@ -125,21 +239,7 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let dir = Path::new(out);
-    let write = || -> std::io::Result<()> {
-        std::fs::create_dir_all(dir.join("src"))?;
-        std::fs::write(dir.join("fe.toml"), &ing.fe_toml)?;
-        std::fs::write(dir.join("src/lib.fe"), &ing.lib_fe)?;
-        let t = dir.join("src/tests.fe");
-        match &ing.tests_fe {
-            Some(s) => std::fs::write(t, s)?,
-            None => {
-                let _ = std::fs::remove_file(t);
-            }
-        }
-        Ok(())
-    };
-    if let Err(e) = write() {
+    if let Err(e) = write_ingot(out, &ing) {
         eprintln!("error: {out}: {e}");
         return ExitCode::from(2);
     }

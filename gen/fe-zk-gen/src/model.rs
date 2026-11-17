@@ -82,6 +82,8 @@ pub enum VkError {
     NotInSubgroup(String),
     #[error("{0} must not be the point at infinity")]
     Identity(String),
+    #[error("invalid evaluation domain: {0}")]
+    Domain(String),
     #[error("wrong IC count: expected nPublic + 1 = {expected}, got {got}")]
     IcCount { expected: usize, got: usize },
 }
