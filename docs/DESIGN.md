@@ -65,3 +65,16 @@ Gas (revm, Osaka, execution gas without the 21 000 intrinsic): `step` ≈ 624; `
 `run(board, 100)` = 53 267. On-chain stepping costs about 530 gas per generation, so a Groth16
 proof of N generations (one pairing check with 4 pairs, roughly 200–250k gas) is cheaper only for
 N above roughly 450 generations, and the verifier's cost is constant in N.
+
+## Curve layer (`src/ec/`)
+
+- Point types have private fields; `G1::from_coords` / `G2::from_coords` are the only way in from raw words.
+- All precompile calls go through `src/ec/precompile.fe`: success flag, exact returndata length, pairing word
+  exactly 1 (any other word reverts), and an explicit gas cap per call. A failing precompile consumes all gas
+  forwarded to it, so forwarding "all gas" would let one invalid point burn 63/64 of the caller's gas.
+- G2 subgroup: the Fe check `psi(P) == [6x^2]P` costs about 755k gas. The pairing precompile of the test EVM
+  (revm) also rejects an on-curve non-subgroup point (test `precompile_vs_non_subgroup`).
+- The test EVM supports Prague: EIP-2537 (BLS12-381) and EIP-4844 point evaluation work in `fe test`.
+- More Fe findings: `use super::x::*` globs work; const-generic functions over `[Struct; N]` work; `Evm`
+  implements `Call`, so tests call `uses (call: Call)` functions directly; `fe fmt` moves trailing `//`
+  comments inside argument lists (put comments above the call).
