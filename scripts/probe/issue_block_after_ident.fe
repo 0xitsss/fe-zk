@@ -1,0 +1,12 @@
+// Fe 26.5.0 issue repro (expected to FAIL to compile): an identifier at the end of a line followed by a
+// block statement on the next line is parsed as a struct literal `a { ... }`, giving "`a` is not found".
+// A literal (`= 1`) before the block compiles fine. Workaround: wrap the expression in parentheses, `= (a)`.
+#[test]
+fn block_after_var_ident() {
+    let a: u256 = 1
+    var s: u256 = a
+    {
+        s = s + 1
+    }
+    assert(s == 2)
+}

@@ -133,3 +133,9 @@ Fe optimizer findings (worth an upstream issue): loops over mutable memory array
 and `for i in 0..N` with a constant `N` is not unrolled; checked arithmetic on loop counters and indices is a large
 share of loop cost (`#[arithmetic(unchecked)]` is the main lever); a block statement `{` directly after a `var`
 statement fails to parse with "`let` conditions are only allowed in `if` and `while`".
+
+### Compiler issue found
+
+`scripts/probe/issue_block_after_ident.fe`: when a line ends with an identifier and the next line starts a block
+statement `{ ... }`, the parser reads `ident { ... }` as a struct literal and reports "`a` is not found". A literal
+before the block (`var s: u256 = 1`) compiles. Workaround: `var s: u256 = (a)`. To be reported upstream.
