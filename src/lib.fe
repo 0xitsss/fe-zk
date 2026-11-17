@@ -23,3 +23,18 @@ pub use ec::{
     kzg_point_evaluation,
     pairing_check,
 }
+pub use hash::{
+    Bn254Poseidon2,
+    Compression,
+    KoalaBearPoseidon2,
+    Transcript,
+    bn254_t3_permute,
+    koalabear_t16_permute,
+    merkle_root,
+    permute_generic,
+    poseidon_1,
+    poseidon_2,
+    poseidon_3,
+    poseidon_4,
+    poseidon_5,
+}

@@ -1,0 +1,218 @@
+//! Poseidon2 written once over `F: Field`, and a generic binary Merkle path check.
+//!
+//! `permute_generic` is the whole permutation (external MDS-light layers, partial rounds with
+//! the `1 + diag(d)` internal matrix, x^3 or x^5 S-box). It is instantiated for
+//!
+//! - BN254 `Bn254Fr`, t = 3, x^5, 8 + 56 rounds (HorizenLabs/poseidon2 `poseidon2_instance_bn256`),
+//! - `KoalaBear`, t = 16, x^3, 8 + 20 rounds (Plonky3 `default_koalabear_poseidon2_16`).
+//!
+//! Round constants are `u256` tables (canonical field values); `F::reduce` lifts them, so the
+//! same code serves a 254-bit and a 31-bit field. `T`, the round counts and the S-box degree
+//! are compile-time parameters.
+use ingot::field::{Bn254Fr, Field, KoalaBear}
+use super::poseidon2_constants::{
+    P2_BN254_T3_DIAG,
+    P2_BN254_T3_EXT,
+    P2_BN254_T3_INT,
+    P2_KOALABEAR_T16_DIAG,
+    P2_KOALABEAR_T16_EXT,
+    P2_KOALABEAR_T16_INT,
+}
+
+fn sbox<F: Field + Copy>(_ x: F, _ degree: u256) -> F {
+    if degree == 3 {
+        x.square().mul(x)
+    } else {
+        // degree 5
+        x.square().square().mul(x)
+    }
+}
+
+/// Plonky3's 4x4 block matrix [[2,3,1,1],[1,2,3,1],[1,1,2,3],[3,1,1,2]].
+fn mat4<F: Field + Copy>(_ a: F, _ b: F, _ c: F, _ d: F) -> [F; 4] {
+    let t01 = a.add(b)
+    let t23 = c.add(d)
+    let t0123 = t01.add(t23)
+    let t01123 = t0123.add(b)
+    let t01233 = t0123.add(d)
+    let o3 = t01233.add(a.add(a))
+    let o1 = t01123.add(c.add(c))
+    let o0 = t01123.add(t01)
+    let o2 = t01233.add(t23)
+    [o0, o1, o2, o3]
+}
+
+/// External linear layer. `T` in {2, 3}: `circ(2, 1, .., 1)`. `T % 4 == 0`: the 4x4 matrix on
+/// each block, then every lane gets the sum of the same lane over all blocks.
+fn external_layer<F: Field + Copy, const T: usize>(_ s: [F; T]) -> [F; T] {
+    var out: [F; T] = s
+    if T < 4 {
+        var sum = F::zero()
+        var i: usize = 0
+        while i < T {
+            sum = sum.add(s[i])
+            i += 1
+        }
+        i = 0
+        while i < T {
+            out[i] = s[i].add(sum)
+            i += 1
+        }
+        return out
+    }
+    var b: usize = 0
+    while b < T / 4 {
+        let m = mat4(s[4 * b], s[4 * b + 1], s[4 * b + 2], s[4 * b + 3])
+        out[4 * b] = m[0]
+        out[4 * b + 1] = m[1]
+        out[4 * b + 2] = m[2]
+        out[4 * b + 3] = m[3]
+        b += 1
+    }
+    var l: usize = 0
+    while l < 4 {
+        var stored = F::zero()
+        var j: usize = 0
+        while j < T / 4 {
+            stored = stored.add(out[4 * j + l])
+            j += 1
+        }
+        var i: usize = l
+        while i < T {
+            out[i] = out[i].add(stored)
+            i += 4
+        }
+        l += 1
+    }
+    out
+}
+
+fn full_round<F: Field + Copy, const T: usize, const NE: usize>(
+    _ s: [F; T],
+    _ ext: [u256; NE],
+    _ round: usize,
+    _ degree: u256,
+) -> [F; T] {
+    var x: [F; T] = s
+    var i: usize = 0
+    while i < T {
+        x[i] = sbox(s[i].add(F::reduce(ext[round * T + i])), degree)
+        i += 1
+    }
+    external_layer(x)
+}
+
+/// The Poseidon2 permutation. `ext` holds `2 * rounds_f_half * T` constants (initial full
+/// rounds, then final full rounds), `int` the partial-round constants (lane 0), `diag` the
+/// internal matrix diagonal (`M_I = 1 + diag(d)`), `degree` the S-box exponent (3 or 5).
+pub fn permute_generic<F: Field + Copy, const T: usize, const NE: usize, const NI: usize>(
+    _ input: [F; T],
+    _ ext: [u256; NE],
+    _ int: [u256; NI],
+    _ diag: [u256; T],
+    _ degree: u256,
+) -> [F; T] {
+    let half = NE / (2 * T)
+    var s = external_layer(input)
+    var r: usize = 0
+    while r < half {
+        s = full_round(s, ext, r, degree)
+        r += 1
+    }
+    r = 0
+    while r < NI {
+        s[0] = sbox(s[0].add(F::reduce(int[r])), degree)
+        var sum = F::zero()
+        var i: usize = 0
+        while i < T {
+            sum = sum.add(s[i])
+            i += 1
+        }
+        i = 0
+        while i < T {
+            s[i] = sum.add(F::reduce(diag[i]).mul(s[i]))
+            i += 1
+        }
+        r += 1
+    }
+    r = half
+    while r < 2 * half {
+        s = full_round(s, ext, r, degree)
+        r += 1
+    }
+    s
+}
+
+/// A 2-to-1 compression function on digests of type `D`.
+pub trait Compression<D> {
+    fn compress(_ left: D, _ right: D) -> D
+}
+
+/// BN254 Merkle compression: `perm([left, right, 0])[0]` (HorizenLabs `MerkleTreeHash`).
+pub struct Bn254Poseidon2 {}
+
+/// KoalaBear Merkle compression, Plonky3 `TruncatedPermutation<_, 2, 8, 16>`:
+/// `perm(left ++ right)[0..8]`, digests are 8 field elements.
+pub struct KoalaBearPoseidon2 {}
+
+impl Compression<Bn254Fr> for Bn254Poseidon2 {
+    fn compress(_ left: Bn254Fr, _ right: Bn254Fr) -> Bn254Fr {
+        bn254_t3_permute([left, right, Bn254Fr::zero()])[0]
+    }
+}
+
+impl Compression<[KoalaBear; 8]> for KoalaBearPoseidon2 {
+    fn compress(_ left: [KoalaBear; 8], _ right: [KoalaBear; 8]) -> [KoalaBear; 8] {
+        var st: [KoalaBear; 16] = [KoalaBear::zero(); 16]
+        var i: usize = 0
+        while i < 8 {
+            st[i] = left[i]
+            st[8 + i] = right[i]
+            i += 1
+        }
+        let o = koalabear_t16_permute(st)
+        [o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7]]
+    }
+}
+
+/// Root implied by a leaf digest and its authentication path (siblings, bottom-up).
+/// Bit `i` of `index` is 1 when the node at level `i` is the right child. The caller compares
+/// the result with the trusted root. The path length `N` is fixed by the tree depth, and
+/// `index >> N` must be 0 (checked: returns `None` otherwise), so a caller cannot pass an
+/// index addressing a deeper tree than the path covers.
+pub fn merkle_root<H: Compression<D>, D: Copy, const N: usize>(
+    _ leaf: D,
+    _ index: u256,
+    _ path: [D; N],
+) -> Option<D> {
+    if index >> (N as u256) != 0 {
+        return Option::None
+    }
+    var node = leaf
+    var i: usize = 0
+    while i < N {
+        if (index >> (i as u256)) & 1 == 1 {
+            node = H::compress(path[i], node)
+        } else {
+            node = H::compress(node, path[i])
+        }
+        i += 1
+    }
+    Option::Some(node)
+}
+
+/// Poseidon2 permutation over BN254 `Fr`, t = 3 (HorizenLabs reference parameters).
+pub fn bn254_t3_permute(_ s: [Bn254Fr; 3]) -> [Bn254Fr; 3] {
+    permute_generic(s, P2_BN254_T3_EXT, P2_BN254_T3_INT, P2_BN254_T3_DIAG, 5)
+}
+
+/// Poseidon2 permutation over KoalaBear, t = 16 (Plonky3 default parameters).
+pub fn koalabear_t16_permute(_ s: [KoalaBear; 16]) -> [KoalaBear; 16] {
+    permute_generic(
+        s,
+        P2_KOALABEAR_T16_EXT,
+        P2_KOALABEAR_T16_INT,
+        P2_KOALABEAR_T16_DIAG,
+        3,
+    )
+}
