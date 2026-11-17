@@ -148,3 +148,12 @@ resulting constant costs 2 gas at runtime. `assert`, `Option::is_some` and `Opti
 const context, so validity functions return `bool` and constant constructors map invalid input to the point at
 infinity (never to an unchecked point). Generated verifiers use this to validate their verifying key in the Fe
 compiler, on top of the generator's own arkworks validation.
+
+## halo2-KZG (`src/verifier/halo2/`)
+
+A circuit-independent core (`common.fe`: EvmTranscript, point/scalar reading with validation, batched inversion via
+modexp, final pairing) plus a straight-line per-circuit module emitted by `vectors/halo2/emit_fe.py` from `vk.json`
+(gates, lookups, permutation sets, SHPLONK rotation sets and GWC point groups unrolled). Gas: SHPLONK 385.7k,
+GWC 419.8k execution gas; the snark-verifier Solidity verifier costs 364.7k / 398.6k including the 21k intrinsic
+and calldata, so Fe is about 20% more expensive (wrapper overhead per precompile call). Limits: one circuit shape
+(single phase, one instance column, uncommitted instances); duplicate commitments are rejected by the generator.
