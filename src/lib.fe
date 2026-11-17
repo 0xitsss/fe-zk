@@ -1,3 +1,25 @@
 //! fe-zk: zero-knowledge proof verification for Fe contracts.
 
 pub use field::{BabyBear, Bn254Fq, Bn254Fr, Field, Fp, Goldilocks, KoalaBear}
+pub use ec::{
+    BLS12_381_R,
+    Bls12381Fr,
+    Bytes48,
+    G1,
+    G1Bls,
+    G2,
+    G2Bls,
+    bls_g1_add,
+    bls_g1_msm,
+    bls_g1_mul,
+    bls_g2_add,
+    bls_g2_msm,
+    bls_g2_mul,
+    bls_map_fp2_to_g2,
+    bls_map_fp_to_g1,
+    bls_pairing_check,
+    g1_add,
+    g1_mul,
+    kzg_point_evaluation,
+    pairing_check,
+}
