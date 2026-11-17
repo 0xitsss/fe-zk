@@ -1,0 +1,7 @@
+[ingot]
+name = "membership"
+version = "0.1.0"
+
+[dependencies]
+fe_zk = { path = "../..", allow_unsafe = true }
+membership_verifier = { path = "verifier" }

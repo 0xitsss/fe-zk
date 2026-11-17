@@ -1,6 +1,6 @@
 //! Emitter tests: determinism, snapshot stability, key digest in output, refusal of invalid keys,
 //! and (ignored by default, needs `fe` on PATH) emitting into a temp dir and running `fe test`.
-//! Run the slow one with `cargo test -- --ignored`.
+//! Run the slow ones with `cargo test -- --ignored`.
 
 use fe_zk_gen::{
     emit_fe, emit_ingot, key_digest, parse_arkworks, parse_arkworks_proof, parse_public,
@@ -184,6 +184,58 @@ fn emitted_ingots_pass_fe_test() {
             + &String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{n}: fe test failed\n{text}");
         assert!(text.contains("0 failed"), "{n}: {text}");
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Corrupts one constant of an emitted verifier by hand: `fe test` must fail at COMPILE time with
+/// a static assertion (compile-time key validation, independent of the Rust-side validation).
+#[test]
+#[ignore = "needs the fe binary (set FE=/path/to/fe)"]
+fn corrupted_key_constant_fails_to_compile() {
+    let fe = std::env::var("FE").unwrap_or_else(|_| "fe".into());
+    let base = root().join(".emit-fe-corrupt-tmp");
+    let (vk, fx) = load("multiplier");
+    let mut o = opts("multiplier", Some(fx));
+    o.fe_zk_path = "../..".into();
+    let e = emit_ingot(&vk, &o).unwrap();
+    let alpha_y = format!("pub const ALPHA_Y: u256 = {}", vk.alpha_g1.y);
+    let bad_y = format!("pub const ALPHA_Y: u256 = {}", &vk.alpha_g1.y + 1u8);
+    // beta replaced by a point on the twist that is NOT in the order-r subgroup
+    let beta_x0 = format!("pub const BETA_X0: u256 = {}", vk.beta_g2.x[0]);
+    let beta_x1 = format!("pub const BETA_X1: u256 = {}", vk.beta_g2.x[1]);
+    let beta_y0 = format!("pub const BETA_Y0: u256 = {}", vk.beta_g2.y[0]);
+    let beta_y1 = format!("pub const BETA_Y1: u256 = {}", vk.beta_g2.y[1]);
+    let bad_y0 = "7292567877523311580221095596750716176434782432868683424513645834767876293070";
+    let bad_y1 = "19659275751359636165940301690575149581329631496732780143538578556285923319774";
+    let cases: Vec<(&str, String)> = vec![
+        ("off_curve_alpha", e.lib_fe.replace(&alpha_y, &bad_y)),
+        (
+            "non_subgroup_beta",
+            e.lib_fe
+                .replace(&beta_x0, "pub const BETA_X0: u256 = 2")
+                .replace(&beta_x1, "pub const BETA_X1: u256 = 1")
+                .replace(&beta_y0, &format!("pub const BETA_Y0: u256 = {bad_y0}"))
+                .replace(&beta_y1, &format!("pub const BETA_Y1: u256 = {bad_y1}")),
+        ),
+    ];
+    for (name, lib) in cases {
+        assert_ne!(lib, e.lib_fe, "{name}: replacement did not apply");
+        let dir = base.join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        // two directory levels below the repo root: .emit-fe-corrupt-tmp/<name>
+        std::fs::write(dir.join("fe.toml"), &e.fe_toml).unwrap();
+        std::fs::write(dir.join("src/lib.fe"), lib).unwrap();
+        let out = std::process::Command::new(&fe)
+            .arg("test")
+            .current_dir(&dir)
+            .output()
+            .expect("run fe");
+        let text = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{name}: corrupted key compiled\n{text}");
+        assert!(text.contains("static assertion failed"), "{name}: {text}");
     }
     let _ = std::fs::remove_dir_all(&base);
 }

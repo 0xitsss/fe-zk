@@ -69,18 +69,17 @@ w("")
 
 
 def g1(p):
-    return f"G1::from_validated_coords({p[0]}, {p[1]})"
+    return f"G1::from_coords_or_infinity({p[0]}, {p[1]})"
 
 
 def g2(p):
-    return f"G2::from_validated_coords({p[0]}, {p[1]}, {p[2]}, {p[3]})"
+    return f"G2::from_coords_or_infinity({p[0]}, {p[1]}, {p[2]}, {p[3]})"
 
 
 for n, _ in FIX:
     d = data[n]
     N = len(d["pub"])
     w(f"fn vk_{n}() -> Groth16Vk<{N}> {{")
-    w("    unsafe {")
     w("        Groth16Vk {")
     w(f"            alpha: {g1(d['alpha'])},")
     w(f"            beta: {g2(d['beta'])},")
@@ -89,7 +88,6 @@ for n, _ in FIX:
     w(f"            ic0: {g1(d['ic'][0])},")
     w("            ic: [" + ", ".join(g1(p) for p in d["ic"][1:]) + "],")
     w("        }")
-    w("    }")
     w("}")
     w("")
 

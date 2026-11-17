@@ -9,13 +9,13 @@
 //! ABI-compatible with snarkjs' Verifier.sol: `b` is in EVM order, i.e. each Fq2 element
 //! is `[imaginary, real]` = `[c1, c0]`, exactly what `snarkjs zkey export soliditycalldata`
 //! prints. Groth16 proofs are malleable: never use a proof or its hash as a nullifier.
-use fe_zk::ec::{G1, G2}
+use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
 use fe_zk::verifier::{Groth16Vk, groth16_verify_raw}
 
 pub const N_PUBLIC: u256 = 3
 pub const VK_DIGEST: u256 = 0xc632f3eaa6f38f2318942edcca44d8153b08eacf8d5d9a8716049060c4274097
 
-// Verifying key, validated by fe-zk-gen (canonical, on curve, in subgroup, non-degenerate).
+// Verifying key, validated by fe-zk-gen (canonical, on curve, in subgroup, non-degenerate) and re-validated at compile time.
 // G2 coordinates are (real, imaginary) parts: x0 + x1*u, y0 + y1*u.
 pub const ALPHA_X: u256 = 16428432848801857252194528405604668803277877773566238944394625302971855135431
 pub const ALPHA_Y: u256 = 16846502678714586896801519656441059708016666274385668027902869494772365009666
@@ -40,26 +40,46 @@ pub const IC2_Y: u256 = 17611138247463010908490424864274509733764322089016666138
 pub const IC3_X: u256 = 4884157240686987352431749260092860836979010129066626231700968276687211979745
 pub const IC3_Y: u256 = 18040072641339137967780443784447429762047966402411568648149162580740210923556
 
-/// The verifying key as typed points. `from_validated_coords` is `unsafe` because it skips
-/// the checks: they were done once at generation time (and are re-done in the generated test).
+// Compile-time validation (Fe CTFE): a key with an invalid point does not compile. This is a
+// second check, independent of the Rust-side validation fe-zk-gen did before emitting.
+// Canonical coordinates, on curve, G2 in the order-r subgroup; alpha/beta/gamma/delta must
+// not be the point at infinity. Costs no gas: the constants below are evaluated by the compiler.
+static_assert(g1_is_valid(ALPHA_X, ALPHA_Y))
+static_assert(!VK_ALPHA.is_infinity())
+static_assert(g2_is_valid(BETA_X0, BETA_X1, BETA_Y0, BETA_Y1))
+static_assert(!VK_BETA.is_infinity())
+static_assert(g2_is_valid(GAMMA_X0, GAMMA_X1, GAMMA_Y0, GAMMA_Y1))
+static_assert(!VK_GAMMA.is_infinity())
+static_assert(g2_is_valid(DELTA_X0, DELTA_X1, DELTA_Y0, DELTA_Y1))
+static_assert(!VK_DELTA.is_infinity())
+static_assert(g1_is_valid(IC0_X, IC0_Y))
+static_assert(g1_is_valid(IC1_X, IC1_Y))
+static_assert(g1_is_valid(IC2_X, IC2_Y))
+static_assert(g1_is_valid(IC3_X, IC3_Y))
+
+// Typed key points. `from_coords_or_infinity` yields infinity for an invalid point, so no
+// unchecked point can exist even if the assertions above were removed.
+const VK_ALPHA: G1 = G1::from_coords_or_infinity(ALPHA_X, ALPHA_Y)
+const VK_BETA: G2 = G2::from_coords_or_infinity(BETA_X0, BETA_X1, BETA_Y0, BETA_Y1)
+const VK_GAMMA: G2 = G2::from_coords_or_infinity(GAMMA_X0, GAMMA_X1, GAMMA_Y0, GAMMA_Y1)
+const VK_DELTA: G2 = G2::from_coords_or_infinity(DELTA_X0, DELTA_X1, DELTA_Y0, DELTA_Y1)
+const VK_IC0: G1 = G1::from_coords_or_infinity(IC0_X, IC0_Y)
+const VK_IC1: G1 = G1::from_coords_or_infinity(IC1_X, IC1_Y)
+const VK_IC2: G1 = G1::from_coords_or_infinity(IC2_X, IC2_Y)
+const VK_IC3: G1 = G1::from_coords_or_infinity(IC3_X, IC3_Y)
+
 fn vk() -> Groth16Vk<3> {
-    unsafe {
-        Groth16Vk {
-            alpha: G1::from_validated_coords(ALPHA_X, ALPHA_Y),
-            beta: G2::from_validated_coords(BETA_X0, BETA_X1, BETA_Y0, BETA_Y1),
-            gamma: G2::from_validated_coords(GAMMA_X0, GAMMA_X1, GAMMA_Y0, GAMMA_Y1),
-            delta: G2::from_validated_coords(DELTA_X0, DELTA_X1, DELTA_Y0, DELTA_Y1),
-            ic0: G1::from_validated_coords(IC0_X, IC0_Y),
-            ic: [
-                G1::from_validated_coords(IC1_X, IC1_Y),
-                G1::from_validated_coords(IC2_X, IC2_Y),
-                G1::from_validated_coords(IC3_X, IC3_Y),
-            ],
-        }
+    Groth16Vk {
+        alpha: VK_ALPHA,
+        beta: VK_BETA,
+        gamma: VK_GAMMA,
+        delta: VK_DELTA,
+        ic0: VK_IC0,
+        ic: [VK_IC1, VK_IC2, VK_IC3],
     }
 }
 
-msg MembershipVerifierMsg {
+pub msg MembershipVerifierMsg {
     #[selector = sol(
         "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[3])",
     )]

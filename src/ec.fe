@@ -6,6 +6,8 @@ pub use bn254::{
     G2,
     G2Proof,
     g1_add,
+    g1_is_valid,
+    g2_is_valid,
     g1_mul,
     pairing_check,
     pairing_check_proof,

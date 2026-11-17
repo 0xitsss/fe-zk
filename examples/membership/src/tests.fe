@@ -1,0 +1,238 @@
+//! Demo tests. Reference values come from circomlibjs (vectors/js/membership-input.mjs) and snarkjs
+//! (vectors/groth16/membership): 1024 leaves, leaf i = Poseidon(i + 1000) except leaf 5 =
+//! Poseidon(secret); root / nullifierHash / proof as printed by those tools.
+use super::{GroupMsg, MembershipGroup}
+use fe_zk::{Bn254Fr, Field, poseidon_1}
+use membership_verifier::MembershipVerifier
+use std::evm::{Address, Evm}
+
+const SECRET: u256 = 1234567890123456789
+// circomlibjs: 10 x poseidon([z, z]) starting from z = 0
+const EMPTY_ROOT: u256 = 12413880268183407374852357075976609371175688755676981206018884971008854919922
+// public.json of vectors/groth16/membership: [nullifierHash, root, externalNullifier]
+const NULLIFIER_HASH: u256 = 7660491506204830424814091262400682580837717357496492544955978635994034360477
+const ROOT: u256 = 7665984613125835945366725920449367301376388972167285630482190992601747249991
+const EXTERNAL_NULLIFIER: u256 = 42
+// circomlibjs: root of the tree with leaves 0..5 (leaf i = Poseidon(i + 1000), leaf 5 = Poseidon(SECRET)),
+// all other leaves empty
+const ROOT_6_LEAVES: u256 = 4440684402847584667842340600796154479328186566956077141122156056736800101044
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+fn proof_a() -> [u256; 2] {
+    [
+        4810324548919303361454080852949399341251465853266531024202729714256110489100,
+        4383764383867240769946101020631750830960248787804111379654989428515210551642,
+    ]
+}
+
+// calldata (EVM) order: [[x_imag, x_real], [y_imag, y_real]]
+fn proof_b() -> [[u256; 2]; 2] {
+    [
+        [
+            17955696674244493069972090660647218670591196779990137609414587241595350267421,
+            1346057116814476322966968175818005845439873037298363623843134106877307230160,
+        ],
+        [
+            17420785254547499407538936354725539446900210726630024041019211685495213571718,
+            13356802564776808361050405961947942888380846875062389841372666599018877954098,
+        ],
+    ]
+}
+
+fn proof_c() -> [u256; 2] {
+    [
+        6277219283657834626001126706744000795208989989970507915477603621299499912940,
+        11875430409138379404621278268851773883837601194074295378801367390407554264959,
+    ]
+}
+
+fn deploy_with(_ bootstrap_root: u256) -> Address uses (evm: mut Evm) {
+    let verifier = evm.create2<MembershipVerifier>(value: Wei::zero(), args: (), salt: 0)
+    evm.create2<MembershipGroup>(
+        value: Wei::zero(),
+        args: (verifier, bootstrap_root),
+        salt: 1,
+    )
+}
+
+fn deploy() -> Address uses (evm: mut Evm) {
+    deploy_with(0)
+}
+
+fn insert(_ g: Address, _ leaf: u256) -> bool uses (evm: mut Evm) {
+    evm.try_call(
+        addr: g,
+        gas: 100000000,
+        value: Wei::zero(),
+        message: GroupMsg::Insert { leaf: leaf },
+    )
+        .success()
+}
+
+fn fill(_ g: Address, _ n: u256) uses (evm: mut Evm) {
+    var i: u256 = 0
+    while i < n {
+        let leaf = if i == 5 {
+            poseidon_1(Bn254Fr::from_canonical(SECRET).unwrap()).to_canonical()
+        } else {
+            poseidon_1(Bn254Fr::from_canonical(i + 1000).unwrap()).to_canonical()
+        }
+        assert(insert(g, leaf))
+        i += 1
+    }
+}
+
+fn root_of(_ g: Address) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: g,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: GroupMsg::Root {},
+    )
+}
+
+fn prove(_ g: Address, _ root: u256, _ nh: u256, _ en: u256, _ a: [u256; 2]) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: g,
+        gas: 100000000,
+        value: Wei::zero(),
+        message: GroupMsg::Prove {
+            root: root,
+            nullifier_hash: nh,
+            external_nullifier: en,
+            a: a,
+            b: proof_b(),
+            c: proof_c(),
+        },
+    )
+        .success()
+}
+
+#[test]
+fn empty_tree_root_matches_circomlibjs() uses (evm: mut Evm) {
+    let g = deploy()
+    assert(root_of(g) == EMPTY_ROOT)
+    let known: bool = evm
+        .call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: GroupMsg::IsKnownRoot { root: EMPTY_ROOT },
+        )
+    assert(known)
+}
+
+#[test]
+fn rejects_non_canonical_leaf() uses (evm: mut Evm) {
+    let g = deploy()
+    // r itself aliases leaf 0 and must be refused
+    assert(
+        !insert(
+            g,
+            21888242871839275222246405745257275088548364400416034343698204186575808495617,
+        ),
+    )
+    assert(root_of(g) == EMPTY_ROOT)
+}
+
+#[test]
+fn six_leaf_root_matches_circomlibjs() uses (evm: mut Evm) {
+    let g = deploy()
+    fill(g, 6)
+    assert(root_of(g) == ROOT_6_LEAVES)
+    // every intermediate root stays known
+    let known: bool = evm
+        .call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: GroupMsg::IsKnownRoot { root: ROOT_6_LEAVES },
+        )
+    assert(known)
+}
+
+/// The proof of the fixture is against the full 1024-leaf tree. Inserting 1024 leaves costs
+/// about 1.1 Mgas each (10 Poseidon hashes), over a test's gas budget, so the group is
+/// bootstrapped with that root (see `init`); the proof flow itself is unchanged.
+#[test]
+fn proof_flow_unknown_root_tampering_and_replay() uses (evm: mut Evm) {
+    let g = deploy_with(ROOT)
+    // unknown root rejected
+    assert(
+        !prove(
+            g,
+            ROOT + 1,
+            NULLIFIER_HASH,
+            EXTERNAL_NULLIFIER,
+            proof_a(),
+        ),
+    )
+    // tampered proof element / public signals rejected
+    assert(
+        !prove(g, ROOT, NULLIFIER_HASH, EXTERNAL_NULLIFIER, [1, 2]),
+    )
+    assert(
+        !prove(
+            g,
+            ROOT,
+            NULLIFIER_HASH + 1,
+            EXTERNAL_NULLIFIER,
+            proof_a(),
+        ),
+    )
+    assert(
+        !prove(
+            g,
+            ROOT,
+            NULLIFIER_HASH,
+            EXTERNAL_NULLIFIER + 1,
+            proof_a(),
+        ),
+    )
+    // a failed attempt must not burn the nullifier
+    let used0: bool = evm
+        .call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: GroupMsg::NullifierUsed { nullifier_hash: NULLIFIER_HASH },
+        )
+    assert(!used0)
+    // valid proof accepted once
+    let g0 = evm.gas()
+    assert(
+        prove(g, ROOT, NULLIFIER_HASH, EXTERNAL_NULLIFIER, proof_a()),
+    )
+    evm.emit(GasUsed { what: 1, gas: g0 - evm.gas() })
+    let used1: bool = evm
+        .call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: GroupMsg::NullifierUsed { nullifier_hash: NULLIFIER_HASH },
+        )
+    assert(used1)
+    // replay with the same nullifier rejected
+    assert(
+        !prove(g, ROOT, NULLIFIER_HASH, EXTERNAL_NULLIFIER, proof_a()),
+    )
+}
+
+/// A proof is bound to the root it was made for: an unrelated known root is rejected.
+#[test]
+fn proof_against_other_known_root_rejected() uses (evm: mut Evm) {
+    let g = deploy_with(ROOT)
+    assert(
+        !prove(
+            g,
+            EMPTY_ROOT,
+            NULLIFIER_HASH,
+            EXTERNAL_NULLIFIER,
+            proof_a(),
+        ),
+    )
+}

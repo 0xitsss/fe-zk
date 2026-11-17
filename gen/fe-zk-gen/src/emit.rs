@@ -98,13 +98,13 @@ pub fn emit_ingot(vk: &Groth16Vk, opts: &EmitOptions) -> Result<EmittedIngot, Vk
     writeln!(w, "//! ABI-compatible with snarkjs' Verifier.sol: `b` is in EVM order, i.e. each Fq2 element").unwrap();
     writeln!(w, "//! is `[imaginary, real]` = `[c1, c0]`, exactly what `snarkjs zkey export soliditycalldata`").unwrap();
     writeln!(w, "//! prints. Groth16 proofs are malleable: never use a proof or its hash as a nullifier.").unwrap();
-    writeln!(w, "use fe_zk::ec::{{G1, G2}}").unwrap();
+    writeln!(w, "use fe_zk::ec::{{G1, G2, g1_is_valid, g2_is_valid}}").unwrap();
     writeln!(w, "use fe_zk::verifier::{{Groth16Vk, groth16_verify_raw}}").unwrap();
     writeln!(w).unwrap();
     writeln!(w, "pub const N_PUBLIC: u256 = {n}").unwrap();
     writeln!(w, "pub const VK_DIGEST: u256 = 0x{}", hex::encode(digest)).unwrap();
     writeln!(w).unwrap();
-    writeln!(w, "// Verifying key, validated by fe-zk-gen (canonical, on curve, in subgroup, non-degenerate).").unwrap();
+    writeln!(w, "// Verifying key, validated by fe-zk-gen (canonical, on curve, in subgroup, non-degenerate) and re-validated at compile time.").unwrap();
     writeln!(w, "// G2 coordinates are (real, imaginary) parts: x0 + x1*u, y0 + y1*u.").unwrap();
     for (nm, p) in [("ALPHA", &vk.alpha_g1)] {
         writeln!(w, "pub const {nm}_X: u256 = {}", p.x).unwrap();
@@ -121,31 +121,48 @@ pub fn emit_ingot(vk: &Groth16Vk, opts: &EmitOptions) -> Result<EmittedIngot, Vk
         writeln!(w, "pub const IC{i}_Y: u256 = {}", p.y).unwrap();
     }
     writeln!(w).unwrap();
-    writeln!(w, "/// The verifying key as typed points. `from_validated_coords` is `unsafe` because it skips").unwrap();
-    writeln!(w, "/// the checks: they were done once at generation time (and are re-done in the generated test).").unwrap();
-    writeln!(w, "fn vk() -> Groth16Vk<{n}> {{").unwrap();
-    writeln!(w, "    unsafe {{").unwrap();
-    writeln!(w, "        Groth16Vk {{").unwrap();
-    writeln!(w, "            alpha: G1::from_validated_coords(ALPHA_X, ALPHA_Y),").unwrap();
-    for nm in ["beta", "gamma", "delta"] {
-        let u = nm.to_uppercase();
+    writeln!(w, "// Compile-time validation (Fe CTFE): a key with an invalid point does not compile. This is a").unwrap();
+    writeln!(w, "// second check, independent of the Rust-side validation fe-zk-gen did before emitting.").unwrap();
+    writeln!(w, "// Canonical coordinates, on curve, G2 in the order-r subgroup; alpha/beta/gamma/delta must").unwrap();
+    writeln!(w, "// not be the point at infinity. Costs no gas: the constants below are evaluated by the compiler.").unwrap();
+    writeln!(w, "static_assert(g1_is_valid(ALPHA_X, ALPHA_Y))").unwrap();
+    writeln!(w, "static_assert(!VK_ALPHA.is_infinity())").unwrap();
+    for u in ["BETA", "GAMMA", "DELTA"] {
+        writeln!(w, "static_assert(g2_is_valid({u}_X0, {u}_X1, {u}_Y0, {u}_Y1))").unwrap();
+        writeln!(w, "static_assert(!VK_{u}.is_infinity())").unwrap();
+    }
+    for i in 0..=n {
+        writeln!(w, "static_assert(g1_is_valid(IC{i}_X, IC{i}_Y))").unwrap();
+    }
+    writeln!(w).unwrap();
+    writeln!(w, "// Typed key points. `from_coords_or_infinity` yields infinity for an invalid point, so no").unwrap();
+    writeln!(w, "// unchecked point can exist even if the assertions above were removed.").unwrap();
+    writeln!(w, "const VK_ALPHA: G1 = G1::from_coords_or_infinity(ALPHA_X, ALPHA_Y)").unwrap();
+    for u in ["BETA", "GAMMA", "DELTA"] {
         writeln!(
             w,
-            "            {nm}: G2::from_validated_coords({u}_X0, {u}_X1, {u}_Y0, {u}_Y1),"
+            "const VK_{u}: G2 = G2::from_coords_or_infinity({u}_X0, {u}_X1, {u}_Y0, {u}_Y1)"
         )
         .unwrap();
     }
-    writeln!(w, "            ic0: G1::from_validated_coords(IC0_X, IC0_Y),").unwrap();
-    let ics: Vec<String> = (1..=n)
-        .map(|i| format!("G1::from_validated_coords(IC{i}_X, IC{i}_Y)"))
-        .collect();
-    writeln!(w, "            ic: [{}],", ics.join(", ")).unwrap();
-    writeln!(w, "        }}").unwrap();
+    for i in 0..=n {
+        writeln!(w, "const VK_IC{i}: G1 = G1::from_coords_or_infinity(IC{i}_X, IC{i}_Y)").unwrap();
+    }
+    writeln!(w).unwrap();
+    writeln!(w, "fn vk() -> Groth16Vk<{n}> {{").unwrap();
+    writeln!(w, "    Groth16Vk {{").unwrap();
+    writeln!(w, "        alpha: VK_ALPHA,").unwrap();
+    writeln!(w, "        beta: VK_BETA,").unwrap();
+    writeln!(w, "        gamma: VK_GAMMA,").unwrap();
+    writeln!(w, "        delta: VK_DELTA,").unwrap();
+    writeln!(w, "        ic0: VK_IC0,").unwrap();
+    let ics: Vec<String> = (1..=n).map(|i| format!("VK_IC{i}")).collect();
+    writeln!(w, "        ic: [{}],", ics.join(", ")).unwrap();
     writeln!(w, "    }}").unwrap();
     writeln!(w, "}}").unwrap();
     writeln!(w).unwrap();
     let sig = format!("verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[{n}])");
-    writeln!(w, "msg {msg} {{").unwrap();
+    writeln!(w, "pub msg {msg} {{").unwrap();
     writeln!(w, "    #[selector = sol(\"{sig}\")]").unwrap();
     writeln!(
         w,
