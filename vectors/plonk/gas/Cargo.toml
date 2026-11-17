@@ -1,0 +1,15 @@
+[package]
+name = "plonk-gas"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Runs a snarkjs-generated Solidity verifier (creation bytecode + calldata) in revm and prints its execution gas"
+
+[[bin]]
+name = "plonk-gas"
+path = "src/main.rs"
+
+[dependencies]
+revm = { version = "=33.1.0", default-features = false, features = ["std"] }
+
+[workspace]
