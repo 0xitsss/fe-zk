@@ -9,3 +9,10 @@ pub use kzg::{
     shplonk_challenge_u,
     shplonk_challenge_y,
 }
+
+pub use groth16::{
+    Groth16Proof,
+    Groth16Vk,
+    verify as groth16_verify,
+    verify_raw as groth16_verify_raw,
+}
