@@ -1,0 +1,503 @@
+//! FRI / STARK verifier for a Plonky3 `p3-uni-stark` proof (v0.4.2) of a Fibonacci AIR.
+//!
+//! Configuration (fixed, see `vectors/plonky3/fib/config.json`):
+//! - base field KoalaBear, challenge field `BinomialExtensionField<KoalaBear, 4>`;
+//! - FRI arity 2, `log_blowup = 2`, `log_final_poly_len = 1`, 4 queries, no commit-phase
+//!   proof of work, 3 bits of query proof of work;
+//! - Keccak-256 Merkle commitments over little-endian `u32` rows, and the Keccak
+//!   `SerializingChallenger32` transcript (`fri/challenger.fe`, `fri/merkle.fe`);
+//! - trace of `2^4` rows, 2 columns, 3 public values `(a, b, x)`, one quotient chunk.
+//!
+//! These sizes are baked in as constants (the fixture is one proof shape). The protocol
+//! logic follows `p3_uni_stark::verify`, `TwoAdicFriPcs::verify` and `p3_fri::verify_fri`
+//! step by step; comments name the Plonky3 counterpart. Memory and gas are high: it runs
+//! ~10 Keccak hashes per query and several extension-field inversions.
+//!
+//! Safety rules: 1 (every field element of the proof and the public values is checked
+//! `< p` before use, `proof_is_canonical`), 4 (public value count is the array type),
+//! 5 (the transcript observes the same data in the same order as Plonky3, and tests check
+//! that every observed input changes the challenges), 7 (no unchecked arithmetic: field
+//! operations are `addmod`/`mulmod`; shifts and indices are bounded by the loop counts).
+use ingot::field::{Field, KoalaBear}
+use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::challenger::Challenger
+use ingot::verifier::fri::merkle::{RowHasher, climb}
+
+type E = KoalaBearExt4
+
+pub const LOG_N: u256 = 4
+pub const LOG_BLOWUP: u256 = 2
+/// `log_n + log_blowup`: log of the largest committed domain.
+pub const LOG_H: u256 = 6
+pub const NUM_FOLDS: usize = 3
+pub const NUM_QUERIES: usize = 4
+pub const FOLD_PATHS_LEN: usize = 12
+pub const COMMIT_POW_BITS: u256 = 0
+pub const QUERY_POW_BITS: u256 = 3
+
+const KB_P: u256 = 0x7f000001
+/// Plonky3 `KoalaBear::GENERATOR`, the coset shift of the committed domains.
+const KB_GENERATOR: u256 = 3
+/// `KoalaBear::two_adic_generator(24)`; smaller generators are its powers.
+const KB_TWO_ADIC_24: u256 = 1791270792
+
+/// Openings of one FRI query (all field elements are raw `u256`, checked canonical).
+pub struct QueryProof {
+    pub trace_row: [u256; 2],
+    pub trace_path: [u256; 6],
+    pub quotient_row: [u256; 4],
+    pub quotient_path: [u256; 6],
+    pub fold_sibling: [[u256; 4]; 3],
+    /// Merkle paths of the 3 commit-phase openings, concatenated: 5 + 4 + 3 siblings.
+    pub fold_paths: [u256; 12],
+}
+
+pub struct StarkProof {
+    pub trace_commit: u256,
+    pub quotient_commit: u256,
+    pub trace_local: [[u256; 4]; 2],
+    pub trace_next: [[u256; 4]; 2],
+    pub quotient_chunk: [[u256; 4]; 4],
+    pub fri_commits: [u256; 3],
+    pub commit_pow_witnesses: [u256; 3],
+    pub final_poly: [[u256; 4]; 2],
+    pub query_pow_witness: u256,
+    pub queries: [QueryProof; 4],
+}
+
+impl Copy for QueryProof {}
+impl Copy for StarkProof {}
+
+/// Everything the Fiat-Shamir transcript derives.
+pub struct Challenges {
+    /// AIR constraint folding challenge.
+    pub alpha: E,
+    /// Out-of-domain evaluation point.
+    pub zeta: E,
+    /// FRI batching challenge.
+    pub fri_alpha: E,
+    /// FRI folding challenges, one per commit-phase round.
+    pub betas: [E; 3],
+    pub pow_ok: bool,
+    /// Query indices in `[0, 2^LOG_H)`.
+    pub indices: [u256; 4],
+}
+
+impl Copy for Challenges {}
+
+// ---------------------------------------------------------------------------------------
+// field helpers
+// ---------------------------------------------------------------------------------------
+
+/// Decode a canonical felt. Callers must have run `proof_is_canonical`; a non-canonical
+/// value here would be a verifier bug, so this reverts instead of reducing.
+fn kb(_ v: u256) -> KoalaBear {
+    KoalaBear::from_canonical(v).unwrap()
+}
+
+fn ext(_ c: [u256; 4]) -> E {
+    E::new(kb(c[0]), kb(c[1]), kb(c[2]), kb(c[3]))
+}
+
+fn canon4(_ c: [u256; 4]) -> bool {
+    c[0] < KB_P && c[1] < KB_P && c[2] < KB_P && c[3] < KB_P
+}
+
+/// `KoalaBear::two_adic_generator(k)` for `k <= 24`.
+fn two_adic_generator(_ k: u256) -> KoalaBear {
+    kb(KB_TWO_ADIC_24).pow(1 << (24 - k))
+}
+
+/// `reverse_bits_len`: reverse the low `bits` bits of `v`.
+fn reverse_bits(_ v: u256, _ bits: u256) -> u256 {
+    var r: u256 = 0
+    var x: u256 = v
+    var i: u256 = 0
+    while i < bits {
+        r = (r << 1) | (x & 1)
+        x = x >> 1
+        i += 1
+    }
+    r
+}
+
+// ---------------------------------------------------------------------------------------
+// rule 1: canonical encoding
+// ---------------------------------------------------------------------------------------
+
+/// Every base-field element in the proof and the public values is `< p`. Commitments and
+/// Merkle siblings are 32-byte strings and need no range check.
+pub fn proof_is_canonical(_ p: StarkProof, _ public: [u256; 3]) -> bool {
+    var ok = true
+    var i: usize = 0
+    while i < 3 {
+        ok = ok && public[i] < KB_P && p.commit_pow_witnesses[i] < KB_P
+        i += 1
+    }
+    // With zero proof-of-work bits the witness is unread by Plonky3; pin it to zero so a
+    // proof has one encoding.
+    if COMMIT_POW_BITS == 0 {
+        i = 0
+        while i < 3 {
+            ok = ok && p.commit_pow_witnesses[i] == 0
+            i += 1
+        }
+    }
+    ok = ok && p.query_pow_witness < KB_P
+    ok = ok && canon4(p.trace_local[0]) && canon4(p.trace_local[1])
+    ok = ok && canon4(p.trace_next[0]) && canon4(p.trace_next[1])
+    i = 0
+    while i < 4 {
+        ok = ok && canon4(p.quotient_chunk[i])
+        i += 1
+    }
+    ok = ok && canon4(p.final_poly[0]) && canon4(p.final_poly[1])
+    var q: usize = 0
+    while q < NUM_QUERIES {
+        let qp = p.queries[q]
+        ok = ok && qp.trace_row[0] < KB_P && qp.trace_row[1] < KB_P
+        i = 0
+        while i < 4 {
+            ok = ok && qp.quotient_row[i] < KB_P
+            i += 1
+        }
+        i = 0
+        while i < NUM_FOLDS {
+            ok = ok && canon4(qp.fold_sibling[i])
+            i += 1
+        }
+        q += 1
+    }
+    ok
+}
+
+// ---------------------------------------------------------------------------------------
+// Fiat-Shamir (rule 5)
+// ---------------------------------------------------------------------------------------
+
+/// Replay the transcript exactly as `p3_uni_stark::verify` + `TwoAdicFriPcs::verify` +
+/// `p3_fri::verify_fri` do. Everything the prover sent is observed before the challenge
+/// that depends on it.
+pub fn replay_transcript(_ p: StarkProof, _ public: [u256; 3]) -> Challenges {
+    var c = Challenger::new()
+    // instance: degree_bits, degree_bits - is_zk (zk off), preprocessed width (none)
+    c.observe_felt(kb(LOG_N))
+    c.observe_felt(kb(LOG_N))
+    c.observe_felt(kb(0))
+    c.observe_hash(p.trace_commit)
+    c.observe_felt(kb(public[0]))
+    c.observe_felt(kb(public[1]))
+    c.observe_felt(kb(public[2]))
+    let alpha = c.sample_ext()
+    c.observe_hash(p.quotient_commit)
+    let zeta = c.sample_ext()
+
+    // PCS: all claimed evaluations, in commitment / matrix / point order
+    c.observe_ext(ext(p.trace_local[0]))
+    c.observe_ext(ext(p.trace_local[1]))
+    c.observe_ext(ext(p.trace_next[0]))
+    c.observe_ext(ext(p.trace_next[1]))
+    var i: usize = 0
+    while i < 4 {
+        c.observe_ext(ext(p.quotient_chunk[i]))
+        i += 1
+    }
+
+    // FRI: batching challenge, then per commit-phase round commit, (pow), beta
+    let fri_alpha = c.sample_ext()
+    var betas: [E; 3] = [E::zero(), E::zero(), E::zero()]
+    var pow_ok = true
+    i = 0
+    while i < NUM_FOLDS {
+        c.observe_hash(p.fri_commits[i])
+        if !c.check_witness(COMMIT_POW_BITS, kb(p.commit_pow_witnesses[i])) {
+            pow_ok = false
+        }
+        betas[i] = c.sample_ext()
+        i += 1
+    }
+    c.observe_ext(ext(p.final_poly[0]))
+    c.observe_ext(ext(p.final_poly[1]))
+    if !c.check_witness(QUERY_POW_BITS, kb(p.query_pow_witness)) {
+        pow_ok = false
+    }
+    var indices: [u256; 4] = [0, 0, 0, 0]
+    i = 0
+    while i < NUM_QUERIES {
+        indices[i] = c.sample_bits(LOG_H)
+        i += 1
+    }
+    Challenges { alpha, zeta, fri_alpha, betas, pow_ok, indices }
+}
+
+// ---------------------------------------------------------------------------------------
+// FRI queries
+// ---------------------------------------------------------------------------------------
+
+/// `p3_fri::verify_fri::open_input` for one query: check both input Merkle openings and
+/// combine the opened values into the reduced opening
+/// `sum alpha^k (f_k(z) - f_k(x)) / (z - x)`, over the trace (points zeta and zeta*g) and
+/// the quotient chunk (point zeta). `None` if a Merkle path is wrong or `z == x`.
+fn open_input(_ p: StarkProof, _ ch: Challenges, _ q: usize, _ x: KoalaBear) -> Option<E> {
+    let qp = p.queries[q]
+    let index = ch.indices[q]
+
+    // trace commitment: one matrix, width 2, 2^LOG_H rows
+    var h = RowHasher::new()
+    h.felt(kb(qp.trace_row[0]))
+    h.felt(kb(qp.trace_row[1]))
+    var node = h.finish()
+    var i: usize = 0
+    var idx = index
+    while i < 6 {
+        node = climb(node, idx, qp.trace_path[i])
+        idx = idx >> 1
+        i += 1
+    }
+    if node != p.trace_commit {
+        return Option::None
+    }
+
+    // quotient commitment: one chunk, width 4 (the 4 coefficients of an extension value)
+    var hq = RowHasher::new()
+    i = 0
+    while i < 4 {
+        hq.felt(kb(qp.quotient_row[i]))
+        i += 1
+    }
+    node = hq.finish()
+    idx = index
+    i = 0
+    while i < 6 {
+        node = climb(node, idx, qp.quotient_path[i])
+        idx = idx >> 1
+        i += 1
+    }
+    if node != p.quotient_commit {
+        return Option::None
+    }
+
+    let zeta = ch.zeta
+    let zeta_next = zeta.scale(two_adic_generator(LOG_N))
+    let x_ext = E::from_base(x)
+    let inv_z = match zeta.sub(x_ext).inv() {
+        Option::Some(v) => v,
+        Option::None => {
+            return Option::None
+        },
+    }
+    let inv_zn = match zeta_next.sub(x_ext).inv() {
+        Option::Some(v) => v,
+        Option::None => {
+            return Option::None
+        },
+    }
+    var ro = E::zero()
+    var alpha_pow = E::one()
+    i = 0
+    while i < 2 {
+        let t = ext(p.trace_local[i]).sub(E::from_base(kb(qp.trace_row[i])))
+        ro = ro.add(alpha_pow.mul(t).mul(inv_z))
+        alpha_pow = alpha_pow.mul(ch.fri_alpha)
+        i += 1
+    }
+    i = 0
+    while i < 2 {
+        let t = ext(p.trace_next[i]).sub(E::from_base(kb(qp.trace_row[i])))
+        ro = ro.add(alpha_pow.mul(t).mul(inv_zn))
+        alpha_pow = alpha_pow.mul(ch.fri_alpha)
+        i += 1
+    }
+    i = 0
+    while i < 4 {
+        let t = ext(p.quotient_chunk[i]).sub(E::from_base(kb(qp.quotient_row[i])))
+        ro = ro.add(alpha_pow.mul(t).mul(inv_z))
+        alpha_pow = alpha_pow.mul(ch.fri_alpha)
+        i += 1
+    }
+    Option::Some(ro)
+}
+
+/// `p3_fri::verify_fri` loop body for one query: open the inputs, fold `NUM_FOLDS` times
+/// checking each commit-phase Merkle opening, compare with the final polynomial.
+pub fn check_query(_ p: StarkProof, _ ch: Challenges, _ q: usize) -> bool {
+    let qp = p.queries[q]
+    let index = ch.indices[q]
+    // x = GENERATOR * g_{LOG_H}^{rev(index)}
+    let x = kb(KB_GENERATOR).mul(two_adic_generator(LOG_H).pow(reverse_bits(index, LOG_H)))
+    var folded = match open_input(p, ch, q, x) {
+        Option::Some(v) => v,
+        Option::None => {
+            return false
+        },
+    }
+    var idx = index
+    var j: usize = 0
+    var off: usize = 0
+    while j < NUM_FOLDS {
+        // height of the folded codeword: 2^lh, so the path has lh siblings
+        let lh = LOG_H - 1 - (j as u256)
+        let sib = ext(qp.fold_sibling[j])
+        var e0 = folded
+        var e1 = sib
+        if idx & 1 == 1 {
+            e0 = sib
+            e1 = folded
+        }
+        idx = idx >> 1
+        var hr = RowHasher::new()
+        hr.ext(e0)
+        hr.ext(e1)
+        var node = hr.finish()
+        var k: usize = 0
+        var pos = idx
+        while (k as u256) < lh {
+            node = climb(node, pos, qp.fold_paths[off + k])
+            pos = pos >> 1
+            k += 1
+        }
+        if node != p.fri_commits[j] {
+            return false
+        }
+        off += k
+        // TwoAdicFriFolding::fold_row: xs = [s, -s], s = g_{lh+1}^{rev(idx, lh)}
+        let s = two_adic_generator(lh + 1).pow(reverse_bits(idx, lh))
+        let den_inv = match s.add(s).neg().inv() {
+            Option::Some(v) => v,
+            Option::None => {
+                return false
+            },
+        }
+        folded = e0.add(
+                ch.betas[j].sub(E::from_base(s)).mul(e1.sub(e0)).scale(den_inv),
+            )
+        j += 1
+    }
+    // final polynomial (2 coefficients) at x = g_{LOG_H}^{rev(idx, LOG_H)}
+    let xf = two_adic_generator(LOG_H).pow(reverse_bits(idx, LOG_H))
+    var eval = ext(p.final_poly[1])
+    eval = eval.scale(xf).add(ext(p.final_poly[0]))
+    eval.eq(folded)
+}
+
+// ---------------------------------------------------------------------------------------
+// AIR constraints at the out-of-domain point
+// ---------------------------------------------------------------------------------------
+
+/// `p3_uni_stark::verify_constraints` + `recompose_quotient_from_chunks` for the
+/// Fibonacci AIR: `folded(zeta) / Z_H(zeta) == quotient(zeta)`.
+///
+/// Constraints, in Plonky3's assertion order (folded as `acc = acc * alpha + c`):
+/// 1. first row:  `left  = a`
+/// 2. first row:  `right = b`
+/// 3. transition: `local.right = next.left`
+/// 4. transition: `local.left + local.right = next.right`
+/// 5. last row:   `local.right = x`
+pub fn check_air(_ p: StarkProof, _ public: [u256; 3], _ ch: Challenges) -> bool {
+    let zeta = ch.zeta
+    let one = E::one()
+    let h = two_adic_generator(LOG_N)
+    let h_inv = match h.inv() {
+        Option::Some(v) => v,
+        Option::None => {
+            return false
+        },
+    }
+    // Z_H(zeta) = zeta^n - 1; zeta on the trace domain is rejected (Plonky3 would divide by 0)
+    let z_h = zeta.exp_power_of_2(LOG_N as usize).sub(one)
+    if z_h.is_zero() {
+        return false
+    }
+    let z_h_inv = match z_h.inv() {
+        Option::Some(v) => v,
+        Option::None => {
+            return false
+        },
+    }
+    // zeta != 1 and zeta != h^-1 follow from Z_H(zeta) != 0
+    let inv_first = match zeta.sub(one).inv() {
+        Option::Some(v) => v,
+        Option::None => {
+            return false
+        },
+    }
+    let h_inv_ext = E::from_base(h_inv)
+    let inv_last = match zeta.sub(h_inv_ext).inv() {
+        Option::Some(v) => v,
+        Option::None => {
+            return false
+        },
+    }
+    let is_first = z_h.mul(inv_first)
+    let is_last = z_h.mul(inv_last)
+    let is_transition = zeta.sub(h_inv_ext)
+
+    let l0 = ext(p.trace_local[0])
+    let l1 = ext(p.trace_local[1])
+    let n0 = ext(p.trace_next[0])
+    let n1 = ext(p.trace_next[1])
+    let a = E::from_base(kb(public[0]))
+    let b = E::from_base(kb(public[1]))
+    let x = E::from_base(kb(public[2]))
+
+    var acc = E::zero()
+    acc = acc.mul(ch.alpha).add(is_first.mul(l0.sub(a)))
+    acc = acc.mul(ch.alpha).add(is_first.mul(l1.sub(b)))
+    acc = acc.mul(ch.alpha).add(is_transition.mul(l1.sub(n0)))
+    acc = acc.mul(ch.alpha).add(is_transition.mul(l0.add(l1).sub(n1)))
+    acc = acc.mul(ch.alpha).add(is_last.mul(l1.sub(x)))
+
+    // quotient(zeta) = sum_i x^i * chunk_i  (the chunk is the basis decomposition)
+    var quotient = E::zero()
+    var i: usize = 0
+    while i < 4 {
+        let basis = E::new(
+            if i == 0 {
+                KoalaBear::one()
+            } else {
+                KoalaBear::zero()
+            },
+            if i == 1 {
+                KoalaBear::one()
+            } else {
+                KoalaBear::zero()
+            },
+            if i == 2 {
+                KoalaBear::one()
+            } else {
+                KoalaBear::zero()
+            },
+            if i == 3 {
+                KoalaBear::one()
+            } else {
+                KoalaBear::zero()
+            },
+        )
+        quotient = quotient.add(basis.mul(ext(p.quotient_chunk[i])))
+        i += 1
+    }
+    acc.mul(z_h_inv).eq(quotient)
+}
+
+// ---------------------------------------------------------------------------------------
+// entry point
+// ---------------------------------------------------------------------------------------
+
+/// Verify a Fibonacci STARK proof: `public = [a, b, x]`, the trace starts with `(a, b)`
+/// and its last row's right column is `x`. Returns `false` for any invalid proof,
+/// including non-canonical field elements.
+pub fn verify(_ p: StarkProof, _ public: [u256; 3]) -> bool {
+    if !proof_is_canonical(p, public) {
+        return false
+    }
+    let ch = replay_transcript(p, public)
+    if !ch.pow_ok { return false }
+    var q: usize = 0
+    while q < NUM_QUERIES {
+        if !check_query(p, ch, q) {
+            return false
+        }
+        q += 1
+    }
+    check_air(p, public, ch)
+}

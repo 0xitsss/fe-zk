@@ -1,0 +1,50 @@
+//! Keccak-256 Merkle trees over serialized KoalaBear rows, as Plonky3's
+//! `MerkleTreeMmcs<KoalaBear, u8, SerializingHasher<Keccak256Hash>,
+//! CompressionFunctionFromHasher<Keccak256Hash, 2, 32>, 32>`.
+//!
+//! - leaf: `keccak256(m(f0) || m(f1) || ...)`, `m` = 4 little-endian bytes of the Montgomery
+//!   form (see `challenger::le_word`), over the row's field elements
+//!   (an extension element contributes its 4 coefficients in order);
+//! - node: `keccak256(left || right)`;
+//! - a path lists siblings from the leaf up; bit k of the index (LSB first) says whether
+//!   the running node is the right child at level k.
+//!
+//! Scope: one matrix per commitment, all rows of one height (the shape of this fixture's
+//! Fibonacci proof). Plonky3's mixed-height injection is not implemented.
+use std::evm::crypto::keccak_words
+use std::evm::packed::Packed
+use ingot::field::{Field, KoalaBear}
+use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::challenger::le_word
+
+pub struct RowHasher { buf: Packed }
+
+impl RowHasher {
+    pub fn new() -> RowHasher {
+        RowHasher { buf: Packed::new() }
+    }
+
+    pub fn felt(mut self, _ v: KoalaBear) {
+        self.buf.u32(le_word(v.to_canonical()))
+    }
+
+    pub fn ext(mut self, _ e: KoalaBearExt4) {
+        self.felt(e.coeff(0))
+        self.felt(e.coeff(1))
+        self.felt(e.coeff(2))
+        self.felt(e.coeff(3))
+    }
+
+    pub fn finish(self) -> u256 {
+        self.buf.keccak256()
+    }
+}
+
+/// Parent of `node` at a level where the node's index is `index`, given its sibling.
+pub fn climb(_ node: u256, _ index: u256, _ sibling: u256) -> u256 {
+    if index & 1 == 0 {
+        keccak_words([node, sibling])
+    } else {
+        keccak_words([sibling, node])
+    }
+}

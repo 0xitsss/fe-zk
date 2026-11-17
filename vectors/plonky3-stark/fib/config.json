@@ -1,0 +1,35 @@
+{
+  "air": "Fibonacci: columns (left,right); first row left=pv0,right=pv1; transition left'=right, right'=left+right; last row right=pv2",
+  "challenge_field": "BinomialExtensionField<KoalaBear,4>, x^4 = 3",
+  "challenger": "SerializingChallenger32<KoalaBear, HashChallenger<u8, Keccak256Hash, 32>>, initial state empty",
+  "commit_proof_of_work_bits": 0,
+  "degree_bits": 4,
+  "field": "KoalaBear p = 2^31 - 2^24 + 1",
+  "hash": "Keccak256Hash over SerializingHasher (little-endian u32 bytes); compress = keccak256(left || right)",
+  "log_blowup": 2,
+  "log_final_poly_len": 1,
+  "log_trace_rows": 4,
+  "num_queries": 4,
+  "num_quotient_chunks": 1,
+  "opened_trace_local": [
+    [
+      418234871,
+      1768105542,
+      188857133,
+      409744131
+    ],
+    [
+      229195042,
+      1329018521,
+      977200112,
+      82438105
+    ]
+  ],
+  "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.4.2 (crates.io)",
+  "public_values": [
+    0,
+    1,
+    987
+  ],
+  "query_proof_of_work_bits": 3
+}
