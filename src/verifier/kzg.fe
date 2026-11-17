@@ -1,0 +1,204 @@
+//! KZG polynomial-commitment opening checks over BN254.
+//!
+//! Three checks, all reduced to one 2-pair `pairing_check`:
+//! - `kzg_verify`: one polynomial at one point.
+//! - `kzg_batch_verify_gwc`: `N` polynomials at the same point (GWC random linear combination).
+//! - `kzg_verify_shplonk`: 3 polynomials at point sets {z1,z2}, {z1}, {z2} (SHPLONK, fixed shape).
+//!
+//! Exact formulas and transcript encodings: `vectors/kzg/README.md`.
+//!
+//! Typing enforces safety rules 1-3: commitments, proofs and the verifying key are `G1`/`G2`
+//! values (canonical, on the curve, G2 in the subgroup), points and evaluations are `Bn254Fr`
+//! (canonical). Raw words cannot reach these functions. Fiat-Shamir challenges bind the whole
+//! verifying key, every commitment, every point and every claimed evaluation (rule 5), with a
+//! distinct domain tag per challenge. Precompile failures revert (rule 6, in `ingot::ec`).
+//!
+//! The KZG commitment itself is malleable-free but NOT zero-knowledge or hiding without
+//! blinding; that is a prover concern. The SRS is trusted: `KzgVk` takes whatever
+//! `[tau]G2` the caller supplies.
+use core::ptr::MemBuffer
+use std::evm::Call
+use std::evm::crypto::keccak256
+use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
+use ingot::ec::precompile::put
+use ingot::field::{Bn254Fr, Field}
+
+/// "FEZK-KZG-GWC-V1" right-aligned in one word.
+pub const DOMAIN_GWC: u256 = 0x46455a4b2d4b5a472d4757432d5631
+/// "FEZK-SHPLONK-Y1"
+pub const DOMAIN_SHPLONK_Y: u256 = 0x46455a4b2d5348504c4f4e4b2d5931
+/// "FEZK-SHPLONK-U1"
+pub const DOMAIN_SHPLONK_U: u256 = 0x46455a4b2d5348504c4f4e4b2d5531
+
+/// KZG verifying key: `[1]G1`, `[1]G2`, `[tau]G2`. Private fields: build with `KzgVk::new`.
+pub struct KzgVk { g1: G1, g2: G2, tau_g2: G2 }
+impl Copy for KzgVk {}
+
+impl KzgVk {
+    /// `None` if any of the three points is the point at infinity (a degenerate key makes
+    /// every pairing check trivially true). The points are already validated by their types.
+    pub fn new(_ g1: G1, _ g2: G2, _ tau_g2: G2) -> Option<KzgVk> {
+        if g1.is_infinity() || g2.is_infinity() || tau_g2.is_infinity() {
+            return Option::None
+        }
+        Option::Some(KzgVk { g1, g2, tau_g2 })
+    }
+}
+
+fn put_g1(_ buf: mut MemBuffer, _ at: usize, _ p: G1) {
+    put(mut buf, at, p.x())
+    put(mut buf, at + 1, p.y())
+}
+
+/// Writes the 10 words `g1 (2), g2 (4), tau_g2 (4)` at word index `at`.
+fn put_vk(_ buf: mut MemBuffer, _ at: usize, _ vk: KzgVk) {
+    put_g1(mut buf, at, vk.g1)
+    put(mut buf, at + 2, vk.g2.x0())
+    put(mut buf, at + 3, vk.g2.x1())
+    put(mut buf, at + 4, vk.g2.y0())
+    put(mut buf, at + 5, vk.g2.y1())
+    put(mut buf, at + 6, vk.tau_g2.x0())
+    put(mut buf, at + 7, vk.tau_g2.x1())
+    put(mut buf, at + 8, vk.tau_g2.y0())
+    put(mut buf, at + 9, vk.tau_g2.y1())
+}
+
+/// keccak256 of the first `words` words of `buf`, reduced mod r. The reduction is a
+/// challenge derivation (statistical bias about 2^-126), not an untrusted-input reduction.
+fn hash_to_fr(_ buf: mut MemBuffer, _ words: usize) -> Bn254Fr {
+    unsafe {
+        buf.set_len(words * 32)
+    }
+    Bn254Fr::reduce(keccak256(buf.span()))
+}
+
+/// Single opening: `C` opens to `y` at `z` with proof `pi`, i.e. `f(z) = y` for the committed `f`.
+/// Check: `e(C - [y]G + [z]pi, [1]G2) * e(-pi, [tau]G2) == 1`.
+pub fn kzg_verify(_ vk: KzgVk, _ c: G1, _ z: Bn254Fr, _ y: Bn254Fr, _ pi: G1) -> bool
+uses (call: Call)
+{
+    let yg = g1_mul(vk.g1, y)
+    let zpi = g1_mul(pi, z)
+    let lhs = g1_add(g1_add(c, yg.neg()), zpi)
+    pairing_check([lhs, pi.neg()], [vk.g2, vk.tau_g2])
+}
+
+/// GWC batch challenge `v = keccak256(DOMAIN_GWC, N, vk(10 words), z, C_0.x, C_0.y, ..., y_0, ...) mod r`.
+/// Public so that tests can check that every input changes it (safety rule 5).
+pub fn gwc_challenge<const N: usize>(
+    _ vk: KzgVk,
+    _ cs: [G1; N],
+    _ z: Bn254Fr,
+    _ ys: [Bn254Fr; N],
+) -> Bn254Fr {
+    let total = 13 + 3 * N
+    var buf = MemBuffer::with_capacity(total * 32)
+    put(mut buf, 0, DOMAIN_GWC)
+    put(mut buf, 1, N as u256)
+    put_vk(mut buf, 2, vk)
+    put(mut buf, 12, z.to_canonical())
+    var i: usize = 0
+    while i < N {
+        put_g1(mut buf, 13 + 2 * i, cs[i])
+        put(mut buf, 13 + 2 * N + i, ys[i].to_canonical())
+        i += 1
+    }
+    hash_to_fr(mut buf, total)
+}
+
+/// Batched opening of `N >= 1` polynomials at one point `z` (GWC): `cs[i]` opens to `ys[i]` at `z`.
+/// `pi` is the opening proof of `sum_i v^i f_i` at `z`, `v = gwc_challenge(..)`. Reduces to
+/// `kzg_verify(vk, sum v^i C_i, z, sum v^i y_i, pi)`.
+pub fn kzg_batch_verify_gwc<const N: usize>(
+    _ vk: KzgVk,
+    _ cs: [G1; N],
+    _ z: Bn254Fr,
+    _ ys: [Bn254Fr; N],
+    _ pi: G1,
+) -> bool
+uses (call: Call)
+{
+    assert(N != 0)
+    let v = gwc_challenge(vk, cs, z, ys)
+    var c_acc = cs[0]
+    var y_acc = ys[0]
+    var pw = v
+    var i: usize = 1
+    while i < N {
+        c_acc = g1_add(c_acc, g1_mul(cs[i], pw))
+        y_acc = y_acc.add(ys[i].mul(pw))
+        pw = pw.mul(v)
+        i += 1
+    }
+    kzg_verify(vk, c_acc, z, y_acc, pi)
+}
+
+/// SHPLONK challenge `y = keccak256(DOMAIN_SHPLONK_Y, vk(10), z1, z2, C_0..C_2 (6 words), e00, e01, e1, e2) mod r`.
+pub fn shplonk_challenge_y(
+    _ vk: KzgVk,
+    _ cs: [G1; 3],
+    _ z1: Bn254Fr,
+    _ z2: Bn254Fr,
+    _ evals: [Bn254Fr; 4],
+) -> Bn254Fr {
+    var buf = MemBuffer::with_capacity(23 * 32)
+    put(mut buf, 0, DOMAIN_SHPLONK_Y)
+    put_vk(mut buf, 1, vk)
+    put(mut buf, 11, z1.to_canonical())
+    put(mut buf, 12, z2.to_canonical())
+    put_g1(mut buf, 13, cs[0])
+    put_g1(mut buf, 15, cs[1])
+    put_g1(mut buf, 17, cs[2])
+    put(mut buf, 19, evals[0].to_canonical())
+    put(mut buf, 20, evals[1].to_canonical())
+    put(mut buf, 21, evals[2].to_canonical())
+    put(mut buf, 22, evals[3].to_canonical())
+    hash_to_fr(mut buf, 23)
+}
+
+/// SHPLONK challenge `u = keccak256(DOMAIN_SHPLONK_U, y, H.x, H.y) mod r`.
+pub fn shplonk_challenge_u(_ y: Bn254Fr, _ h: G1) -> Bn254Fr {
+    var buf = MemBuffer::with_capacity(4 * 32)
+    put(mut buf, 0, DOMAIN_SHPLONK_U)
+    put(mut buf, 1, y.to_canonical())
+    put_g1(mut buf, 2, h)
+    hash_to_fr(mut buf, 4)
+}
+
+/// SHPLONK multi-point opening, fixed shape. Three committed polynomials `cs = [C0, C1, C2]`:
+/// `f0` is claimed at `z1` and `z2` (`evals[0] = f0(z1)`, `evals[1] = f0(z2)`), `f1` at `z1`
+/// (`evals[2]`), `f2` at `z2` (`evals[3]`). `h` commits the quotient polynomial and `pi` is the
+/// final opening proof at `u`. Returns `false` if `z1 == z2`.
+pub fn kzg_verify_shplonk(
+    _ vk: KzgVk,
+    _ cs: [G1; 3],
+    _ z1: Bn254Fr,
+    _ z2: Bn254Fr,
+    _ evals: [Bn254Fr; 4],
+    _ h: G1,
+    _ pi: G1,
+) -> bool
+uses (call: Call)
+{
+    if z1.eq(z2) { return false }
+    let y = shplonk_challenge_y(vk, cs, z1, z2, evals)
+    let u = shplonk_challenge_u(y, h)
+    let u1 = u.sub(z1)
+    let u2 = u.sub(z2)
+    // coefficients a_i = y^i * Z_{T \ S_i}(u): 1, y (u - z2), y^2 (u - z1)
+    let a1 = y.mul(u2)
+    let a2 = y.square().mul(u1)
+    // r_0(u): line through (z1, e00), (z2, e01)
+    let dz_inv = z1.sub(z2).inv().unwrap()
+    let r0u = evals[0].mul(u2).sub(evals[1].mul(u1)).mul(dz_inv)
+    let rsum = r0u.add(a1.mul(evals[2])).add(a2.mul(evals[3]))
+    let zt = u1.mul(u2)
+    // L = C0 + a1 C1 + a2 C2 - rsum G - zt H
+    var l = g1_add(cs[0], g1_mul(cs[1], a1))
+    l = g1_add(l, g1_mul(cs[2], a2))
+    l = g1_add(l, g1_mul(vk.g1, rsum).neg())
+    l = g1_add(l, g1_mul(h, zt).neg())
+    // L(tau) = (tau - u) q(tau)  <=>  e(L + [u] pi, [1]G2) = e(pi, [tau]G2)
+    let lhs = g1_add(l, g1_mul(pi, u))
+    pairing_check([lhs, pi.neg()], [vk.g2, vk.tau_g2])
+}

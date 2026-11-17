@@ -1,0 +1,477 @@
+//! KZG verifier tests. Fixtures come from arkworks 0.5.0 (`vectors/kzg`, `scripts/regen-kzg.sh`)
+//! with a TEST-ONLY insecure SRS; the constants below are copied from `vectors/kzg/fixtures/kzg.json`.
+//! Gas: `fe test --show-logs` prints the `GasUsed` events of `gas_report`.
+use ingot::ec::{G1, G2}
+use ingot::field::{Bn254Fr, Field}
+use ingot::verifier::kzg::{
+    KzgVk,
+    gwc_challenge,
+    kzg_batch_verify_gwc,
+    kzg_verify,
+    kzg_verify_shplonk,
+    shplonk_challenge_u,
+    shplonk_challenge_y,
+}
+use std::evm::{Call, Evm}
+
+const TAU_X0: u256 = 7995143908331660757312802343047556066030349129500967862252606240205374434861
+const TAU_X1: u256 = 15587598663388680773135088576807241566476199640146176734216911655741237279340
+const TAU_Y0: u256 = 17842044564463953219117888256938359772713163062061172757047707970974358769696
+const TAU_Y1: u256 = 21043074044270340184470271207103491611662795921525242894111255904531598556362
+const S_CX: u256 = 3028484410053451871039950204426901885718436633047849032378111909281166863959
+const S_CY: u256 = 5543621194810252750658816090252303923832438141088203958654913212601425951713
+const S_Z: u256 = 123456789
+const S_Y: u256 = 5761098354726933871618415123683875487271916424664376176680479462625487858716
+const S_PIX: u256 = 19914638585968532223037863338309590933679038984990962973611737914860666443393
+const S_PIY: u256 = 19233366165729324620706654504062444360544115219663349690804037431391604844600
+const B_Z: u256 = 987654321
+const B_C0X: u256 = 19498972105199093207706786705927917543379906050344445330035416102101645115692
+const B_C0Y: u256 = 2483512571518506033414678841861544338195363752332196819123312461304024451158
+const B_Y0: u256 = 9833299304662116479086615286057201991018573153342627145947194249229020851168
+const B_C1X: u256 = 10889561577431563233297999333099484299684596382727551381035035617538506490191
+const B_C1Y: u256 = 19456106781341872413327173882651531676241812410422153284677579151261126762770
+const B_Y1: u256 = 19903195766115448301643029793083193188139693506733385156346401897434961982730
+const B_C2X: u256 = 15618806597221901901731407126495421501021203330307048493622224284959720391779
+const B_C2Y: u256 = 4858262675232908756383335797011597204150746141786900662403485920680122375108
+const B_Y2: u256 = 10551280447313000768823034734784819116207725015076046450534807590395425609095
+const B_V: u256 = 848745442647808592553870853559279778190987576065167119061241165038439873157
+const B_PIX: u256 = 11470987689319109240085269105010603351226224987311573953910355662684979255081
+const B_PIY: u256 = 18855173218497954813708192149018917071574486789407010730539487683797175478090
+const H_Z1: u256 = 31415926
+const H_Z2: u256 = 27182818
+const H_C0X: u256 = 1595718970909113440153857555066351092922637483824170337342576281811965259197
+const H_C0Y: u256 = 948156895052129017127324714969100395196257637002004527123545665035205501572
+const H_C1X: u256 = 12556446719929953560004175171460564237590966738772938528153148556663555205435
+const H_C1Y: u256 = 19912204605627978108991910799745812115151370740744459889578466890407152407871
+const H_C2X: u256 = 4391677875258002017317126766044756340150654469491448170945578864409924335132
+const H_C2Y: u256 = 2906660571419915806817295544918285012250055648114148182457967427794652619005
+const H_E00: u256 = 12858099608517076829320871400845064403484360060552428325800489930610402703079
+const H_E01: u256 = 9163575734332480143486792983273450836341401631753619166672246165196781906659
+const H_E1: u256 = 42128000871316708139029115513377097203892973678779355681452023924
+const H_E2: u256 = 34329209544287797279924602015727750990658527089390884057066441019512831744
+const H_Y: u256 = 16922016046308380326692227909803692202994249034528700922423164902403787682697
+const H_U: u256 = 14462547690741016541473065453917779467992697601856083775924665083262675043407
+const H_HX: u256 = 8125429827028913461523006822919935888152574073826400740299306114731891425210
+const H_HY: u256 = 1843557644143866611709642324223675797413190627971747677854085562295778732537
+const H_PIX: u256 = 4586122486562799596126718907330136947965271586836819064598688048298055739303
+const H_PIY: u256 = 3509124342425544118804768366834769900923056572789593317566021171258209155557
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+fn g1(_ x: u256, _ y: u256) -> G1 {
+    match G1::from_coords(x, y) {
+        Option::Some(p) => p,
+        Option::None => {
+            assert(false)
+            G1::infinity()
+        },
+    }
+}
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+fn vk() -> KzgVk {
+    let tau = G2::from_coords(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1).unwrap()
+    KzgVk::new(G1::generator(), G2::generator(), tau).unwrap()
+}
+
+// A key that differs from `vk()` only in [tau]G2.
+fn vk_other_tau() -> KzgVk {
+    KzgVk::new(G1::generator(), G2::generator(), G2::generator()).unwrap()
+}
+
+// A key that differs from `vk_other_tau()` only in G1 (2G instead of G).
+fn vk_other_g1() -> KzgVk {
+    let two_g = g1(
+        1368015179489954701390400359078579693043519447331113978918064868415326638035,
+        9918110051302171585080402603319702774565515993150576347155970296011118125764,
+    )
+    KzgVk::new(two_g, G2::generator(), G2::generator()).unwrap()
+}
+
+fn s_c() -> G1 {
+    g1(S_CX, S_CY)
+}
+fn s_pi() -> G1 {
+    g1(S_PIX, S_PIY)
+}
+
+fn b_cs() -> [G1; 3] {
+    [g1(B_C0X, B_C0Y), g1(B_C1X, B_C1Y), g1(B_C2X, B_C2Y)]
+}
+fn b_ys() -> [Bn254Fr; 3] {
+    [fr(B_Y0), fr(B_Y1), fr(B_Y2)]
+}
+fn b_pi() -> G1 {
+    g1(B_PIX, B_PIY)
+}
+
+fn h_cs() -> [G1; 3] {
+    [g1(H_C0X, H_C0Y), g1(H_C1X, H_C1Y), g1(H_C2X, H_C2Y)]
+}
+fn h_evals() -> [Bn254Fr; 4] {
+    [fr(H_E00), fr(H_E01), fr(H_E1), fr(H_E2)]
+}
+fn h_h() -> G1 {
+    g1(H_HX, H_HY)
+}
+fn h_pi() -> G1 {
+    g1(H_PIX, H_PIY)
+}
+
+// ---------------------------------------------------------------- vk
+
+#[test]
+fn vk_rejects_infinity() {
+    let g2 = G2::generator()
+    assert(KzgVk::new(G1::infinity(), g2, g2).is_none())
+    assert(KzgVk::new(G1::generator(), G2::infinity(), g2).is_none())
+    assert(KzgVk::new(G1::generator(), g2, G2::infinity()).is_none())
+    assert(KzgVk::new(G1::generator(), g2, g2).is_some())
+}
+
+// ---------------------------------------------------------------- single
+
+#[test]
+fn single_accepts_valid() uses (call: Call) {
+    assert(kzg_verify(vk(), s_c(), fr(S_Z), fr(S_Y), s_pi()))
+}
+
+#[test]
+fn single_rejects_tampered() uses (call: Call) {
+    let k = vk()
+    let one = Bn254Fr::one()
+    // tampered value, point, proof, commitment
+    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y).add(one), s_pi()))
+    assert(!kzg_verify(k, s_c(), fr(S_Z).add(one), fr(S_Y), s_pi()))
+    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), G1::generator()))
+    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), s_pi().neg()))
+    assert(!kzg_verify(k, s_c().neg(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg_verify(k, G1::generator(), fr(S_Z), fr(S_Y), s_pi()))
+    // proof for a different commitment
+    assert(!kzg_verify(k, g1(B_C0X, B_C0Y), fr(S_Z), fr(S_Y), s_pi()))
+    // infinity commitment and infinity proof
+    assert(!kzg_verify(k, G1::infinity(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), G1::infinity()))
+}
+
+#[test]
+fn single_rejects_wrong_srs() uses (call: Call) {
+    assert(
+        !kzg_verify(vk_other_tau(), s_c(), fr(S_Z), fr(S_Y), s_pi()),
+    )
+}
+
+#[test]
+fn raw_inputs_need_checked_constructors() {
+    // kzg_verify takes G1 / Bn254Fr only; these are the ways in from raw words.
+    assert(Bn254Fr::from_canonical(Bn254Fr::MODULUS).is_none())
+    assert(Bn254Fr::from_canonical(Bn254Fr::MODULUS - 1).is_some())
+    assert(
+        G1::from_coords(
+            S_CX + 21888242871839275222246405745257275088696311157297823662689037894645226208583,
+            S_CY,
+        )
+            .is_none(),
+    )
+    assert(G1::from_coords(S_CX, S_CY + 1).is_none())
+}
+
+// ---------------------------------------------------------------- GWC
+
+#[test]
+fn gwc_challenge_matches_reference() {
+    assert(
+        gwc_challenge(vk(), b_cs(), fr(B_Z), b_ys()).to_canonical() == B_V,
+    )
+}
+
+#[test]
+fn gwc_accepts_valid() uses (call: Call) {
+    assert(
+        kzg_batch_verify_gwc(vk(), b_cs(), fr(B_Z), b_ys(), b_pi()),
+    )
+}
+
+#[test]
+fn gwc_rejects_tampered() uses (call: Call) {
+    let k = vk()
+    let cs = b_cs()
+    let ys = b_ys()
+    let z = fr(B_Z)
+    let one = Bn254Fr::one()
+    // tampered value (each)
+    assert(
+        !kzg_batch_verify_gwc(k, cs, z, [ys[0].add(one), ys[1], ys[2]], b_pi()),
+    )
+    assert(
+        !kzg_batch_verify_gwc(k, cs, z, [ys[0], ys[1].add(one), ys[2]], b_pi()),
+    )
+    assert(
+        !kzg_batch_verify_gwc(k, cs, z, [ys[0], ys[1], ys[2].add(one)], b_pi()),
+    )
+    // tampered point
+    assert(!kzg_batch_verify_gwc(k, cs, z.add(one), ys, b_pi()))
+    // tampered proof
+    assert(!kzg_batch_verify_gwc(k, cs, z, ys, G1::generator()))
+    assert(!kzg_batch_verify_gwc(k, cs, z, ys, b_pi().neg()))
+    // tampered commitment
+    assert(
+        !kzg_batch_verify_gwc(k, [G1::generator(), cs[1], cs[2]], z, ys, b_pi()),
+    )
+    assert(
+        !kzg_batch_verify_gwc(k, [cs[0], cs[1], cs[2].neg()], z, ys, b_pi()),
+    )
+    // wrong key
+    assert(!kzg_batch_verify_gwc(vk_other_tau(), cs, z, ys, b_pi()))
+}
+
+#[test]
+fn gwc_rejects_swapped_or_resized() uses (call: Call) {
+    let k = vk()
+    let cs = b_cs()
+    let ys = b_ys()
+    let z = fr(B_Z)
+    // swapped commitments
+    assert(
+        !kzg_batch_verify_gwc(k, [cs[1], cs[0], cs[2]], z, ys, b_pi()),
+    )
+    assert(
+        !kzg_batch_verify_gwc(k, [cs[0], cs[2], cs[1]], z, ys, b_pi()),
+    )
+    // swapped values
+    assert(
+        !kzg_batch_verify_gwc(k, cs, z, [ys[1], ys[0], ys[2]], b_pi()),
+    )
+    // dropped element (N = 2, N = 1) with the N = 3 proof
+    assert(
+        !kzg_batch_verify_gwc(k, [cs[0], cs[1]], z, [ys[0], ys[1]], b_pi()),
+    )
+    assert(!kzg_batch_verify_gwc(k, [cs[0]], z, [ys[0]], b_pi()))
+}
+
+/// Safety rule 5: changing any transcript input changes the challenge.
+#[test]
+fn gwc_challenge_binds_every_input() {
+    let k = vk()
+    let cs = b_cs()
+    let ys = b_ys()
+    let z = fr(B_Z)
+    let one = Bn254Fr::one()
+    let base = gwc_challenge(k, cs, z, ys)
+    // vk: [tau]G2, then G1 (G2 shares the same encoding path)
+    assert(!gwc_challenge(vk_other_tau(), cs, z, ys).eq(base))
+    assert(
+        !gwc_challenge(vk_other_g1(), cs, z, ys).eq(gwc_challenge(vk_other_tau(), cs, z, ys)),
+    )
+    // point
+    assert(!gwc_challenge(k, cs, z.add(one), ys).eq(base))
+    // each commitment
+    assert(
+        !gwc_challenge(k, [G1::generator(), cs[1], cs[2]], z, ys).eq(base),
+    )
+    assert(
+        !gwc_challenge(k, [cs[0], G1::generator(), cs[2]], z, ys).eq(base),
+    )
+    assert(
+        !gwc_challenge(k, [cs[0], cs[1], G1::generator()], z, ys).eq(base),
+    )
+    // sign of a y coordinate only
+    assert(
+        !gwc_challenge(k, [cs[0], cs[1], cs[2].neg()], z, ys).eq(base),
+    )
+    // each value
+    assert(
+        !gwc_challenge(k, cs, z, [ys[0].add(one), ys[1], ys[2]]).eq(base),
+    )
+    assert(
+        !gwc_challenge(k, cs, z, [ys[0], ys[1].add(one), ys[2]]).eq(base),
+    )
+    assert(
+        !gwc_challenge(k, cs, z, [ys[0], ys[1], ys[2].add(one)]).eq(base),
+    )
+    // order of commitments
+    assert(!gwc_challenge(k, [cs[1], cs[0], cs[2]], z, ys).eq(base))
+    // length
+    assert(
+        !gwc_challenge(k, [cs[0], cs[1]], z, [ys[0], ys[1]]).eq(base),
+    )
+    // determinism
+    assert(gwc_challenge(k, cs, z, ys).eq(base))
+}
+
+// ---------------------------------------------------------------- SHPLONK
+
+#[test]
+fn shplonk_challenges_match_reference() {
+    let y = shplonk_challenge_y(vk(), h_cs(), fr(H_Z1), fr(H_Z2), h_evals())
+    assert(y.to_canonical() == H_Y)
+    assert(shplonk_challenge_u(y, h_h()).to_canonical() == H_U)
+}
+
+#[test]
+fn shplonk_accepts_valid() uses (call: Call) {
+    assert(
+        kzg_verify_shplonk(
+            vk(),
+            h_cs(),
+            fr(H_Z1),
+            fr(H_Z2),
+            h_evals(),
+            h_h(),
+            h_pi(),
+        ),
+    )
+}
+
+#[test]
+fn shplonk_rejects_tampered() uses (call: Call) {
+    let k = vk()
+    let cs = h_cs()
+    let ev = h_evals()
+    let z1 = fr(H_Z1)
+    let z2 = fr(H_Z2)
+    let one = Bn254Fr::one()
+    let h = h_h()
+    let pi = h_pi()
+    assert(
+        !kzg_verify_shplonk(
+            k,
+            cs,
+            z1,
+            z2,
+            [ev[0].add(one), ev[1], ev[2], ev[3]],
+            h,
+            pi,
+        ),
+    )
+    assert(
+        !kzg_verify_shplonk(
+            k,
+            cs,
+            z1,
+            z2,
+            [ev[0], ev[1].add(one), ev[2], ev[3]],
+            h,
+            pi,
+        ),
+    )
+    assert(
+        !kzg_verify_shplonk(
+            k,
+            cs,
+            z1,
+            z2,
+            [ev[0], ev[1], ev[2].add(one), ev[3]],
+            h,
+            pi,
+        ),
+    )
+    assert(
+        !kzg_verify_shplonk(
+            k,
+            cs,
+            z1,
+            z2,
+            [ev[0], ev[1], ev[2], ev[3].add(one)],
+            h,
+            pi,
+        ),
+    )
+    // swapped evaluations
+    assert(
+        !kzg_verify_shplonk(k, cs, z1, z2, [ev[1], ev[0], ev[2], ev[3]], h, pi),
+    )
+    // points
+    assert(!kzg_verify_shplonk(k, cs, z1.add(one), z2, ev, h, pi))
+    assert(!kzg_verify_shplonk(k, cs, z2, z1, ev, h, pi))
+    // proofs
+    assert(
+        !kzg_verify_shplonk(k, cs, z1, z2, ev, G1::generator(), pi),
+    )
+    assert(!kzg_verify_shplonk(k, cs, z1, z2, ev, h, G1::generator()))
+    assert(!kzg_verify_shplonk(k, cs, z1, z2, ev, pi, h))
+    // commitments (each) and swapped commitments
+    assert(
+        !kzg_verify_shplonk(k, [G1::generator(), cs[1], cs[2]], z1, z2, ev, h, pi),
+    )
+    assert(
+        !kzg_verify_shplonk(k, [cs[0], cs[1].neg(), cs[2]], z1, z2, ev, h, pi),
+    )
+    assert(
+        !kzg_verify_shplonk(k, [cs[0], cs[1], G1::generator()], z1, z2, ev, h, pi),
+    )
+    assert(
+        !kzg_verify_shplonk(k, [cs[1], cs[0], cs[2]], z1, z2, ev, h, pi),
+    )
+    assert(
+        !kzg_verify_shplonk(k, [cs[0], cs[2], cs[1]], z1, z2, ev, h, pi),
+    )
+    // wrong key
+    assert(!kzg_verify_shplonk(vk_other_tau(), cs, z1, z2, ev, h, pi))
+    // degenerate: equal points
+    assert(!kzg_verify_shplonk(k, cs, z1, z1, ev, h, pi))
+}
+
+#[test]
+fn shplonk_challenges_bind_every_input() {
+    let k = vk()
+    let cs = h_cs()
+    let ev = h_evals()
+    let z1 = fr(H_Z1)
+    let z2 = fr(H_Z2)
+    let one = Bn254Fr::one()
+    let y = shplonk_challenge_y(k, cs, z1, z2, ev)
+    assert(!shplonk_challenge_y(vk_other_tau(), cs, z1, z2, ev).eq(y))
+    assert(
+        !shplonk_challenge_y(vk_other_g1(), cs, z1, z2, ev)
+            .eq(shplonk_challenge_y(vk_other_tau(), cs, z1, z2, ev)),
+    )
+    assert(!shplonk_challenge_y(k, cs, z1.add(one), z2, ev).eq(y))
+    assert(!shplonk_challenge_y(k, cs, z1, z2.add(one), ev).eq(y))
+    assert(
+        !shplonk_challenge_y(k, [G1::generator(), cs[1], cs[2]], z1, z2, ev).eq(y),
+    )
+    assert(
+        !shplonk_challenge_y(k, [cs[0], G1::generator(), cs[2]], z1, z2, ev).eq(y),
+    )
+    assert(
+        !shplonk_challenge_y(k, [cs[0], cs[1], G1::generator()], z1, z2, ev).eq(y),
+    )
+    assert(
+        !shplonk_challenge_y(k, cs, z1, z2, [ev[0].add(one), ev[1], ev[2], ev[3]]).eq(y),
+    )
+    assert(
+        !shplonk_challenge_y(k, cs, z1, z2, [ev[0], ev[1].add(one), ev[2], ev[3]]).eq(y),
+    )
+    assert(
+        !shplonk_challenge_y(k, cs, z1, z2, [ev[0], ev[1], ev[2].add(one), ev[3]]).eq(y),
+    )
+    assert(
+        !shplonk_challenge_y(k, cs, z1, z2, [ev[0], ev[1], ev[2], ev[3].add(one)]).eq(y),
+    )
+    let u = shplonk_challenge_u(y, h_h())
+    assert(!shplonk_challenge_u(y.add(one), h_h()).eq(u))
+    assert(!shplonk_challenge_u(y, G1::generator()).eq(u))
+    assert(!shplonk_challenge_u(y, h_h().neg()).eq(u))
+}
+
+// ---------------------------------------------------------------- gas
+
+#[test]
+fn kzg_gas_report() uses (evm: mut Evm, call: Call) {
+    let k = vk()
+    var g0 = evm.gas()
+    let a = kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), s_pi())
+    evm.emit(GasUsed { what: 1, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let b = kzg_batch_verify_gwc(k, b_cs(), fr(B_Z), b_ys(), b_pi())
+    evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let c = kzg_verify_shplonk(k, h_cs(), fr(H_Z1), fr(H_Z2), h_evals(), h_h(), h_pi())
+    evm.emit(GasUsed { what: 3, gas: g0 - evm.gas() })
+    assert(a && b && c)
+}

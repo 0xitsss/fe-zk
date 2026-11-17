@@ -23,3 +23,4 @@ pub use ec::{
     kzg_point_evaluation,
     pairing_check,
 }
+pub use verifier::{KzgVk, kzg_batch_verify_gwc, kzg_verify, kzg_verify_shplonk}
