@@ -1,0 +1,443 @@
+//! PLONK verifier tests. Fixtures: snarkjs 0.7.6 `plonk` keys and proofs (`vectors/plonk`,
+//! `scripts/regen-plonk-fixtures.sh`), transcribed into `plonk_fixtures.fe` by
+//! `scripts/gen-plonk-fe-fixtures.py`. Reference challenges come from the snarkjs JS verifier
+//! (`vectors/js/plonk-challenges.mjs`). Gas: `fe test --show-logs` prints `GasUsed` events.
+use ingot::ec::{G1, G2}
+use ingot::field::{Bn254Fr, Field}
+use ingot::verifier::plonk::{
+    PlonkChallenges,
+    PlonkProof,
+    PlonkVk,
+    plonk_challenges,
+    plonk_verify,
+    plonk_verify_words,
+}
+use super::plonk_fixtures::*
+use std::evm::{Call, Evm}
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+fn g1(_ x: u256, _ y: u256) -> G1 {
+    G1::from_coords(x, y).unwrap()
+}
+
+// ---------------------------------------------------------------- keys
+
+fn m2_commitments() -> [G1; 8] {
+    [
+        g1(M2_QM_X, M2_QM_Y),
+        g1(M2_QL_X, M2_QL_Y),
+        g1(M2_QR_X, M2_QR_Y),
+        g1(M2_QO_X, M2_QO_Y),
+        g1(M2_QC_X, M2_QC_Y),
+        g1(M2_S1_X, M2_S1_Y),
+        g1(M2_S2_X, M2_S2_Y),
+        g1(M2_S3_X, M2_S3_Y),
+    ]
+}
+
+fn mb_commitments() -> [G1; 8] {
+    [
+        g1(MB_QM_X, MB_QM_Y),
+        g1(MB_QL_X, MB_QL_Y),
+        g1(MB_QR_X, MB_QR_Y),
+        g1(MB_QO_X, MB_QO_Y),
+        g1(MB_QC_X, MB_QC_Y),
+        g1(MB_S1_X, MB_S1_Y),
+        g1(MB_S2_X, MB_S2_Y),
+        g1(MB_S3_X, MB_S3_Y),
+    ]
+}
+
+fn m2_x2() -> G2 {
+    G2::from_coords(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1).unwrap()
+}
+
+fn mb_x2() -> G2 {
+    G2::from_coords(MB_X2_X0, MB_X2_X1, MB_X2_Y0, MB_X2_Y1).unwrap()
+}
+
+fn m2_vk_from(_ c: [G1; 8]) -> PlonkVk<2> {
+    PlonkVk<2>::new(M2_POWER, fr(M2_W), fr(M2_K1), fr(M2_K2), c, m2_x2()).unwrap()
+}
+
+fn mb_vk_from(_ c: [G1; 8]) -> PlonkVk<3> {
+    PlonkVk<3>::new(MB_POWER, fr(MB_W), fr(MB_K1), fr(MB_K2), c, mb_x2()).unwrap()
+}
+
+fn m2_vk() -> PlonkVk<2> {
+    m2_vk_from(m2_commitments())
+}
+
+fn mb_vk() -> PlonkVk<3> {
+    mb_vk_from(mb_commitments())
+}
+
+fn m2_p() -> PlonkProof {
+    PlonkProof::from_words(m2_proof()).unwrap()
+}
+
+fn mb_p() -> PlonkProof {
+    PlonkProof::from_words(mb_proof()).unwrap()
+}
+
+fn m2_pubs_fr() -> [Bn254Fr; 2] {
+    let p = m2_pubs()
+    [fr(p[0]), fr(p[1])]
+}
+
+fn mb_pubs_fr() -> [Bn254Fr; 3] {
+    let p = mb_pubs()
+    [fr(p[0]), fr(p[1]), fr(p[2])]
+}
+
+// ---------------------------------------------------------------- accept
+
+#[test]
+fn accepts_multiplier2() uses (call: Call) {
+    assert(plonk_verify(m2_vk(), m2_p(), m2_pubs()))
+    assert(plonk_verify_words(m2_vk(), m2_proof(), m2_pubs()))
+}
+
+#[test]
+fn accepts_membership() uses (call: Call) {
+    assert(plonk_verify(mb_vk(), mb_p(), mb_pubs()))
+    assert(plonk_verify_words(mb_vk(), mb_proof(), mb_pubs()))
+}
+
+// ---------------------------------------------------------------- challenges vs snarkjs JS
+
+#[test]
+fn challenges_match_snarkjs_multiplier2() {
+    let c = plonk_challenges(m2_vk(), m2_pubs_fr(), m2_p())
+    assert(c.beta.to_canonical() == M2_CH_BETA)
+    assert(c.gamma.to_canonical() == M2_CH_GAMMA)
+    assert(c.alpha.to_canonical() == M2_CH_ALPHA)
+    assert(c.xi.to_canonical() == M2_CH_XI)
+    assert(c.v.to_canonical() == M2_CH_V)
+    assert(c.u.to_canonical() == M2_CH_U)
+}
+
+#[test]
+fn challenges_match_snarkjs_membership() {
+    let c = plonk_challenges(mb_vk(), mb_pubs_fr(), mb_p())
+    assert(c.beta.to_canonical() == MB_CH_BETA)
+    assert(c.gamma.to_canonical() == MB_CH_GAMMA)
+    assert(c.alpha.to_canonical() == MB_CH_ALPHA)
+    assert(c.xi.to_canonical() == MB_CH_XI)
+    assert(c.v.to_canonical() == MB_CH_V)
+    assert(c.u.to_canonical() == MB_CH_U)
+}
+
+// ---------------------------------------------------------------- transcript binding (rule 5)
+
+// A valid on-curve point different from every fixture point: the generator.
+fn replace_point(_ w: [u256; 24], _ i: usize) -> [u256; 24] {
+    var t = w
+    t[2 * i] = 1
+    t[2 * i + 1] = 2
+    t
+}
+
+fn bump_eval(_ w: [u256; 24], _ i: usize) -> [u256; 24] {
+    var t = w
+    t[18 + i] = (t[18 + i] + 1) % R
+    t
+}
+
+#[test]
+fn transcript_binds_every_vk_commitment() {
+    let base = plonk_challenges(mb_vk(), mb_pubs_fr(), mb_p())
+    var i: usize = 0
+    while i < 8 {
+        var c = mb_commitments()
+        c[i] = G1::generator()
+        let ch = plonk_challenges(mb_vk_from(c), mb_pubs_fr(), mb_p())
+        assert(!ch.beta.eq(base.beta))
+        assert(!ch.xi.eq(base.xi))
+        i += 1
+    }
+    // infinity encodings count too: Qr and Qc of multiplier2 are the point at infinity
+    let b2 = plonk_challenges(m2_vk(), m2_pubs_fr(), m2_p())
+    var c2 = m2_commitments()
+    c2[2] = G1::generator()
+    assert(
+        !plonk_challenges(m2_vk_from(c2), m2_pubs_fr(), m2_p()).beta.eq(b2.beta),
+    )
+}
+
+#[test]
+fn transcript_binds_every_public_input() {
+    let base = plonk_challenges(mb_vk(), mb_pubs_fr(), mb_p())
+    var i: usize = 0
+    while i < 3 {
+        var p = mb_pubs_fr()
+        p[i] = p[i].add(Bn254Fr::one())
+        let ch = plonk_challenges(mb_vk(), p, mb_p())
+        assert(!ch.beta.eq(base.beta))
+        assert(!ch.gamma.eq(base.gamma))
+        assert(!ch.alpha.eq(base.alpha))
+        assert(!ch.xi.eq(base.xi))
+        assert(!ch.v.eq(base.v))
+        i += 1
+    }
+}
+
+#[test]
+fn transcript_binds_every_commitment() {
+    let base = plonk_challenges(mb_vk(), mb_pubs_fr(), mb_p())
+    // A, B, C feed beta (and through the chain everything after it)
+    var i: usize = 0
+    while i < 3 {
+        let ch = plonk_challenges(
+            mb_vk(),
+            mb_pubs_fr(),
+            PlonkProof::from_words(replace_point(mb_proof(), i)).unwrap(),
+        )
+        assert(!ch.beta.eq(base.beta))
+        i += 1
+    }
+    // Z feeds alpha (beta and gamma unchanged)
+    let cz = plonk_challenges(
+        mb_vk(),
+        mb_pubs_fr(),
+        PlonkProof::from_words(replace_point(mb_proof(), 3)).unwrap(),
+    )
+    assert(cz.beta.eq(base.beta) && cz.gamma.eq(base.gamma))
+    assert(!cz.alpha.eq(base.alpha) && !cz.xi.eq(base.xi))
+    // T1, T2, T3 feed xi (alpha unchanged)
+    i = 4
+    while i < 7 {
+        let ct = plonk_challenges(
+            mb_vk(),
+            mb_pubs_fr(),
+            PlonkProof::from_words(replace_point(mb_proof(), i)).unwrap(),
+        )
+        assert(ct.alpha.eq(base.alpha))
+        assert(!ct.xi.eq(base.xi) && !ct.v.eq(base.v))
+        i += 1
+    }
+    // Wxi, Wxiw feed u only
+    i = 7
+    while i < 9 {
+        let cw = plonk_challenges(
+            mb_vk(),
+            mb_pubs_fr(),
+            PlonkProof::from_words(replace_point(mb_proof(), i)).unwrap(),
+        )
+        assert(cw.v.eq(base.v) && cw.xi.eq(base.xi))
+        assert(!cw.u.eq(base.u))
+        i += 1
+    }
+}
+
+#[test]
+fn transcript_binds_every_evaluation() {
+    let base = plonk_challenges(mb_vk(), mb_pubs_fr(), mb_p())
+    var i: usize = 0
+    while i < 6 {
+        let ch = plonk_challenges(
+            mb_vk(),
+            mb_pubs_fr(),
+            PlonkProof::from_words(bump_eval(mb_proof(), i)).unwrap(),
+        )
+        assert(ch.xi.eq(base.xi))
+        assert(!ch.v.eq(base.v))
+        i += 1
+    }
+}
+
+// ---------------------------------------------------------------- reject
+
+#[test]
+fn rejects_tampered_commitment() uses (call: Call) {
+    var i: usize = 0
+    while i < 9 {
+        assert(
+            !plonk_verify_words(mb_vk(), replace_point(mb_proof(), i), mb_pubs()),
+        )
+        i += 1
+    }
+    i = 0
+    while i < 9 {
+        assert(
+            !plonk_verify_words(m2_vk(), replace_point(m2_proof(), i), m2_pubs()),
+        )
+        i += 1
+    }
+}
+
+#[test]
+fn rejects_tampered_evaluation() uses (call: Call) {
+    var i: usize = 0
+    while i < 6 {
+        assert(
+            !plonk_verify_words(mb_vk(), bump_eval(mb_proof(), i), mb_pubs()),
+        )
+        i += 1
+    }
+}
+
+#[test]
+fn rejects_tampered_public_input() uses (call: Call) {
+    var i: usize = 0
+    while i < 3 {
+        var p = mb_pubs()
+        p[i] = p[i] + 1
+        assert(!plonk_verify(mb_vk(), mb_p(), p))
+        i += 1
+    }
+    var q = m2_pubs()
+    q[1] = q[1] + 1
+    assert(!plonk_verify(m2_vk(), m2_p(), q))
+}
+
+#[test]
+fn rejects_non_canonical_public_input() uses (call: Call) {
+    // pub + r is the same residue, so a verifier that reduces silently would accept it.
+    var i: usize = 0
+    while i < 3 {
+        var p = mb_pubs()
+        p[i] = p[i] + R
+        assert(!plonk_verify(mb_vk(), mb_p(), p))
+        i += 1
+    }
+}
+
+#[test]
+fn rejects_non_canonical_evaluation() {
+    var i: usize = 0
+    while i < 6 {
+        var w = mb_proof()
+        w[18 + i] = w[18 + i] + R
+        assert(PlonkProof::from_words(w).is_none())
+        i += 1
+    }
+    var w = mb_proof()
+    w[18] = R
+    assert(PlonkProof::from_words(w).is_none())
+    w[18] = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    assert(PlonkProof::from_words(w).is_none())
+}
+
+#[test]
+fn rejects_off_curve_and_non_canonical_points() uses (call: Call) {
+    var i: usize = 0
+    while i < 9 {
+        // y + 1: not on the curve
+        var w = mb_proof()
+        w[2 * i + 1] = w[2 * i + 1] + 1
+        assert(PlonkProof::from_words(w).is_none())
+        assert(!plonk_verify_words(mb_vk(), w, mb_pubs()))
+        // x + q, y + q: the same point with non-canonical coordinates
+        var v = mb_proof()
+        v[2 * i] = v[2 * i] + Q
+        v[2 * i + 1] = v[2 * i + 1] + Q
+        assert(PlonkProof::from_words(v).is_none())
+        // infinity is rejected, like the snarkjs verifier does
+        var z = mb_proof()
+        z[2 * i] = 0
+        z[2 * i + 1] = 0
+        assert(PlonkProof::from_words(z).is_none())
+        i += 1
+    }
+}
+
+#[test]
+fn rejects_swapped_public_inputs() uses (call: Call) {
+    let p = mb_pubs()
+    assert(!plonk_verify(mb_vk(), mb_p(), [p[1], p[0], p[2]]))
+    assert(!plonk_verify(mb_vk(), mb_p(), [p[0], p[2], p[1]]))
+    let q = m2_pubs()
+    assert(!plonk_verify(m2_vk(), m2_p(), [q[1], q[0]]))
+}
+
+#[test]
+fn rejects_proof_of_other_circuit() uses (call: Call) {
+    // multiplier2 proof against the membership key (and the reverse), with matching public
+    // signals padded to the key's length
+    let q = m2_pubs()
+    assert(!plonk_verify_words(mb_vk(), m2_proof(), [q[0], q[1], 0]))
+    assert(!plonk_verify_words(mb_vk(), m2_proof(), mb_pubs()))
+    let p = mb_pubs()
+    assert(!plonk_verify_words(m2_vk(), mb_proof(), [p[0], p[1]]))
+    // same circuit, proof words of the other circuit's public input set
+    assert(!plonk_verify_words(m2_vk(), m2_proof(), [p[0], p[1]]))
+}
+
+// ---------------------------------------------------------------- vk validation
+
+#[test]
+fn vk_rejects_bad_domain_parameters() {
+    let c = m2_commitments()
+    let x2 = m2_x2()
+    // wrong power: w is not a primitive 2^4-th root
+    assert(
+        PlonkVk<2>::new(4, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_none(),
+    )
+    assert(
+        PlonkVk<2>::new(0, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_none(),
+    )
+    assert(
+        PlonkVk<2>::new(29, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_none(),
+    )
+    // w = 1 is not primitive
+    assert(
+        PlonkVk<2>::new(3, Bn254Fr::one(), fr(M2_K1), fr(M2_K2), c, x2).is_none(),
+    )
+    // k1 = 1 lies in the domain; k1 = k2 collapses two cosets; zero
+    assert(
+        PlonkVk<2>::new(3, fr(M2_W), fr(1), fr(M2_K2), c, x2).is_none(),
+    )
+    assert(
+        PlonkVk<2>::new(3, fr(M2_W), fr(2), fr(2), c, x2).is_none(),
+    )
+    assert(
+        PlonkVk<2>::new(3, fr(M2_W), fr(0), fr(M2_K2), c, x2).is_none(),
+    )
+    // degenerate [x]_2 and zero public signals
+    assert(
+        PlonkVk<2>::new(3, fr(M2_W), fr(M2_K1), fr(M2_K2), c, G2::infinity()).is_none(),
+    )
+    assert(
+        PlonkVk<0>::new(3, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_none(),
+    )
+    assert(
+        PlonkVk<2>::new(3, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_some(),
+    )
+}
+
+#[test]
+fn vk_x2_must_be_in_subgroup() {
+    // an off-curve [x]_2 never becomes a G2 (subgroup membership is covered by the ingot::ec tests)
+    assert(
+        G2::from_coords(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1 + 1).is_none(),
+    )
+}
+
+// ---------------------------------------------------------------- gas
+
+#[test]
+fn plonk_gas_report() uses (evm: mut Evm, call: Call) {
+    // keys, proofs and public inputs are built first: key validation (G2 subgroup check,
+    // ~755k gas) is a one-time deployment cost, not part of a verification
+    let k2 = m2_vk()
+    let p2 = m2_p()
+    let kb = mb_vk()
+    let pb = mb_p()
+    var g0 = evm.gas()
+    let a = plonk_verify(k2, p2, m2_pubs())
+    evm.emit(GasUsed { what: 1, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let b = plonk_verify(kb, pb, mb_pubs())
+    evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
+    assert(a && b)
+}

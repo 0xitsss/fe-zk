@@ -40,4 +40,13 @@ pub use hash::{
     poseidon_4,
     poseidon_5,
 }
-pub use verifier::{KzgVk, kzg_batch_verify_gwc, kzg_verify, kzg_verify_shplonk}
+pub use verifier::{
+    KzgVk,
+    PlonkProof,
+    PlonkVk,
+    kzg_batch_verify_gwc,
+    kzg_verify,
+    kzg_verify_shplonk,
+    plonk_verify,
+    plonk_verify_words,
+}
