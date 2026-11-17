@@ -1,1 +1,27 @@
+# Fe build output
 out/
+# Rust generator (gen/)
+target/
+**/*.rs.bk
+# Generated verifiers and scratch output (commit only curated examples under examples/)
+generated/
+*.tmp
+*.log
+# Test vector caches and large artifacts (fetch or regenerate; see vectors/README.md)
+vectors/cache/
+*.srs
+*.ptau
+*.zkey
+*.params
+# Node tooling for reference vectors (snarkjs, circom)
+node_modules/
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+# Local env and secrets
+.env
+.env.*
+*.key
+*.pem
