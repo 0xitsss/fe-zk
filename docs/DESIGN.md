@@ -95,3 +95,16 @@ So fe-zk uses two G2 types:
   check is completed by the pairing precompile, which is the only operation this type allows. A `G2Proof`
   cannot be turned into a `G2` or passed to anything except `pairing_check`, so the type system keeps the
   guarantee: an unchecked point can only reach the one place that checks it.
+
+## Hash layer (`src/hash/`)
+
+- **One Poseidon2 for every field:** `permute_generic<F: Field + Copy, const T: usize, const NE: usize, const NI: usize>`
+  instantiated as BN254 t=3 (x^5) and KoalaBear t=16 (x^3, Plonky3 constants). The external layer is chosen by `T`
+  (circ(2,1,..) for T < 4, Plonky3 M4 blocks for T % 4 == 0); the internal layer is `s_i = sum + diag_i * s_i`.
+- Generic Merkle path: `merkle_root<H: Compression<D>, D: Copy, const N: usize>`, with `D = Bn254Fr` or `D = [KoalaBear; 8]`.
+- Circomlib Poseidon uses the optimized sparse-matrix form (identical outputs to the plain form).
+- Keccak transcript: every operation is one `keccak_words` over 32-byte words — `new`: `keccak(1, label)`,
+  `absorb`: `keccak(2, state, x)`, `squeeze`: `h = keccak(3, state, label, counter)`, challenge `h mod r`.
+- Fe findings: user traits with type parameters, marker types and turbofish calls work in generic code; `[F::zero(); T]`
+  with indexed mutation works; constant tables of ~1300 `u256` compile in about 2 s; results not used in a test are
+  removed by the optimizer, so gas measurements must emit the result in an event.
