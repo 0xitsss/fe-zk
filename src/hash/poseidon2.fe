@@ -10,6 +10,7 @@
 //! same code serves a 254-bit and a 31-bit field. `T`, the round counts and the S-box degree
 //! are compile-time parameters.
 use ingot::field::{Bn254Fr, Field, KoalaBear}
+use super::poseidon2_unrolled::{permute_bn254_t3, permute_koalabear_t16}
 use super::poseidon2_constants::{
     P2_BN254_T3_DIAG,
     P2_BN254_T3_EXT,
@@ -44,6 +45,7 @@ fn mat4<F: Field + Copy>(_ a: F, _ b: F, _ c: F, _ d: F) -> [F; 4] {
 
 /// External linear layer. `T` in {2, 3}: `circ(2, 1, .., 1)`. `T % 4 == 0`: the 4x4 matrix on
 /// each block, then every lane gets the sum of the same lane over all blocks.
+#[arithmetic(unchecked)]
 fn external_layer<F: Field + Copy, const T: usize>(_ s: [F; T]) -> [F; T] {
     var out: [F; T] = s
     if T < 4 {
@@ -87,6 +89,7 @@ fn external_layer<F: Field + Copy, const T: usize>(_ s: [F; T]) -> [F; T] {
     out
 }
 
+#[arithmetic(unchecked)]
 fn full_round<F: Field + Copy, const T: usize, const NE: usize>(
     _ s: [F; T],
     _ ext: [u256; NE],
@@ -105,6 +108,7 @@ fn full_round<F: Field + Copy, const T: usize, const NE: usize>(
 /// The Poseidon2 permutation. `ext` holds `2 * rounds_f_half * T` constants (initial full
 /// rounds, then final full rounds), `int` the partial-round constants (lane 0), `diag` the
 /// internal matrix diagonal (`M_I = 1 + diag(d)`), `degree` the S-box exponent (3 or 5).
+#[arithmetic(unchecked)]
 pub fn permute_generic<F: Field + Copy, const T: usize, const NE: usize, const NI: usize>(
     _ input: [F; T],
     _ ext: [u256; NE],
@@ -202,12 +206,42 @@ pub fn merkle_root<H: Compression<D>, D: Copy, const N: usize>(
 }
 
 /// Poseidon2 permutation over BN254 `Fr`, t = 3 (HorizenLabs reference parameters).
+/// Fast path: scalar-local unrolled version (`poseidon2_unrolled.fe`); output identical to
+/// `bn254_t3_permute_generic`.
 pub fn bn254_t3_permute(_ s: [Bn254Fr; 3]) -> [Bn254Fr; 3] {
+    let o = permute_bn254_t3(
+        s[0].to_canonical(),
+        s[1].to_canonical(),
+        s[2].to_canonical(),
+    )
+    [Bn254Fr::reduce(o[0]), Bn254Fr::reduce(o[1]), Bn254Fr::reduce(o[2])]
+}
+
+/// The same permutation through the single generic implementation `permute_generic`.
+pub fn bn254_t3_permute_generic(_ s: [Bn254Fr; 3]) -> [Bn254Fr; 3] {
     permute_generic(s, P2_BN254_T3_EXT, P2_BN254_T3_INT, P2_BN254_T3_DIAG, 5)
 }
 
-/// Poseidon2 permutation over KoalaBear, t = 16 (Plonky3 default parameters).
+/// Poseidon2 permutation over KoalaBear, t = 16 (Plonky3 default parameters). Fast path.
 pub fn koalabear_t16_permute(_ s: [KoalaBear; 16]) -> [KoalaBear; 16] {
+    var raw: [u256; 16] = [0; 16]
+    var i: usize = 0
+    while i < 16 {
+        raw[i] = s[i].to_canonical()
+        i += 1
+    }
+    let o = permute_koalabear_t16(raw)
+    var out: [KoalaBear; 16] = [KoalaBear::zero(); 16]
+    i = 0
+    while i < 16 {
+        out[i] = KoalaBear::reduce(o[i])
+        i += 1
+    }
+    out
+}
+
+/// The same permutation through the single generic implementation `permute_generic`.
+pub fn koalabear_t16_permute_generic(_ s: [KoalaBear; 16]) -> [KoalaBear; 16] {
     permute_generic(
         s,
         P2_KOALABEAR_T16_EXT,

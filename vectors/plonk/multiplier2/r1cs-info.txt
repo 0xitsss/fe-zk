@@ -1,0 +1,7 @@
+[INFO]  snarkJS: Curve: bn-128
+[INFO]  snarkJS: # of Wires: 4
+[INFO]  snarkJS: # of Constraints: 1
+[INFO]  snarkJS: # of Private Inputs: 1
+[INFO]  snarkJS: # of Public Inputs: 1
+[INFO]  snarkJS: # of Labels: 4
+[INFO]  snarkJS: # of Outputs: 1

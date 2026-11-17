@@ -1,5 +1,6 @@
 //! Proof and opening verifiers.
 
+pub use halo2::Halo2Vk
 pub use kzg::{
     KzgVk,
     gwc_challenge,
@@ -16,3 +17,4 @@ pub use groth16::{
     verify as groth16_verify,
     verify_raw as groth16_verify_raw,
 }
+pub use plonk::{PlonkProof, PlonkVk, plonk_challenges, plonk_verify, plonk_verify_words}

@@ -1,0 +1,679 @@
+//! GENERATED FILE, do not edit: `scripts/gen-poseidon-unrolled.py`.
+//!
+//! circomlib Poseidon permutation, t = 2..6, with the state in scalar locals and the round
+//! bodies fully unrolled over the lanes. Same arithmetic as `poseidon::permute_array`
+//! (the readable array version); see `poseidon.fe` for the safety argument.
+//!
+//! Bounds (safety rule 7): every `mulmod` / `addmod` result is < R. R < 0.1889 * 2^256, so a
+//! plain sum of at most 5 such values is < 5 * R < 2^256 and cannot overflow; `dot` sums at most
+//! 5 products before one `% R`, and for 6 terms uses `addmod` on two sums of 3 (exact for any
+//! u256 operands). Round-constant and matrix entries are canonical (< R), checked by the test
+//! `poseidon_tables_are_canonical`. Callers pass canonical inputs (typed `Bn254Fr`).
+use std::evm::crypto::{addmod, mulmod}
+use super::poseidon_constants::{
+    POSEIDON_C2,
+    POSEIDON_C3,
+    POSEIDON_C4,
+    POSEIDON_C5,
+    POSEIDON_C6,
+    POSEIDON_M2,
+    POSEIDON_M3,
+    POSEIDON_M4,
+    POSEIDON_M5,
+    POSEIDON_M6,
+    POSEIDON_P2,
+    POSEIDON_P3,
+    POSEIDON_P4,
+    POSEIDON_P5,
+    POSEIDON_P6,
+    POSEIDON_S2,
+    POSEIDON_S3,
+    POSEIDON_S4,
+    POSEIDON_S5,
+    POSEIDON_S6,
+}
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+fn sbox(_ x: u256) -> u256 {
+    let x2 = mulmod(x, x, R)
+    let x4 = mulmod(x2, x2, R)
+    mulmod(x4, x, R)
+}
+
+/// circomlib Poseidon, t = 2 (1 inputs). Inputs must be canonical (< R).
+#[arithmetic(unchecked)]
+pub fn permute_t2(_ i1: u256) -> u256 {
+    var s0: u256 = POSEIDON_C2[0]
+    var s1: u256 = addmod(i1, POSEIDON_C2[1], R)
+    var r: usize = 0
+    while r < 3 {
+        let off = (r + 1) * 2
+        let a0 = addmod(sbox(s0), POSEIDON_C2[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C2[off + 1], R)
+        s0 = (mulmod(POSEIDON_M2[0], a0, R) + mulmod(POSEIDON_M2[2], a1, R)) % R
+        s1 = (mulmod(POSEIDON_M2[1], a0, R) + mulmod(POSEIDON_M2[3], a1, R)) % R
+        r += 1
+    }
+    {
+        let a0 = addmod(sbox(s0), POSEIDON_C2[8 + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C2[8 + 1], R)
+        s0 = (mulmod(POSEIDON_P2[0], a0, R) + mulmod(POSEIDON_P2[2], a1, R)) % R
+        s1 = (mulmod(POSEIDON_P2[1], a0, R) + mulmod(POSEIDON_P2[3], a1, R)) % R
+    }
+    r = 0
+    while r < 56 {
+        let x0 = addmod(sbox(s0), POSEIDON_C2[10 + r], R)
+        let base = 3 * r
+        let n0 = (mulmod(POSEIDON_S2[base], x0, R) + mulmod(POSEIDON_S2[base + 1], s1, R)) % R
+        s1 = addmod(s1, mulmod(x0, POSEIDON_S2[base + 2], R), R)
+        s0 = n0
+        r += 1
+    }
+    r = 0
+    while r < 3 {
+        let off = 66 + r * 2
+        let a0 = addmod(sbox(s0), POSEIDON_C2[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C2[off + 1], R)
+        s0 = (mulmod(POSEIDON_M2[0], a0, R) + mulmod(POSEIDON_M2[2], a1, R)) % R
+        s1 = (mulmod(POSEIDON_M2[1], a0, R) + mulmod(POSEIDON_M2[3], a1, R)) % R
+        r += 1
+    }
+    let z0 = sbox(s0)
+    let z1 = sbox(s1)
+    (mulmod(POSEIDON_M2[0], z0, R) + mulmod(POSEIDON_M2[2], z1, R)) % R
+}
+
+/// circomlib Poseidon, t = 3 (2 inputs). Inputs must be canonical (< R).
+#[arithmetic(unchecked)]
+pub fn permute_t3(_ i1: u256, _ i2: u256) -> u256 {
+    var s0: u256 = POSEIDON_C3[0]
+    var s1: u256 = addmod(i1, POSEIDON_C3[1], R)
+    var s2: u256 = addmod(i2, POSEIDON_C3[2], R)
+    var r: usize = 0
+    while r < 3 {
+        let off = (r + 1) * 3
+        let a0 = addmod(sbox(s0), POSEIDON_C3[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C3[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C3[off + 2], R)
+        s0 = (mulmod(POSEIDON_M3[0], a0, R)
+                + mulmod(POSEIDON_M3[3], a1, R)
+                + mulmod(POSEIDON_M3[6], a2, R))
+            % R
+        s1 = (mulmod(POSEIDON_M3[1], a0, R)
+                + mulmod(POSEIDON_M3[4], a1, R)
+                + mulmod(POSEIDON_M3[7], a2, R))
+            % R
+        s2 = (mulmod(POSEIDON_M3[2], a0, R)
+                + mulmod(POSEIDON_M3[5], a1, R)
+                + mulmod(POSEIDON_M3[8], a2, R))
+            % R
+        r += 1
+    }
+    {
+        let a0 = addmod(sbox(s0), POSEIDON_C3[12 + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C3[12 + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C3[12 + 2], R)
+        s0 = (mulmod(POSEIDON_P3[0], a0, R)
+                + mulmod(POSEIDON_P3[3], a1, R)
+                + mulmod(POSEIDON_P3[6], a2, R))
+            % R
+        s1 = (mulmod(POSEIDON_P3[1], a0, R)
+                + mulmod(POSEIDON_P3[4], a1, R)
+                + mulmod(POSEIDON_P3[7], a2, R))
+            % R
+        s2 = (mulmod(POSEIDON_P3[2], a0, R)
+                + mulmod(POSEIDON_P3[5], a1, R)
+                + mulmod(POSEIDON_P3[8], a2, R))
+            % R
+    }
+    r = 0
+    while r < 57 {
+        let x0 = addmod(sbox(s0), POSEIDON_C3[15 + r], R)
+        let base = 5 * r
+        let n0 = (mulmod(POSEIDON_S3[base], x0, R)
+                + mulmod(POSEIDON_S3[base + 1], s1, R)
+                + mulmod(POSEIDON_S3[base + 2], s2, R))
+            % R
+        s1 = addmod(s1, mulmod(x0, POSEIDON_S3[base + 3], R), R)
+        s2 = addmod(s2, mulmod(x0, POSEIDON_S3[base + 4], R), R)
+        s0 = n0
+        r += 1
+    }
+    r = 0
+    while r < 3 {
+        let off = 72 + r * 3
+        let a0 = addmod(sbox(s0), POSEIDON_C3[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C3[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C3[off + 2], R)
+        s0 = (mulmod(POSEIDON_M3[0], a0, R)
+                + mulmod(POSEIDON_M3[3], a1, R)
+                + mulmod(POSEIDON_M3[6], a2, R))
+            % R
+        s1 = (mulmod(POSEIDON_M3[1], a0, R)
+                + mulmod(POSEIDON_M3[4], a1, R)
+                + mulmod(POSEIDON_M3[7], a2, R))
+            % R
+        s2 = (mulmod(POSEIDON_M3[2], a0, R)
+                + mulmod(POSEIDON_M3[5], a1, R)
+                + mulmod(POSEIDON_M3[8], a2, R))
+            % R
+        r += 1
+    }
+    let z0 = sbox(s0)
+    let z1 = sbox(s1)
+    let z2 = sbox(s2)
+    (mulmod(POSEIDON_M3[0], z0, R) + mulmod(POSEIDON_M3[3], z1, R) + mulmod(POSEIDON_M3[6], z2, R))
+        % R
+}
+
+/// circomlib Poseidon, t = 4 (3 inputs). Inputs must be canonical (< R).
+#[arithmetic(unchecked)]
+pub fn permute_t4(_ i1: u256, _ i2: u256, _ i3: u256) -> u256 {
+    var s0: u256 = POSEIDON_C4[0]
+    var s1: u256 = addmod(i1, POSEIDON_C4[1], R)
+    var s2: u256 = addmod(i2, POSEIDON_C4[2], R)
+    var s3: u256 = addmod(i3, POSEIDON_C4[3], R)
+    var r: usize = 0
+    while r < 3 {
+        let off = (r + 1) * 4
+        let a0 = addmod(sbox(s0), POSEIDON_C4[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C4[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C4[off + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C4[off + 3], R)
+        s0 = (mulmod(POSEIDON_M4[0], a0, R)
+                + mulmod(POSEIDON_M4[4], a1, R)
+                + mulmod(POSEIDON_M4[8], a2, R)
+                + mulmod(POSEIDON_M4[12], a3, R))
+            % R
+        s1 = (mulmod(POSEIDON_M4[1], a0, R)
+                + mulmod(POSEIDON_M4[5], a1, R)
+                + mulmod(POSEIDON_M4[9], a2, R)
+                + mulmod(POSEIDON_M4[13], a3, R))
+            % R
+        s2 = (mulmod(POSEIDON_M4[2], a0, R)
+                + mulmod(POSEIDON_M4[6], a1, R)
+                + mulmod(POSEIDON_M4[10], a2, R)
+                + mulmod(POSEIDON_M4[14], a3, R))
+            % R
+        s3 = (mulmod(POSEIDON_M4[3], a0, R)
+                + mulmod(POSEIDON_M4[7], a1, R)
+                + mulmod(POSEIDON_M4[11], a2, R)
+                + mulmod(POSEIDON_M4[15], a3, R))
+            % R
+        r += 1
+    }
+    {
+        let a0 = addmod(sbox(s0), POSEIDON_C4[16 + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C4[16 + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C4[16 + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C4[16 + 3], R)
+        s0 = (mulmod(POSEIDON_P4[0], a0, R)
+                + mulmod(POSEIDON_P4[4], a1, R)
+                + mulmod(POSEIDON_P4[8], a2, R)
+                + mulmod(POSEIDON_P4[12], a3, R))
+            % R
+        s1 = (mulmod(POSEIDON_P4[1], a0, R)
+                + mulmod(POSEIDON_P4[5], a1, R)
+                + mulmod(POSEIDON_P4[9], a2, R)
+                + mulmod(POSEIDON_P4[13], a3, R))
+            % R
+        s2 = (mulmod(POSEIDON_P4[2], a0, R)
+                + mulmod(POSEIDON_P4[6], a1, R)
+                + mulmod(POSEIDON_P4[10], a2, R)
+                + mulmod(POSEIDON_P4[14], a3, R))
+            % R
+        s3 = (mulmod(POSEIDON_P4[3], a0, R)
+                + mulmod(POSEIDON_P4[7], a1, R)
+                + mulmod(POSEIDON_P4[11], a2, R)
+                + mulmod(POSEIDON_P4[15], a3, R))
+            % R
+    }
+    r = 0
+    while r < 56 {
+        let x0 = addmod(sbox(s0), POSEIDON_C4[20 + r], R)
+        let base = 7 * r
+        let n0 = (mulmod(POSEIDON_S4[base], x0, R)
+                + mulmod(POSEIDON_S4[base + 1], s1, R)
+                + mulmod(POSEIDON_S4[base + 2], s2, R)
+                + mulmod(POSEIDON_S4[base + 3], s3, R))
+            % R
+        s1 = addmod(s1, mulmod(x0, POSEIDON_S4[base + 4], R), R)
+        s2 = addmod(s2, mulmod(x0, POSEIDON_S4[base + 5], R), R)
+        s3 = addmod(s3, mulmod(x0, POSEIDON_S4[base + 6], R), R)
+        s0 = n0
+        r += 1
+    }
+    r = 0
+    while r < 3 {
+        let off = 76 + r * 4
+        let a0 = addmod(sbox(s0), POSEIDON_C4[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C4[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C4[off + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C4[off + 3], R)
+        s0 = (mulmod(POSEIDON_M4[0], a0, R)
+                + mulmod(POSEIDON_M4[4], a1, R)
+                + mulmod(POSEIDON_M4[8], a2, R)
+                + mulmod(POSEIDON_M4[12], a3, R))
+            % R
+        s1 = (mulmod(POSEIDON_M4[1], a0, R)
+                + mulmod(POSEIDON_M4[5], a1, R)
+                + mulmod(POSEIDON_M4[9], a2, R)
+                + mulmod(POSEIDON_M4[13], a3, R))
+            % R
+        s2 = (mulmod(POSEIDON_M4[2], a0, R)
+                + mulmod(POSEIDON_M4[6], a1, R)
+                + mulmod(POSEIDON_M4[10], a2, R)
+                + mulmod(POSEIDON_M4[14], a3, R))
+            % R
+        s3 = (mulmod(POSEIDON_M4[3], a0, R)
+                + mulmod(POSEIDON_M4[7], a1, R)
+                + mulmod(POSEIDON_M4[11], a2, R)
+                + mulmod(POSEIDON_M4[15], a3, R))
+            % R
+        r += 1
+    }
+    let z0 = sbox(s0)
+    let z1 = sbox(s1)
+    let z2 = sbox(s2)
+    let z3 = sbox(s3)
+    (mulmod(POSEIDON_M4[0], z0, R)
+            + mulmod(POSEIDON_M4[4], z1, R)
+            + mulmod(POSEIDON_M4[8], z2, R)
+            + mulmod(POSEIDON_M4[12], z3, R))
+        % R
+}
+
+/// circomlib Poseidon, t = 5 (4 inputs). Inputs must be canonical (< R).
+#[arithmetic(unchecked)]
+pub fn permute_t5(_ i1: u256, _ i2: u256, _ i3: u256, _ i4: u256) -> u256 {
+    var s0: u256 = POSEIDON_C5[0]
+    var s1: u256 = addmod(i1, POSEIDON_C5[1], R)
+    var s2: u256 = addmod(i2, POSEIDON_C5[2], R)
+    var s3: u256 = addmod(i3, POSEIDON_C5[3], R)
+    var s4: u256 = addmod(i4, POSEIDON_C5[4], R)
+    var r: usize = 0
+    while r < 3 {
+        let off = (r + 1) * 5
+        let a0 = addmod(sbox(s0), POSEIDON_C5[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C5[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C5[off + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C5[off + 3], R)
+        let a4 = addmod(sbox(s4), POSEIDON_C5[off + 4], R)
+        s0 = (mulmod(POSEIDON_M5[0], a0, R)
+                + mulmod(POSEIDON_M5[5], a1, R)
+                + mulmod(POSEIDON_M5[10], a2, R)
+                + mulmod(POSEIDON_M5[15], a3, R)
+                + mulmod(POSEIDON_M5[20], a4, R))
+            % R
+        s1 = (mulmod(POSEIDON_M5[1], a0, R)
+                + mulmod(POSEIDON_M5[6], a1, R)
+                + mulmod(POSEIDON_M5[11], a2, R)
+                + mulmod(POSEIDON_M5[16], a3, R)
+                + mulmod(POSEIDON_M5[21], a4, R))
+            % R
+        s2 = (mulmod(POSEIDON_M5[2], a0, R)
+                + mulmod(POSEIDON_M5[7], a1, R)
+                + mulmod(POSEIDON_M5[12], a2, R)
+                + mulmod(POSEIDON_M5[17], a3, R)
+                + mulmod(POSEIDON_M5[22], a4, R))
+            % R
+        s3 = (mulmod(POSEIDON_M5[3], a0, R)
+                + mulmod(POSEIDON_M5[8], a1, R)
+                + mulmod(POSEIDON_M5[13], a2, R)
+                + mulmod(POSEIDON_M5[18], a3, R)
+                + mulmod(POSEIDON_M5[23], a4, R))
+            % R
+        s4 = (mulmod(POSEIDON_M5[4], a0, R)
+                + mulmod(POSEIDON_M5[9], a1, R)
+                + mulmod(POSEIDON_M5[14], a2, R)
+                + mulmod(POSEIDON_M5[19], a3, R)
+                + mulmod(POSEIDON_M5[24], a4, R))
+            % R
+        r += 1
+    }
+    {
+        let a0 = addmod(sbox(s0), POSEIDON_C5[20 + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C5[20 + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C5[20 + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C5[20 + 3], R)
+        let a4 = addmod(sbox(s4), POSEIDON_C5[20 + 4], R)
+        s0 = (mulmod(POSEIDON_P5[0], a0, R)
+                + mulmod(POSEIDON_P5[5], a1, R)
+                + mulmod(POSEIDON_P5[10], a2, R)
+                + mulmod(POSEIDON_P5[15], a3, R)
+                + mulmod(POSEIDON_P5[20], a4, R))
+            % R
+        s1 = (mulmod(POSEIDON_P5[1], a0, R)
+                + mulmod(POSEIDON_P5[6], a1, R)
+                + mulmod(POSEIDON_P5[11], a2, R)
+                + mulmod(POSEIDON_P5[16], a3, R)
+                + mulmod(POSEIDON_P5[21], a4, R))
+            % R
+        s2 = (mulmod(POSEIDON_P5[2], a0, R)
+                + mulmod(POSEIDON_P5[7], a1, R)
+                + mulmod(POSEIDON_P5[12], a2, R)
+                + mulmod(POSEIDON_P5[17], a3, R)
+                + mulmod(POSEIDON_P5[22], a4, R))
+            % R
+        s3 = (mulmod(POSEIDON_P5[3], a0, R)
+                + mulmod(POSEIDON_P5[8], a1, R)
+                + mulmod(POSEIDON_P5[13], a2, R)
+                + mulmod(POSEIDON_P5[18], a3, R)
+                + mulmod(POSEIDON_P5[23], a4, R))
+            % R
+        s4 = (mulmod(POSEIDON_P5[4], a0, R)
+                + mulmod(POSEIDON_P5[9], a1, R)
+                + mulmod(POSEIDON_P5[14], a2, R)
+                + mulmod(POSEIDON_P5[19], a3, R)
+                + mulmod(POSEIDON_P5[24], a4, R))
+            % R
+    }
+    r = 0
+    while r < 60 {
+        let x0 = addmod(sbox(s0), POSEIDON_C5[25 + r], R)
+        let base = 9 * r
+        let n0 = (mulmod(POSEIDON_S5[base], x0, R)
+                + mulmod(POSEIDON_S5[base + 1], s1, R)
+                + mulmod(POSEIDON_S5[base + 2], s2, R)
+                + mulmod(POSEIDON_S5[base + 3], s3, R)
+                + mulmod(POSEIDON_S5[base + 4], s4, R))
+            % R
+        s1 = addmod(s1, mulmod(x0, POSEIDON_S5[base + 5], R), R)
+        s2 = addmod(s2, mulmod(x0, POSEIDON_S5[base + 6], R), R)
+        s3 = addmod(s3, mulmod(x0, POSEIDON_S5[base + 7], R), R)
+        s4 = addmod(s4, mulmod(x0, POSEIDON_S5[base + 8], R), R)
+        s0 = n0
+        r += 1
+    }
+    r = 0
+    while r < 3 {
+        let off = 85 + r * 5
+        let a0 = addmod(sbox(s0), POSEIDON_C5[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C5[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C5[off + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C5[off + 3], R)
+        let a4 = addmod(sbox(s4), POSEIDON_C5[off + 4], R)
+        s0 = (mulmod(POSEIDON_M5[0], a0, R)
+                + mulmod(POSEIDON_M5[5], a1, R)
+                + mulmod(POSEIDON_M5[10], a2, R)
+                + mulmod(POSEIDON_M5[15], a3, R)
+                + mulmod(POSEIDON_M5[20], a4, R))
+            % R
+        s1 = (mulmod(POSEIDON_M5[1], a0, R)
+                + mulmod(POSEIDON_M5[6], a1, R)
+                + mulmod(POSEIDON_M5[11], a2, R)
+                + mulmod(POSEIDON_M5[16], a3, R)
+                + mulmod(POSEIDON_M5[21], a4, R))
+            % R
+        s2 = (mulmod(POSEIDON_M5[2], a0, R)
+                + mulmod(POSEIDON_M5[7], a1, R)
+                + mulmod(POSEIDON_M5[12], a2, R)
+                + mulmod(POSEIDON_M5[17], a3, R)
+                + mulmod(POSEIDON_M5[22], a4, R))
+            % R
+        s3 = (mulmod(POSEIDON_M5[3], a0, R)
+                + mulmod(POSEIDON_M5[8], a1, R)
+                + mulmod(POSEIDON_M5[13], a2, R)
+                + mulmod(POSEIDON_M5[18], a3, R)
+                + mulmod(POSEIDON_M5[23], a4, R))
+            % R
+        s4 = (mulmod(POSEIDON_M5[4], a0, R)
+                + mulmod(POSEIDON_M5[9], a1, R)
+                + mulmod(POSEIDON_M5[14], a2, R)
+                + mulmod(POSEIDON_M5[19], a3, R)
+                + mulmod(POSEIDON_M5[24], a4, R))
+            % R
+        r += 1
+    }
+    let z0 = sbox(s0)
+    let z1 = sbox(s1)
+    let z2 = sbox(s2)
+    let z3 = sbox(s3)
+    let z4 = sbox(s4)
+    (mulmod(POSEIDON_M5[0], z0, R)
+            + mulmod(POSEIDON_M5[5], z1, R)
+            + mulmod(POSEIDON_M5[10], z2, R)
+            + mulmod(POSEIDON_M5[15], z3, R)
+            + mulmod(POSEIDON_M5[20], z4, R))
+        % R
+}
+
+/// circomlib Poseidon, t = 6 (5 inputs). Inputs must be canonical (< R).
+#[arithmetic(unchecked)]
+pub fn permute_t6(_ i1: u256, _ i2: u256, _ i3: u256, _ i4: u256, _ i5: u256) -> u256 {
+    var s0: u256 = POSEIDON_C6[0]
+    var s1: u256 = addmod(i1, POSEIDON_C6[1], R)
+    var s2: u256 = addmod(i2, POSEIDON_C6[2], R)
+    var s3: u256 = addmod(i3, POSEIDON_C6[3], R)
+    var s4: u256 = addmod(i4, POSEIDON_C6[4], R)
+    var s5: u256 = addmod(i5, POSEIDON_C6[5], R)
+    var r: usize = 0
+    while r < 3 {
+        let off = (r + 1) * 6
+        let a0 = addmod(sbox(s0), POSEIDON_C6[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C6[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C6[off + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C6[off + 3], R)
+        let a4 = addmod(sbox(s4), POSEIDON_C6[off + 4], R)
+        let a5 = addmod(sbox(s5), POSEIDON_C6[off + 5], R)
+        s0 = addmod(
+            mulmod(POSEIDON_M6[0], a0, R)
+                + mulmod(POSEIDON_M6[6], a1, R)
+                + mulmod(POSEIDON_M6[12], a2, R),
+            mulmod(POSEIDON_M6[18], a3, R)
+                + mulmod(POSEIDON_M6[24], a4, R)
+                + mulmod(POSEIDON_M6[30], a5, R),
+            R,
+        )
+        s1 = addmod(
+            mulmod(POSEIDON_M6[1], a0, R)
+                + mulmod(POSEIDON_M6[7], a1, R)
+                + mulmod(POSEIDON_M6[13], a2, R),
+            mulmod(POSEIDON_M6[19], a3, R)
+                + mulmod(POSEIDON_M6[25], a4, R)
+                + mulmod(POSEIDON_M6[31], a5, R),
+            R,
+        )
+        s2 = addmod(
+            mulmod(POSEIDON_M6[2], a0, R)
+                + mulmod(POSEIDON_M6[8], a1, R)
+                + mulmod(POSEIDON_M6[14], a2, R),
+            mulmod(POSEIDON_M6[20], a3, R)
+                + mulmod(POSEIDON_M6[26], a4, R)
+                + mulmod(POSEIDON_M6[32], a5, R),
+            R,
+        )
+        s3 = addmod(
+            mulmod(POSEIDON_M6[3], a0, R)
+                + mulmod(POSEIDON_M6[9], a1, R)
+                + mulmod(POSEIDON_M6[15], a2, R),
+            mulmod(POSEIDON_M6[21], a3, R)
+                + mulmod(POSEIDON_M6[27], a4, R)
+                + mulmod(POSEIDON_M6[33], a5, R),
+            R,
+        )
+        s4 = addmod(
+            mulmod(POSEIDON_M6[4], a0, R)
+                + mulmod(POSEIDON_M6[10], a1, R)
+                + mulmod(POSEIDON_M6[16], a2, R),
+            mulmod(POSEIDON_M6[22], a3, R)
+                + mulmod(POSEIDON_M6[28], a4, R)
+                + mulmod(POSEIDON_M6[34], a5, R),
+            R,
+        )
+        s5 = addmod(
+            mulmod(POSEIDON_M6[5], a0, R)
+                + mulmod(POSEIDON_M6[11], a1, R)
+                + mulmod(POSEIDON_M6[17], a2, R),
+            mulmod(POSEIDON_M6[23], a3, R)
+                + mulmod(POSEIDON_M6[29], a4, R)
+                + mulmod(POSEIDON_M6[35], a5, R),
+            R,
+        )
+        r += 1
+    }
+    {
+        let a0 = addmod(sbox(s0), POSEIDON_C6[24 + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C6[24 + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C6[24 + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C6[24 + 3], R)
+        let a4 = addmod(sbox(s4), POSEIDON_C6[24 + 4], R)
+        let a5 = addmod(sbox(s5), POSEIDON_C6[24 + 5], R)
+        s0 = addmod(
+            mulmod(POSEIDON_P6[0], a0, R)
+                + mulmod(POSEIDON_P6[6], a1, R)
+                + mulmod(POSEIDON_P6[12], a2, R),
+            mulmod(POSEIDON_P6[18], a3, R)
+                + mulmod(POSEIDON_P6[24], a4, R)
+                + mulmod(POSEIDON_P6[30], a5, R),
+            R,
+        )
+        s1 = addmod(
+            mulmod(POSEIDON_P6[1], a0, R)
+                + mulmod(POSEIDON_P6[7], a1, R)
+                + mulmod(POSEIDON_P6[13], a2, R),
+            mulmod(POSEIDON_P6[19], a3, R)
+                + mulmod(POSEIDON_P6[25], a4, R)
+                + mulmod(POSEIDON_P6[31], a5, R),
+            R,
+        )
+        s2 = addmod(
+            mulmod(POSEIDON_P6[2], a0, R)
+                + mulmod(POSEIDON_P6[8], a1, R)
+                + mulmod(POSEIDON_P6[14], a2, R),
+            mulmod(POSEIDON_P6[20], a3, R)
+                + mulmod(POSEIDON_P6[26], a4, R)
+                + mulmod(POSEIDON_P6[32], a5, R),
+            R,
+        )
+        s3 = addmod(
+            mulmod(POSEIDON_P6[3], a0, R)
+                + mulmod(POSEIDON_P6[9], a1, R)
+                + mulmod(POSEIDON_P6[15], a2, R),
+            mulmod(POSEIDON_P6[21], a3, R)
+                + mulmod(POSEIDON_P6[27], a4, R)
+                + mulmod(POSEIDON_P6[33], a5, R),
+            R,
+        )
+        s4 = addmod(
+            mulmod(POSEIDON_P6[4], a0, R)
+                + mulmod(POSEIDON_P6[10], a1, R)
+                + mulmod(POSEIDON_P6[16], a2, R),
+            mulmod(POSEIDON_P6[22], a3, R)
+                + mulmod(POSEIDON_P6[28], a4, R)
+                + mulmod(POSEIDON_P6[34], a5, R),
+            R,
+        )
+        s5 = addmod(
+            mulmod(POSEIDON_P6[5], a0, R)
+                + mulmod(POSEIDON_P6[11], a1, R)
+                + mulmod(POSEIDON_P6[17], a2, R),
+            mulmod(POSEIDON_P6[23], a3, R)
+                + mulmod(POSEIDON_P6[29], a4, R)
+                + mulmod(POSEIDON_P6[35], a5, R),
+            R,
+        )
+    }
+    r = 0
+    while r < 60 {
+        let x0 = addmod(sbox(s0), POSEIDON_C6[30 + r], R)
+        let base = 11 * r
+        let n0 = addmod(
+            mulmod(POSEIDON_S6[base], x0, R)
+                + mulmod(POSEIDON_S6[base + 1], s1, R)
+                + mulmod(POSEIDON_S6[base + 2], s2, R),
+            mulmod(POSEIDON_S6[base + 3], s3, R)
+                + mulmod(POSEIDON_S6[base + 4], s4, R)
+                + mulmod(POSEIDON_S6[base + 5], s5, R),
+            R,
+        )
+        s1 = addmod(s1, mulmod(x0, POSEIDON_S6[base + 6], R), R)
+        s2 = addmod(s2, mulmod(x0, POSEIDON_S6[base + 7], R), R)
+        s3 = addmod(s3, mulmod(x0, POSEIDON_S6[base + 8], R), R)
+        s4 = addmod(s4, mulmod(x0, POSEIDON_S6[base + 9], R), R)
+        s5 = addmod(s5, mulmod(x0, POSEIDON_S6[base + 10], R), R)
+        s0 = n0
+        r += 1
+    }
+    r = 0
+    while r < 3 {
+        let off = 90 + r * 6
+        let a0 = addmod(sbox(s0), POSEIDON_C6[off + 0], R)
+        let a1 = addmod(sbox(s1), POSEIDON_C6[off + 1], R)
+        let a2 = addmod(sbox(s2), POSEIDON_C6[off + 2], R)
+        let a3 = addmod(sbox(s3), POSEIDON_C6[off + 3], R)
+        let a4 = addmod(sbox(s4), POSEIDON_C6[off + 4], R)
+        let a5 = addmod(sbox(s5), POSEIDON_C6[off + 5], R)
+        s0 = addmod(
+            mulmod(POSEIDON_M6[0], a0, R)
+                + mulmod(POSEIDON_M6[6], a1, R)
+                + mulmod(POSEIDON_M6[12], a2, R),
+            mulmod(POSEIDON_M6[18], a3, R)
+                + mulmod(POSEIDON_M6[24], a4, R)
+                + mulmod(POSEIDON_M6[30], a5, R),
+            R,
+        )
+        s1 = addmod(
+            mulmod(POSEIDON_M6[1], a0, R)
+                + mulmod(POSEIDON_M6[7], a1, R)
+                + mulmod(POSEIDON_M6[13], a2, R),
+            mulmod(POSEIDON_M6[19], a3, R)
+                + mulmod(POSEIDON_M6[25], a4, R)
+                + mulmod(POSEIDON_M6[31], a5, R),
+            R,
+        )
+        s2 = addmod(
+            mulmod(POSEIDON_M6[2], a0, R)
+                + mulmod(POSEIDON_M6[8], a1, R)
+                + mulmod(POSEIDON_M6[14], a2, R),
+            mulmod(POSEIDON_M6[20], a3, R)
+                + mulmod(POSEIDON_M6[26], a4, R)
+                + mulmod(POSEIDON_M6[32], a5, R),
+            R,
+        )
+        s3 = addmod(
+            mulmod(POSEIDON_M6[3], a0, R)
+                + mulmod(POSEIDON_M6[9], a1, R)
+                + mulmod(POSEIDON_M6[15], a2, R),
+            mulmod(POSEIDON_M6[21], a3, R)
+                + mulmod(POSEIDON_M6[27], a4, R)
+                + mulmod(POSEIDON_M6[33], a5, R),
+            R,
+        )
+        s4 = addmod(
+            mulmod(POSEIDON_M6[4], a0, R)
+                + mulmod(POSEIDON_M6[10], a1, R)
+                + mulmod(POSEIDON_M6[16], a2, R),
+            mulmod(POSEIDON_M6[22], a3, R)
+                + mulmod(POSEIDON_M6[28], a4, R)
+                + mulmod(POSEIDON_M6[34], a5, R),
+            R,
+        )
+        s5 = addmod(
+            mulmod(POSEIDON_M6[5], a0, R)
+                + mulmod(POSEIDON_M6[11], a1, R)
+                + mulmod(POSEIDON_M6[17], a2, R),
+            mulmod(POSEIDON_M6[23], a3, R)
+                + mulmod(POSEIDON_M6[29], a4, R)
+                + mulmod(POSEIDON_M6[35], a5, R),
+            R,
+        )
+        r += 1
+    }
+    let z0 = sbox(s0)
+    let z1 = sbox(s1)
+    let z2 = sbox(s2)
+    let z3 = sbox(s3)
+    let z4 = sbox(s4)
+    let z5 = sbox(s5)
+    addmod(
+        mulmod(POSEIDON_M6[0], z0, R)
+            + mulmod(POSEIDON_M6[6], z1, R)
+            + mulmod(POSEIDON_M6[12], z2, R),
+        mulmod(POSEIDON_M6[18], z3, R)
+            + mulmod(POSEIDON_M6[24], z4, R)
+            + mulmod(POSEIDON_M6[30], z5, R),
+        R,
+    )
+}

@@ -1,0 +1,65 @@
+// Probe: validate a curve constant at compile time. `static_assert(valid(..))` runs a 254-step
+// Fermat loop in the Fe compiler; the constant costs 2 gas at runtime. Change `valid(1, 2)` to `valid(1, 3)`
+// to see `error[8-0081]: static assertion failed`. `assert` and `Option::is_some` are not const in fe 26.5.0.
+use std::evm::crypto::mulmod
+
+const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+
+pub struct Pt { x: u256, y: u256 }
+impl Copy for Pt {}
+
+const fn pow(_ b: u256, _ e: u256) -> u256 {
+    var acc: u256 = 1
+    var base: u256 = b
+    var k: u256 = e
+    while k != 0 {
+        if k & 1 == 1 {
+            acc = mulmod(acc, base, Q)
+        }
+        base = mulmod(base, base, Q)
+        k = k >> 1
+    }
+    acc
+}
+
+const fn valid(_ x: u256, _ y: u256) -> bool {
+    let lhs = mulmod(y, y, Q)
+    let rhs = (mulmod(mulmod(x, x, Q), x, Q) + 3) % Q
+    let inv = pow(x, Q - 2)
+    mulmod(inv, x, Q) == 1 && lhs == rhs
+}
+
+// Checked constant constructor: an invalid point becomes the point at infinity, never an unchecked point.
+const fn or_infinity(_ x: u256, _ y: u256) -> Pt {
+    if valid(x, y) {
+        Pt { x, y }
+    } else {
+        Pt { x: 0, y: 0 }
+    }
+}
+
+const fn checked(_ x: u256, _ y: u256) -> Option<Pt> {
+    let lhs = mulmod(y, y, Q)
+    let rhs = (mulmod(mulmod(x, x, Q), x, Q) + 3) % Q
+    // simulate an expensive check: Fermat inverse of x, 254 iterations
+    let inv = pow(x, Q - 2)
+    if mulmod(inv, x, Q) != 1 || lhs != rhs {
+        return Option::None
+    }
+    Option::Some(Pt { x, y })
+}
+
+static_assert(valid(1, 2))
+const GEN: Pt = or_infinity(1, 2)
+
+#[event]
+struct G { gas: u256, v: u256 }
+
+#[test]
+fn ctfe_point() uses (evm: mut Evm) {
+    let g0 = evm.gas()
+    let p = GEN
+    let used = g0 - evm.gas()
+    evm.emit(G { gas: used, v: p.x + p.y })
+    assert(p.y == 2)
+}
