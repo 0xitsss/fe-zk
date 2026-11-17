@@ -1,0 +1,6 @@
+# Linux x86_64, 16 cores; timings via python resource; peak_rss is the max child RSS so far, not per step
+compile 11.3 s  peak_rss_so_far 247 MB
+setup 104.9 s  peak_rss_so_far 1773 MB
+contribute 34.1 s  peak_rss_so_far 342 MB
+witness 1.1 s  peak_rss_so_far 83 MB
+prove 22.3 s  peak_rss_so_far 2048 MB
