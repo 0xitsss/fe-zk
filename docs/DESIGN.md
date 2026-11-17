@@ -108,3 +108,28 @@ So fe-zk uses two G2 types:
 - Fe findings: user traits with type parameters, marker types and turbofish calls work in generic code; `[F::zero(); T]`
   with indexed mutation works; constant tables of ~1300 `u256` compile in about 2 s; results not used in a test are
   removed by the optimizer, so gas measurements must emit the result in an event.
+
+### Hash gas
+
+The readable implementations stay in the library as references: `reference_poseidon_n` and the generic
+`permute_generic<F: Field>` (the one-implementation-for-every-field highlight). Production paths are generated,
+scalar-local, unrolled permutations on raw `u256` with lazy reduction, tested equal to the references:
+
+| function | array / generic | fast path |
+|---|---|---|
+| `poseidon_1` (t=2) | 33.3k | 19.7k |
+| `poseidon_2` (t=3) | 93.9k | 25.6k |
+| `poseidon_3` (t=4) | 131k | 31.5k |
+| `poseidon_4` (t=5) | 180k | 39.9k |
+| `poseidon_5` (t=6) | 227k | 47.2k |
+| Poseidon2 BN254 t=3 | 56.7k | 19.5k |
+| Poseidon2 KoalaBear t=16 | 149.5k | 42.2k |
+
+Bounds behind the lazy reduction: `R < 0.19 * 2^256`, so up to 5 values below R sum without overflow; KoalaBear lanes
+stay below `36p < 2^37` before the S-box, and the cube stays below `2^111`. Each bound is restated in a comment next
+to the code that relies on it (safety rule 7).
+
+Fe optimizer findings (worth an upstream issue): loops over mutable memory arrays cost 5–7x more than scalar locals,
+and `for i in 0..N` with a constant `N` is not unrolled; checked arithmetic on loop counters and indices is a large
+share of loop cost (`#[arithmetic(unchecked)]` is the main lever); a block statement `{` directly after a `var`
+statement fails to parse with "`let` conditions are only allowed in `if` and `while`".
