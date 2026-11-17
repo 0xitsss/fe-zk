@@ -1,0 +1,116 @@
+//! Plonky3 `SerializingChallenger32<KoalaBear, HashChallenger<u8, Keccak256Hash, 32>>`,
+//! byte for byte.
+//!
+//! State: an input byte buffer, and the 32-byte output of the last hash.
+//!
+//! - `observe` appends bytes to the input buffer and discards the unread output. A
+//!   KoalaBear element is observed as the 4 little-endian bytes of its Montgomery form; a
+//!   Merkle commitment as its 32 raw bytes.
+//! - `sample` pops bytes from the END of the 32-byte output. When the output is empty it
+//!   hashes the whole input buffer with Keccak-256; the buffer is then replaced by the
+//!   32-byte digest (chaining), and the digest becomes the output.
+//! - A 32-bit sample is 4 popped bytes read little-endian. As the digest is one big-endian
+//!   `u256`, the k-th 4-byte sample is `(digest >> 32k) & 0xffffffff`.
+//! - A KoalaBear element is `sample & 0x7fffffff`, resampled while `>= p` (rejection).
+//!   An extension element is 4 such samples, coefficient 0 first.
+//! - `sample_bits(n)` is `sample & (2^n - 1)` (no rejection).
+//!
+//! Every challenge depends on all earlier observations because each flush hashes the whole
+//! buffer (safety rule 5, tested in `src/tests/fri.fe`).
+use core::num::IntDowncast
+use std::evm::packed::Packed
+use ingot::field::{Field, KoalaBear}
+use ingot::field::ext::KoalaBearExt4
+
+const KB_P: u256 = 0x7f000001
+
+/// Plonky3 serializes a KoalaBear element with `to_unique_u32`, which is the Montgomery
+/// form `v * 2^32 mod p`, not the canonical value (`MontyField31::to_unique_u32`), as 4
+/// little-endian bytes. This returns those bytes as the big-endian `u32` word that
+/// `Packed::u32` appends. `v` must be canonical (`< p`).
+pub fn le_word(_ v: u256) -> u32 {
+    let m = (v << 32) % KB_P
+    let swapped = ((m & 0xff) << 24)
+        | ((m & 0xff00) << 8)
+        | ((m >> 8) & 0xff00)
+        | ((m >> 24) & 0xff)
+    swapped.downcast_truncate()
+}
+
+pub struct Challenger { buf: Packed, out: u256, out_left: u256 }
+
+impl Challenger {
+    /// Empty initial state, as `Challenger::from_hasher(vec![], Keccak256Hash)`.
+    pub fn new() -> Challenger {
+        Challenger { buf: Packed::new(), out: 0, out_left: 0 }
+    }
+
+    /// Observe a canonical value `v < p` in Plonky3's serialization (see `le_word`).
+    fn observe_u32_le(mut self, _ v: u256) {
+        self.out_left = 0
+        self.buf.u32(le_word(v))
+    }
+
+    pub fn observe_felt(mut self, _ v: KoalaBear) {
+        self.observe_u32_le(v.to_canonical())
+    }
+
+    pub fn observe_ext(mut self, _ e: KoalaBearExt4) {
+        self.observe_felt(e.coeff(0))
+        self.observe_felt(e.coeff(1))
+        self.observe_felt(e.coeff(2))
+        self.observe_felt(e.coeff(3))
+    }
+
+    /// Observe a 32-byte Merkle commitment.
+    pub fn observe_hash(mut self, _ h: u256) {
+        self.out_left = 0
+        self.buf.u256(h)
+    }
+
+    fn flush(mut self) {
+        let digest = self.buf.keccak256()
+        self.out = digest
+        self.out_left = 32
+        self.buf = Packed::new()
+        self.buf.u256(digest)
+    }
+
+    /// 4 bytes popped from the output, read little-endian.
+    fn sample_u32(mut self) -> u256 {
+        if self.out_left == 0 {
+            self.flush()
+        }
+        let k = (32 - self.out_left) / 4
+        self.out_left -= 4
+        (self.out >> (32 * k)) & 0xffffffff
+    }
+
+    pub fn sample_felt(mut self) -> KoalaBear {
+        var v = self.sample_u32() & 0x7fffffff
+        while v >= KB_P {
+            v = self.sample_u32() & 0x7fffffff
+        }
+        KoalaBear::reduce(v)
+    }
+
+    pub fn sample_ext(mut self) -> KoalaBearExt4 {
+        let c0 = self.sample_felt()
+        let c1 = self.sample_felt()
+        let c2 = self.sample_felt()
+        let c3 = self.sample_felt()
+        KoalaBearExt4::new(c0, c1, c2, c3)
+    }
+
+    pub fn sample_bits(mut self, _ bits: u256) -> u256 {
+        self.sample_u32() & ((1 << bits) - 1)
+    }
+
+    /// Proof of work: with `bits == 0` nothing is observed and the check passes (as in
+    /// Plonky3). Otherwise observe the witness and require `bits` zero bits.
+    pub fn check_witness(mut self, _ bits: u256, _ witness: KoalaBear) -> bool {
+        if bits == 0 { return true }
+        self.observe_felt(witness)
+        self.sample_bits(bits) == 0
+    }
+}
