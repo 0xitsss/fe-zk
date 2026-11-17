@@ -2,9 +2,11 @@
   "name": "fe-zk-vector-tools",
   "version": "0.0.0",
   "private": true,
-  "description": "Reference tooling that produces fe-zk test vectors",
+  "description": "Reference tooling used to generate fe-zk test vectors (not shipped).",
   "dependencies": {
+    "circomlib": "2.0.5",
     "circomlibjs": "0.1.7",
-    "ethers": "5.8.0"
+    "ethers": "5.8.0",
+    "snarkjs": "0.7.6"
   }
 }
