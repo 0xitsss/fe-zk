@@ -1,0 +1,10 @@
+{
+  "name": "fe-zk-vector-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference tooling that produces fe-zk test vectors",
+  "dependencies": {
+    "circomlibjs": "0.1.7",
+    "ethers": "5.8.0"
+  }
+}
