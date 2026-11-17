@@ -2,7 +2,18 @@
 //!
 //! - `poseidon`: circomlib-compatible Poseidon over the BN254 scalar field.
 
-pub use poseidon::{poseidon_1, poseidon_2, poseidon_3, poseidon_4, poseidon_5}
+pub use poseidon::{
+    poseidon_1,
+    poseidon_2,
+    poseidon_3,
+    poseidon_4,
+    poseidon_5,
+    reference_poseidon_1,
+    reference_poseidon_2,
+    reference_poseidon_3,
+    reference_poseidon_4,
+    reference_poseidon_5,
+}
 pub use transcript::Transcript
 pub use poseidon2::{
     Bn254Poseidon2,

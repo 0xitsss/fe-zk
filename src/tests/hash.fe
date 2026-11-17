@@ -13,6 +13,33 @@ use ingot::hash::{
     poseidon_3,
     poseidon_4,
     poseidon_5,
+    reference_poseidon_1,
+    reference_poseidon_2,
+    reference_poseidon_3,
+    reference_poseidon_4,
+    reference_poseidon_5,
+}
+use ingot::hash::poseidon_constants::{
+    POSEIDON_C2,
+    POSEIDON_C3,
+    POSEIDON_C4,
+    POSEIDON_C5,
+    POSEIDON_C6,
+    POSEIDON_M2,
+    POSEIDON_M3,
+    POSEIDON_M4,
+    POSEIDON_M5,
+    POSEIDON_M6,
+    POSEIDON_P2,
+    POSEIDON_P3,
+    POSEIDON_P4,
+    POSEIDON_P5,
+    POSEIDON_P6,
+    POSEIDON_S2,
+    POSEIDON_S3,
+    POSEIDON_S4,
+    POSEIDON_S5,
+    POSEIDON_S6,
 }
 
 const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -177,4 +204,63 @@ fn gas_per_hash() uses (evm: mut Evm) {
                 ^ q[15].to_canonical(),
         },
     )
+}
+
+fn all_below<const N: usize>(_ t: [u256; N], _ bound: u256) -> bool {
+    var i: usize = 0
+    while i < N {
+        if t[i] >= bound {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+/// The unrolled permutations skip `reduce` on table entries and rely on them being < R.
+#[test]
+fn poseidon_tables_are_canonical() {
+    assert(all_below(POSEIDON_C2, R) && all_below(POSEIDON_S2, R))
+    assert(all_below(POSEIDON_M2, R) && all_below(POSEIDON_P2, R))
+    assert(all_below(POSEIDON_C3, R) && all_below(POSEIDON_S3, R))
+    assert(all_below(POSEIDON_M3, R) && all_below(POSEIDON_P3, R))
+    assert(all_below(POSEIDON_C4, R) && all_below(POSEIDON_S4, R))
+    assert(all_below(POSEIDON_M4, R) && all_below(POSEIDON_P4, R))
+    assert(all_below(POSEIDON_C5, R) && all_below(POSEIDON_S5, R))
+    assert(all_below(POSEIDON_M5, R) && all_below(POSEIDON_P5, R))
+    assert(all_below(POSEIDON_C6, R) && all_below(POSEIDON_S6, R))
+    assert(all_below(POSEIDON_M6, R) && all_below(POSEIDON_P6, R))
+}
+
+/// Unrolled (fast) and readable array Poseidon agree, including at the extreme inputs
+/// that stress the lazy-reduction bounds (R - 1 in every lane).
+#[test]
+fn poseidon_fast_equals_reference() {
+    let m = fr(R - 1)
+    let xs = [zero_fr(), fr(1), fr(2), fr(7), m]
+    var i: usize = 0
+    while i < 5 {
+        let a = xs[i]
+        let b = xs[(i + 1) % 5]
+        assert(poseidon_1(a).eq(reference_poseidon_1(a)))
+        assert(poseidon_2(a, b).eq(reference_poseidon_2(a, b)))
+        assert(poseidon_3(a, b, m).eq(reference_poseidon_3(a, b, m)))
+        assert(
+            poseidon_4(a, b, m, m).eq(reference_poseidon_4(a, b, m, m)),
+        )
+        assert(
+            poseidon_5(a, m, m, m, b).eq(reference_poseidon_5(a, m, m, m, b)),
+        )
+        i += 1
+    }
+    assert(
+        poseidon_5(m, m, m, m, m).eq(reference_poseidon_5(m, m, m, m, m)),
+    )
+    assert(
+        poseidon_4(m, m, m, m).eq(reference_poseidon_4(m, m, m, m)),
+    )
+}
+
+fn zero_fr() -> Bn254Fr {
+    Bn254Fr::zero()
 }
