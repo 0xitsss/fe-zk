@@ -1,0 +1,50 @@
+//! Game of Life on a 16x16 torus packed into one u256 (see board.fe for the bit layout).
+//!
+//! `Life` has pure messages (`step`, `run`: no storage effect) and a stateful variant
+//! (`set`, `advance`, `board`) where only the storage-touching handlers declare `uses (mut store)`.
+
+pub use board::{step, step_n}
+
+msg LifeMsg {
+    #[selector = sol("step(uint256)")]
+    Step { board: u256 } -> u256,
+    #[selector = sol("run(uint256,uint256)")]
+    Run { board: u256, n: u256 } -> u256,
+    #[selector = sol("set(uint256)")]
+    Set { board: u256 },
+    #[selector = sol("advance(uint256)")]
+    Advance { n: u256 } -> u256,
+    #[selector = sol("board()")]
+    Board -> u256,
+}
+
+struct LifeStore { board: u256 }
+
+pub contract Life {
+    mut store: LifeStore,
+
+    init() uses (mut store) { store.board = 0 }
+
+    recv LifeMsg {
+        Step { board } -> u256 {
+            step(board)
+        }
+
+        Run { board, n } -> u256 {
+            step_n(board, n)
+        }
+
+        Set { board } uses (mut store) {
+            store.board = board
+        }
+
+        Advance { n } -> u256 uses (mut store) {
+            store.board = step_n(store.board, n)
+            store.board
+        }
+
+        Board -> u256 uses (store) {
+            store.board
+        }
+    }
+}
