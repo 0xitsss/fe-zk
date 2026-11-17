@@ -1,0 +1,400 @@
+//! BLS12-381 wrappers for the EIP-2537 precompiles (Prague): G1ADD 0x0b, G1MSM 0x0c, G2ADD 0x0d,
+//! G2MSM 0x0e, PAIRING_CHECK 0x0f, MAP_FP_TO_G1 0x10, MAP_FP2_TO_G2 0x11.
+//!
+//! Encoding (EIP-2537): an `Fp` element (381 bits) is 64 bytes, 16 zero bytes then the 48-byte
+//! big-endian value, and must be `< p`. Here it is a pair of `u256` words `(hi, lo)` with
+//! `value = hi * 2^256 + lo`, `hi < 2^128`; those are exactly the two 32-byte words of the
+//! 64-byte encoding. A G1 point is `[x_hi, x_lo, y_hi, y_lo]`; a G2 point is
+//! `[x0_hi, x0_lo, x1_hi, x1_lo, y0_hi, y0_lo, y1_hi, y1_lo]` with `x = x0 + x1 u`
+//! (real part first: unlike BN254's EIP-197, EIP-2537 puts the real part first). Infinity is
+//! all zero words.
+//!
+//! The base field does not fit in a word, so there is no Fe-side curve arithmetic. Instead
+//! `from_words` checks canonical coordinates in Fe and then asks the precompile itself (an
+//! MSM with scalar 1, which checks curve AND subgroup membership) whether the point is valid.
+//! `G1Bls` / `G2Bls` fields are private, so every value is either so validated, a hard-coded
+//! generator, or the output of a precompile on valid points. Scalars are `Bls12381Fr`,
+//! the canonical-checked `Fp<r>` of the generic field layer.
+//!
+//! Every call checks the success flag and the exact returndata length, and the pairing result
+//! must be exactly 1. Wrappers revert on failure; `from_words` returns `None` for a point the
+//! precompile rejects.
+use core::ptr::MemBuffer
+use std::evm::Call
+use ingot::field::{Field, Fp}
+use super::precompile::{call_checked, call_try, get, put}
+
+/// BLS12-381 base field modulus `p`, as `(hi, lo)`.
+const P_HI: u256 = 34565483545414906068789196026815425751
+const P_LO: u256 = 45442060874369865957053122457065728162598490762543039060009208264153100167851
+
+/// BLS12-381 scalar field modulus `r` (the subgroup order, 255 bits).
+pub const BLS12_381_R: u256 = 52435875175126190479447740508185965837690552500527637822603658699938581184513
+
+/// Scalars for the MSM precompiles: canonical residues mod `r`.
+pub type Bls12381Fr = Fp<BLS12_381_R>
+
+const GEN_G1_X_HI: u256 = 31827880280837800241567138048534752271
+const GEN_G1_X_LO: u256 = 88385725958748408079899006800036250932223001591707578097800747617502997169851
+const GEN_G1_Y_HI: u256 = 11568204302792691131076548377920244452
+const GEN_G1_Y_LO: u256 = 114417265404584670498511149331300188430316142484413708742216858159411894806497
+const GEN_G2_X0_HI: u256 = 3045985886519456750490515843806728273
+const GEN_G2_X0_LO: u256 = 89961632905173714226157479458612185649920463576279427516307505038263245192632
+const GEN_G2_X1_HI: u256 = 26419286191256893424348605754143887205
+const GEN_G2_X1_LO: u256 = 40446337346877272185227670183527379362551741423616556919902061939448715946878
+const GEN_G2_Y0_HI: u256 = 17144095208600308495026432580569150746
+const GEN_G2_Y0_LO: u256 = 78698209480990513415779284580404715789311803115477290401294577488850054555649
+const GEN_G2_Y1_HI: u256 = 8010509799087472606393075511737879449
+const GEN_G2_Y1_LO: u256 = 91929332261301883145239454754739358796115486554644188311284324629555800144318
+
+/// `true` iff `(hi, lo)` encodes a value `< p`.
+pub fn fp_is_canonical(_ hi: u256, _ lo: u256) -> bool {
+    hi < P_HI || (hi == P_HI && lo < P_LO)
+}
+
+/// `-(hi, lo) mod p` for a canonical `(hi, lo)`.
+fn fp_neg(_ hi: u256, _ lo: u256) -> (u256, u256) {
+    if hi == 0 && lo == 0 {
+        return (0, 0)
+    }
+    if lo <= P_LO {
+        (P_HI - hi, P_LO - lo)
+    } else {
+        // borrow from the high word: p - v = (P_HI - hi - 1) * 2^256 + (2^256 + P_LO - lo)
+        // 2^256 + P_LO - lo = P_LO + (MAX - lo) + 1, which is < 2^256 because lo > P_LO.
+        (
+            P_HI - hi - 1,
+            P_LO + (0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff - lo) + 1,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// G1
+// ---------------------------------------------------------------------------------------
+
+/// A point of BLS12-381 G1 (prime-order subgroup), affine, validated by the precompile.
+pub struct G1Bls { w: [u256; 4] }
+impl Copy for G1Bls {}
+
+impl G1Bls {
+    /// Validates `[x_hi, x_lo, y_hi, y_lo]`: canonical coordinates (checked here), then on
+    /// curve and in the subgroup (checked by precompile 0x0c, `[1] P`). All-zero is infinity.
+    /// `None` if any check fails.
+    pub fn from_words(_ w: [u256; 4]) -> Option<G1Bls> uses (call: Call) {
+        if !fp_is_canonical(w[0], w[1]) || !fp_is_canonical(w[2], w[3]) {
+            return Option::None
+        }
+        var input = MemBuffer::with_capacity(160)
+        var i: usize = 0
+        while i < 4 {
+            put(mut input, i, w[i])
+            i += 1
+        }
+        put(mut input, 4, 1)
+        var out = MemBuffer::with_capacity(128)
+        if !call_try(0x0c, 13000, mut input, 160, mut out, 128) {
+            return Option::None
+        }
+        // [1] P must return P.
+        i = 0
+        while i < 4 {
+            assert(get(out, i) == w[i])
+            i += 1
+        }
+        Option::Some(G1Bls { w })
+    }
+
+    pub fn generator() -> G1Bls {
+        G1Bls { w: [GEN_G1_X_HI, GEN_G1_X_LO, GEN_G1_Y_HI, GEN_G1_Y_LO] }
+    }
+
+    pub fn infinity() -> G1Bls {
+        G1Bls { w: [0, 0, 0, 0] }
+    }
+
+    pub fn is_infinity(self) -> bool {
+        self.w[0] == 0 && self.w[1] == 0 && self.w[2] == 0 && self.w[3] == 0
+    }
+
+    /// `[x_hi, x_lo, y_hi, y_lo]`.
+    pub fn words(self) -> [u256; 4] {
+        self.w
+    }
+
+    pub fn neg(self) -> G1Bls {
+        let n = fp_neg(self.w[2], self.w[3])
+        G1Bls { w: [self.w[0], self.w[1], n.0, n.1] }
+    }
+
+    pub fn eq(self, _ o: G1Bls) -> bool {
+        self.w[0] == o.w[0] && self.w[1] == o.w[1] && self.w[2] == o.w[2] && self.w[3] == o.w[3]
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// G2
+// ---------------------------------------------------------------------------------------
+
+/// A point of BLS12-381 G2 (prime-order subgroup of the twist over Fp2), affine, validated by
+/// the precompile.
+pub struct G2Bls { w: [u256; 8] }
+impl Copy for G2Bls {}
+
+impl G2Bls {
+    /// Validates `[x0_hi, x0_lo, x1_hi, x1_lo, y0_hi, y0_lo, y1_hi, y1_lo]`; see
+    /// `G1Bls::from_words` (uses precompile 0x0e).
+    pub fn from_words(_ w: [u256; 8]) -> Option<G2Bls> uses (call: Call) {
+        var i: usize = 0
+        while i < 8 {
+            if !fp_is_canonical(w[i], w[i + 1]) {
+                return Option::None
+            }
+            i += 2
+        }
+        var input = MemBuffer::with_capacity(288)
+        i = 0
+        while i < 8 {
+            put(mut input, i, w[i])
+            i += 1
+        }
+        put(mut input, 8, 1)
+        var out = MemBuffer::with_capacity(256)
+        if !call_try(0x0e, 24000, mut input, 288, mut out, 256) {
+            return Option::None
+        }
+        i = 0
+        while i < 8 {
+            assert(get(out, i) == w[i])
+            i += 1
+        }
+        Option::Some(G2Bls { w })
+    }
+
+    pub fn generator() -> G2Bls {
+        G2Bls {
+            w: [
+                GEN_G2_X0_HI,
+                GEN_G2_X0_LO,
+                GEN_G2_X1_HI,
+                GEN_G2_X1_LO,
+                GEN_G2_Y0_HI,
+                GEN_G2_Y0_LO,
+                GEN_G2_Y1_HI,
+                GEN_G2_Y1_LO,
+            ],
+        }
+    }
+
+    pub fn infinity() -> G2Bls {
+        G2Bls { w: [0, 0, 0, 0, 0, 0, 0, 0] }
+    }
+
+    pub fn is_infinity(self) -> bool {
+        var i: usize = 0
+        while i < 8 {
+            if self.w[i] != 0 {
+                return false
+            }
+            i += 1
+        }
+        true
+    }
+
+    /// `[x0_hi, x0_lo, x1_hi, x1_lo, y0_hi, y0_lo, y1_hi, y1_lo]`.
+    pub fn words(self) -> [u256; 8] {
+        self.w
+    }
+
+    pub fn neg(self) -> G2Bls {
+        let a = fp_neg(self.w[4], self.w[5])
+        let b = fp_neg(self.w[6], self.w[7])
+        G2Bls { w: [self.w[0], self.w[1], self.w[2], self.w[3], a.0, a.1, b.0, b.1] }
+    }
+
+    pub fn eq(self, _ o: G2Bls) -> bool {
+        var i: usize = 0
+        while i < 8 {
+            if self.w[i] != o.w[i] {
+                return false
+            }
+            i += 1
+        }
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Precompile wrappers
+// ---------------------------------------------------------------------------------------
+
+fn read_g1(_ out: MemBuffer, _ at: usize) -> G1Bls {
+    // Precompile output: canonical, on curve, in the subgroup for subgroup inputs.
+    G1Bls { w: [get(out, at), get(out, at + 1), get(out, at + 2), get(out, at + 3)] }
+}
+
+fn read_g2(_ out: MemBuffer) -> G2Bls {
+    G2Bls {
+        w: [
+            get(out, 0),
+            get(out, 1),
+            get(out, 2),
+            get(out, 3),
+            get(out, 4),
+            get(out, 5),
+            get(out, 6),
+            get(out, 7),
+        ],
+    }
+}
+
+fn write_g1(_ buf: mut MemBuffer, _ at: usize, _ p: G1Bls) {
+    var i: usize = 0
+    while i < 4 {
+        put(mut buf, at + i, p.w[i])
+        i += 1
+    }
+}
+
+fn write_g2(_ buf: mut MemBuffer, _ at: usize, _ p: G2Bls) {
+    var i: usize = 0
+    while i < 8 {
+        put(mut buf, at + i, p.w[i])
+        i += 1
+    }
+}
+
+/// `a + b` (precompile 0x0b). Reverts on failure.
+pub fn bls_g1_add(_ a: G1Bls, _ b: G1Bls) -> G1Bls uses (call: Call) {
+    var input = MemBuffer::with_capacity(256)
+    write_g1(mut input, 0, a)
+    write_g1(mut input, 4, b)
+    var out = MemBuffer::with_capacity(128)
+    call_checked(0x0b, 1000, mut input, 256, mut out, 128)
+    read_g1(out, 0)
+}
+
+/// `sum_i [ss[i]] ps[i]` (precompile 0x0c, 160 bytes per pair). Reverts on failure or `N == 0`.
+pub fn bls_g1_msm<const N: usize>(_ ps: [G1Bls; N], _ ss: [Bls12381Fr; N]) -> G1Bls
+uses (call: Call)
+{
+    assert(N != 0)
+    var input = MemBuffer::with_capacity(N * 160)
+    var i: usize = 0
+    while i < N {
+        write_g1(mut input, i * 5, ps[i])
+        put(mut input, i * 5 + 4, ss[i].to_canonical())
+        i += 1
+    }
+    var out = MemBuffer::with_capacity(128)
+    call_checked(
+        0x0c,
+        13000 * (N as u256),
+        mut input,
+        N * 160,
+        mut out,
+        128,
+    )
+    read_g1(out, 0)
+}
+
+/// `[s] p` (precompile 0x0c with one pair).
+pub fn bls_g1_mul(_ p: G1Bls, _ s: Bls12381Fr) -> G1Bls uses (call: Call) {
+    bls_g1_msm([p], [s])
+}
+
+/// `a + b` (precompile 0x0d). Reverts on failure.
+pub fn bls_g2_add(_ a: G2Bls, _ b: G2Bls) -> G2Bls uses (call: Call) {
+    var input = MemBuffer::with_capacity(512)
+    write_g2(mut input, 0, a)
+    write_g2(mut input, 8, b)
+    var out = MemBuffer::with_capacity(256)
+    call_checked(0x0d, 1000, mut input, 512, mut out, 256)
+    read_g2(out)
+}
+
+/// `sum_i [ss[i]] ps[i]` (precompile 0x0e, 288 bytes per pair). Reverts on failure or `N == 0`.
+pub fn bls_g2_msm<const N: usize>(_ ps: [G2Bls; N], _ ss: [Bls12381Fr; N]) -> G2Bls
+uses (call: Call)
+{
+    assert(N != 0)
+    var input = MemBuffer::with_capacity(N * 288)
+    var i: usize = 0
+    while i < N {
+        write_g2(mut input, i * 9, ps[i])
+        put(mut input, i * 9 + 8, ss[i].to_canonical())
+        i += 1
+    }
+    var out = MemBuffer::with_capacity(256)
+    call_checked(
+        0x0e,
+        24000 * (N as u256),
+        mut input,
+        N * 288,
+        mut out,
+        256,
+    )
+    read_g2(out)
+}
+
+/// `[s] p` (precompile 0x0e with one pair).
+pub fn bls_g2_mul(_ p: G2Bls, _ s: Bls12381Fr) -> G2Bls uses (call: Call) {
+    bls_g2_msm([p], [s])
+}
+
+/// `true` iff `prod_i e(ps[i], qs[i]) == 1` (precompile 0x0f, 384 bytes per pair). Reverts if
+/// the call fails, the returndata length is not 32, the word is not 0 or 1, or `N == 0`.
+pub fn bls_pairing_check<const N: usize>(_ ps: [G1Bls; N], _ qs: [G2Bls; N]) -> bool
+uses (call: Call)
+{
+    assert(N != 0)
+    var input = MemBuffer::with_capacity(N * 384)
+    var i: usize = 0
+    while i < N {
+        write_g1(mut input, i * 12, ps[i])
+        write_g2(mut input, i * 12 + 4, qs[i])
+        i += 1
+    }
+    var out = MemBuffer::with_capacity(32)
+    call_checked(
+        0x0f,
+        40000 + 34000 * (N as u256),
+        mut input,
+        N * 384,
+        mut out,
+        32,
+    )
+    let w = get(out, 0)
+    assert(w <= 1)
+    w == 1
+}
+
+/// Maps a canonical `Fp` element `(hi, lo)` to G1 (precompile 0x10, SSWU + isogeny + cofactor
+/// clearing). Reverts if `(hi, lo)` is not canonical. The result is in the subgroup.
+pub fn bls_map_fp_to_g1(_ hi: u256, _ lo: u256) -> G1Bls uses (call: Call) {
+    assert(fp_is_canonical(hi, lo))
+    var input = MemBuffer::with_capacity(64)
+    put(mut input, 0, hi)
+    put(mut input, 1, lo)
+    var out = MemBuffer::with_capacity(128)
+    call_checked(0x10, 6000, mut input, 64, mut out, 128)
+    read_g1(out, 0)
+}
+
+/// Maps a canonical `Fp2` element `c0 + c1 u` (each `(hi, lo)`) to G2 (precompile 0x11).
+/// Reverts if a component is not canonical. The result is in the subgroup.
+pub fn bls_map_fp2_to_g2(_ c0_hi: u256, _ c0_lo: u256, _ c1_hi: u256, _ c1_lo: u256) -> G2Bls
+uses (call: Call)
+{
+    assert(
+        fp_is_canonical(c0_hi, c0_lo) && fp_is_canonical(c1_hi, c1_lo),
+    )
+    var input = MemBuffer::with_capacity(128)
+    put(mut input, 0, c0_hi)
+    put(mut input, 1, c0_lo)
+    put(mut input, 2, c1_hi)
+    put(mut input, 3, c1_lo)
+    var out = MemBuffer::with_capacity(256)
+    call_checked(0x11, 25000, mut input, 128, mut out, 256)
+    read_g2(out)
+}

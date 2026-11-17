@@ -1,0 +1,15 @@
+//! Hash functions and Fiat-Shamir transcripts.
+//!
+//! - `poseidon`: circomlib-compatible Poseidon over the BN254 scalar field.
+
+pub use poseidon::{poseidon_1, poseidon_2, poseidon_3, poseidon_4, poseidon_5}
+pub use transcript::Transcript
+pub use poseidon2::{
+    Bn254Poseidon2,
+    Compression,
+    KoalaBearPoseidon2,
+    bn254_t3_permute,
+    koalabear_t16_permute,
+    merkle_root,
+    permute_generic,
+}

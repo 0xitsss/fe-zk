@@ -1,0 +1,76 @@
+// 16x16 toroidal Game of Life (B3/S23) on one u256, bit index = row * 16 + col.
+// Row r occupies bits [16r, 16r+15] (a 16-bit lane), col 0 is the least significant bit of a lane.
+// step() has no per-cell loops: 8 neighbour bitboards via shifts, then a bitwise adder network.
+
+pub const ALL: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+// bit 0 of every 16-bit lane (col 0) and bit 15 of every lane (col 15)
+const COL0: u256 = 0x0001000100010001000100010001000100010001000100010001000100010001
+const COL15: u256 = 0x8000800080008000800080008000800080008000800080008000800080008000
+
+// Rotate the whole board one row up/down (a 16-bit rotation of the u256), torus wrap.
+// up: cell (r+1, c) moves to (r, c).
+fn row_up(_ b: u256) -> u256 {
+    (b >> 16) | (b << 240)
+}
+
+// down: cell (r-1, c) moves to (r, c).
+fn row_down(_ b: u256) -> u256 {
+    (b << 16) | (b >> 240)
+}
+
+// cell (r, c-1) moves to (r, c); col 15 wraps to col 0 of the same row.
+fn col_right(_ b: u256) -> u256 {
+    ((b << 1) & ~COL0) | ((b >> 15) & COL0)
+}
+
+// cell (r, c+1) moves to (r, c); col 0 wraps to col 15 of the same row.
+fn col_left(_ b: u256) -> u256 {
+    ((b >> 1) & ~COL15) | ((b << 15) & COL15)
+}
+
+/// One generation. Pure, branch-free, no loops.
+pub fn step(_ board: u256) -> u256 {
+    let w = col_right(board)
+    let e = col_left(board)
+    // the 8 neighbour bitboards: bit set where that neighbour of the cell is alive
+    let n0 = w
+    let n1 = e
+    let n2 = row_up(board)
+    let n3 = row_down(board)
+    let n4 = row_up(w)
+    let n5 = row_down(w)
+    let n6 = row_up(e)
+    let n7 = row_down(e)
+
+    // Level 0: add the 8 one-bit counts. FA = full adder (sum, carry), HA = half adder.
+    let s1 = n0 ^ n1 ^ n2
+    let c1 = (n0 & n1) | (n2 & (n0 ^ n1))
+    let s2 = n3 ^ n4 ^ n5
+    let c2 = (n3 & n4) | (n5 & (n3 ^ n4))
+    let s3 = n6 ^ n7
+    let c3 = n6 & n7
+    // ones bit of the count, and one more weight-2 carry
+    let ones = s1 ^ s2 ^ s3
+    let c4 = (s1 & s2) | (s3 & (s1 ^ s2))
+    // Level 1: add the four weight-2 bits c1..c4. twos = bit 1 of the count,
+    // u1/u2 are weight-4 carries (any set means count >= 4).
+    let t1 = c1 ^ c2 ^ c3
+    let u1 = (c1 & c2) | (c3 & (c1 ^ c2))
+    let twos = t1 ^ c4
+    let u2 = t1 & c4
+    let big = u1 | u2
+    // count == 3: ones & twos; count == 2 and alive: twos & !ones & alive.
+    // Both: twos & !big & (ones | alive).
+    twos & ~big & (ones | board)
+}
+
+/// n generations (n loop iterations over whole boards, not over cells).
+pub fn step_n(_ board: u256, _ n: u256) -> u256 {
+    var b = board
+    var i: u256 = 0
+    while i < n {
+        b = step(b)
+        i += 1
+    }
+    b
+}

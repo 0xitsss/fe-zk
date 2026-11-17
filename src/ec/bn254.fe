@@ -1,0 +1,382 @@
+//! BN254 (alt_bn128) curve layer: typed points, precompile wrappers, G2 subgroup check.
+//!
+//! `G1` and `G2` have private fields. Outside this file a point can only be made by
+//! `G1::from_coords` / `G2::from_coords` (which check canonical coordinates, curve membership
+//! and, for G2, subgroup membership), by `generator()`, or as the output of an operation on
+//! valid points. A raw `u256` can therefore never become a point unchecked (safety rules 1-3).
+//!
+//! Precompile wrappers revert (`assert`) if the call fails or returns the wrong number of bytes
+//! (safety rule 6). `pairing_check` returns `true` only if the precompile returns exactly 1.
+//!
+//! Precompile word order for G2 (EIP-197): `x_imag, x_real, y_imag, y_real`. The Fe API uses
+//! `(x0, x1, y0, y1)` = `(x_real, x_imag, y_real, y_imag)`, the order of py_ecc / arkworks.
+use core::ptr::MemBuffer
+use std::evm::Call
+use ingot::field::{Bn254Fq, Bn254Fr, Field}
+use super::precompile::{call_checked, get, put}
+
+/// `6 x^2` for the BN254 parameter `x = 4965661367192848881`; `psi(P) = [6 x^2] P` on G2.
+const SIX_X_SQ: u256 = 147946756881789318990833708069417712966
+
+// psi constants: GAMMA1 = xi^((q-1)/3), GAMMA2 = xi^((q-1)/2), xi = 9 + u (py_ecc, see scripts/ec-vectors.py)
+const GAMMA1_C0: u256 = 21575463638280843010398324269430826099269044274347216827212613867836435027261
+const GAMMA1_C1: u256 = 10307601595873709700152284273816112264069230130616436755625194854815875713954
+const GAMMA2_C0: u256 = 2821565182194536844548159561693502659359617185244120367078079554186484126554
+const GAMMA2_C1: u256 = 3505843767911556378687030309984248845540243509899259641013678093033130930403
+/// Twist coefficient b' = 3 / (9 + u).
+const B2_C0: u256 = 19485874751759354771024239261021720505790618469301721065564631296452457478373
+const B2_C1: u256 = 266929791119991161246907387137283842545076965332900288569378510910307636690
+
+fn fq(_ v: u256) -> Bn254Fq {
+    // Only used on constants and on already-canonical values.
+    Bn254Fq::reduce(v)
+}
+
+// ---------------------------------------------------------------------------------------
+// Fq2 = Fq[u] / (u^2 + 1)
+// ---------------------------------------------------------------------------------------
+
+struct Fq2 { c0: Bn254Fq, c1: Bn254Fq }
+impl Copy for Fq2 {}
+
+impl Fq2 {
+    fn new(_ c0: Bn254Fq, _ c1: Bn254Fq) -> Fq2 {
+        Fq2 { c0, c1 }
+    }
+    fn zero() -> Fq2 {
+        Fq2 { c0: Bn254Fq::zero(), c1: Bn254Fq::zero() }
+    }
+    fn one() -> Fq2 {
+        Fq2 { c0: Bn254Fq::one(), c1: Bn254Fq::zero() }
+    }
+    fn is_zero(self) -> bool {
+        self.c0.is_zero() && self.c1.is_zero()
+    }
+    fn eq(self, _ o: Fq2) -> bool {
+        self.c0.eq(o.c0) && self.c1.eq(o.c1)
+    }
+    fn add(self, _ o: Fq2) -> Fq2 {
+        Fq2 { c0: self.c0.add(o.c0), c1: self.c1.add(o.c1) }
+    }
+    fn sub(self, _ o: Fq2) -> Fq2 {
+        Fq2 { c0: self.c0.sub(o.c0), c1: self.c1.sub(o.c1) }
+    }
+    fn neg(self) -> Fq2 {
+        Fq2 { c0: self.c0.neg(), c1: self.c1.neg() }
+    }
+    fn double(self) -> Fq2 {
+        self.add(self)
+    }
+    fn conj(self) -> Fq2 {
+        Fq2 { c0: self.c0, c1: self.c1.neg() }
+    }
+    /// Karatsuba: 3 base multiplications.
+    fn mul(self, _ o: Fq2) -> Fq2 {
+        let v0 = self.c0.mul(o.c0)
+        let v1 = self.c1.mul(o.c1)
+        let s = self.c0.add(self.c1).mul(o.c0.add(o.c1))
+        Fq2 { c0: v0.sub(v1), c1: s.sub(v0).sub(v1) }
+    }
+    fn square(self) -> Fq2 {
+        // (a+bu)^2 = (a+b)(a-b) + 2ab u
+        let ab = self.c0.mul(self.c1)
+        Fq2 { c0: self.c0.add(self.c1).mul(self.c0.sub(self.c1)), c1: ab.add(ab) }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// G1
+// ---------------------------------------------------------------------------------------
+
+/// A point of BN254 G1 (`y^2 = x^3 + 3` over Fq, prime order, cofactor 1), affine; `(0, 0)` is
+/// the point at infinity. Fields are private: build with `G1::from_coords`.
+pub struct G1 { x: Bn254Fq, y: Bn254Fq }
+impl Copy for G1 {}
+
+impl G1 {
+    /// Validated constructor for untrusted coordinates. `None` if `x` or `y` is `>= q`
+    /// (never reduced), or if the point is not on the curve. `(0, 0)` is infinity.
+    pub fn from_coords(_ x: u256, _ y: u256) -> Option<G1> {
+        let ox = Bn254Fq::from_canonical(x)
+        let oy = Bn254Fq::from_canonical(y)
+        if ox.is_none() || oy.is_none() {
+            return Option::None
+        }
+        let fx = ox.unwrap()
+        let fy = oy.unwrap()
+        if fx.is_zero() && fy.is_zero() {
+            return Option::Some(G1 { x: fx, y: fy })
+        }
+        // y^2 == x^3 + 3
+        let rhs = fx.square().mul(fx).add(fq(3))
+        if fy.square().eq(rhs) {
+            Option::Some(G1 { x: fx, y: fy })
+        } else {
+            Option::None
+        }
+    }
+
+    pub fn generator() -> G1 {
+        G1 { x: fq(1), y: fq(2) }
+    }
+
+    pub fn infinity() -> G1 {
+        G1 { x: Bn254Fq::zero(), y: Bn254Fq::zero() }
+    }
+
+    pub fn is_infinity(self) -> bool {
+        self.x.is_zero() && self.y.is_zero()
+    }
+
+    /// Canonical x coordinate.
+    pub fn x(self) -> u256 {
+        self.x.to_canonical()
+    }
+
+    /// Canonical y coordinate.
+    pub fn y(self) -> u256 {
+        self.y.to_canonical()
+    }
+
+    pub fn neg(self) -> G1 {
+        G1 { x: self.x, y: self.y.neg() }
+    }
+
+    pub fn eq(self, _ o: G1) -> bool {
+        self.x.eq(o.x) && self.y.eq(o.y)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// G2
+// ---------------------------------------------------------------------------------------
+
+/// A point of the order-`r` subgroup of the BN254 twist `y^2 = x^3 + 3/(9+u)` over Fq2,
+/// affine; all-zero is infinity. `from_coords` checks canonical coordinates, curve membership
+/// and subgroup membership.
+pub struct G2 { x: Fq2, y: Fq2 }
+impl Copy for G2 {}
+
+// Jacobian point on the twist, used only by the subgroup check. Z = 0 is infinity.
+struct J2 { x: Fq2, y: Fq2, z: Fq2 }
+impl Copy for J2 {}
+
+fn j2_inf() -> J2 {
+    J2 { x: Fq2::one(), y: Fq2::one(), z: Fq2::zero() }
+}
+
+/// Doubling for `a = 0` (dbl-2009-l). `Y = 0` or `Z = 0` yields `Z3 = 0`, i.e. infinity.
+fn j2_double(_ p: J2) -> J2 {
+    let a = p.x.square()
+    let b = p.y.square()
+    let c = b.square()
+    let t = p.x.add(b).square().sub(a).sub(c)
+    let d = t.double()
+    let e = a.double().add(a)
+    let f = e.square()
+    let x3 = f.sub(d.double())
+    let c8 = c.double().double().double()
+    let y3 = e.mul(d.sub(x3)).sub(c8)
+    let z3 = p.y.mul(p.z).double()
+    J2 { x: x3, y: y3, z: z3 }
+}
+
+/// Complete addition (add-2007-bl) with explicit handling of infinity, `P == Q` and `P == -Q`.
+fn j2_add(_ p: J2, _ q: J2) -> J2 {
+    if p.z.is_zero() { return q }
+    if q.z.is_zero() { return p }
+    let z1z1 = p.z.square()
+    let z2z2 = q.z.square()
+    let u1 = p.x.mul(z2z2)
+    let u2 = q.x.mul(z1z1)
+    let s1 = p.y.mul(q.z).mul(z2z2)
+    let s2 = q.y.mul(p.z).mul(z1z1)
+    let h = u2.sub(u1)
+    let r0 = s2.sub(s1)
+    if h.is_zero() {
+        if r0.is_zero() {
+            return j2_double(p)
+        }
+        return j2_inf()
+    }
+    let i = h.double().square()
+    let j = h.mul(i)
+    let r = r0.double()
+    let v = u1.mul(i)
+    let x3 = r.square().sub(j).sub(v.double())
+    let y3 = r.mul(v.sub(x3)).sub(s1.mul(j).double())
+    let z3 = p.z.add(q.z).square().sub(z1z1).sub(z2z2).mul(h)
+    J2 { x: x3, y: y3, z: z3 }
+}
+
+/// `[6 x^2] P` by left-to-right double-and-add (6 x^2 has 127 bits).
+fn j2_mul_six_x_sq(_ p: J2) -> J2 {
+    var acc = p
+    var i: u256 = 125
+    while true {
+        acc = j2_double(acc)
+        if (SIX_X_SQ >> i) & 1 == 1 {
+            acc = j2_add(acc, p)
+        }
+        if i == 0 { break }
+        i -= 1
+    }
+    acc
+}
+
+impl G2 {
+    /// Validated constructor for untrusted coordinates `x = x0 + x1 u`, `y = y0 + y1 u`
+    /// (real part first). `None` if any coordinate is `>= q`, the point is not on the twist,
+    /// or it is not in the order-`r` subgroup. All-zero is infinity.
+    ///
+    /// Subgroup test: `psi(P) == [6 x^2] P` where `psi` is the untwist-Frobenius-twist
+    /// endomorphism `(x, y) -> (conj(x) * GAMMA1, conj(y) * GAMMA2)`. On the twist group
+    /// `E'(Fq2)` (order `h * r`), `psi` acts as `[p]` on the order-`r` subgroup and `p = 6 x^2
+    /// mod r`; the equality fails for points outside it (Scott, ePrint 2021/1130, which proves
+    /// the check complete for BN curves). About 127 doublings and ~60 additions in Fq2, no
+    /// inversion. Gas is recorded in the test `gas_report`.
+    pub fn from_coords(_ x0: u256, _ x1: u256, _ y0: u256, _ y1: u256) -> Option<G2> {
+        let a = Bn254Fq::from_canonical(x0)
+        let b = Bn254Fq::from_canonical(x1)
+        let c = Bn254Fq::from_canonical(y0)
+        let d = Bn254Fq::from_canonical(y1)
+        if a.is_none() || b.is_none() || c.is_none() || d.is_none() {
+            return Option::None
+        }
+        let x = Fq2::new(a.unwrap(), b.unwrap())
+        let y = Fq2::new(c.unwrap(), d.unwrap())
+        if x.is_zero() && y.is_zero() {
+            return Option::Some(G2 { x, y })
+        }
+        let b2 = Fq2::new(fq(B2_C0), fq(B2_C1))
+        if !y.square().eq(x.square().mul(x).add(b2)) {
+            return Option::None
+        }
+        // psi(P)
+        let px = x.conj().mul(Fq2::new(fq(GAMMA1_C0), fq(GAMMA1_C1)))
+        let py = y.conj().mul(Fq2::new(fq(GAMMA2_C0), fq(GAMMA2_C1)))
+        let r = j2_mul_six_x_sq(J2 { x, y, z: Fq2::one() })
+        if r.z.is_zero() {
+            return Option::None
+        }
+        let z2 = r.z.square()
+        if px.mul(z2).eq(r.x) && py.mul(z2).mul(r.z).eq(r.y) {
+            Option::Some(G2 { x, y })
+        } else {
+            Option::None
+        }
+    }
+
+    pub fn generator() -> G2 {
+        G2 {
+            x: Fq2::new(
+                fq(
+                    10857046999023057135944570762232829481370756359578518086990519993285655852781,
+                ),
+                fq(
+                    11559732032986387107991004021392285783925812861821192530917403151452391805634,
+                ),
+            ),
+            y: Fq2::new(
+                fq(
+                    8495653923123431417604973247489272438418190587263600148770280649306958101930,
+                ),
+                fq(
+                    4082367875863433681332203403145435568316851327593401208105741076214120093531,
+                ),
+            ),
+        }
+    }
+
+    pub fn infinity() -> G2 {
+        G2 { x: Fq2::zero(), y: Fq2::zero() }
+    }
+
+    pub fn is_infinity(self) -> bool {
+        self.x.is_zero() && self.y.is_zero()
+    }
+
+    pub fn x0(self) -> u256 {
+        self.x.c0.to_canonical()
+    }
+    pub fn x1(self) -> u256 {
+        self.x.c1.to_canonical()
+    }
+    pub fn y0(self) -> u256 {
+        self.y.c0.to_canonical()
+    }
+    pub fn y1(self) -> u256 {
+        self.y.c1.to_canonical()
+    }
+
+    pub fn neg(self) -> G2 {
+        G2 { x: self.x, y: self.y.neg() }
+    }
+
+    pub fn eq(self, _ o: G2) -> bool {
+        self.x.eq(o.x) && self.y.eq(o.y)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Precompile wrappers
+// ---------------------------------------------------------------------------------------
+
+/// `a + b` via precompile 0x06. Reverts on failure.
+pub fn g1_add(_ a: G1, _ b: G1) -> G1 uses (call: Call) {
+    var input = MemBuffer::with_capacity(128)
+    put(mut input, 0, a.x.to_canonical())
+    put(mut input, 1, a.y.to_canonical())
+    put(mut input, 2, b.x.to_canonical())
+    put(mut input, 3, b.y.to_canonical())
+    var out = MemBuffer::with_capacity(64)
+    call_checked(6, 500, mut input, 128, mut out, 64)
+    // The precompile only outputs on-curve, canonical points (or (0,0)).
+    G1 { x: fq(get(out, 0)), y: fq(get(out, 1)) }
+}
+
+/// `[s] p` via precompile 0x07. The scalar is a canonical `Bn254Fr`. Reverts on failure.
+pub fn g1_mul(_ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
+    var input = MemBuffer::with_capacity(96)
+    put(mut input, 0, p.x.to_canonical())
+    put(mut input, 1, p.y.to_canonical())
+    put(mut input, 2, s.to_canonical())
+    var out = MemBuffer::with_capacity(64)
+    call_checked(7, 7000, mut input, 96, mut out, 64)
+    G1 { x: fq(get(out, 0)), y: fq(get(out, 1)) }
+}
+
+/// `true` iff `prod_i e(ps[i], qs[i]) == 1`, via precompile 0x08. Reverts if the call fails,
+/// returns a length other than 32, returns a word other than 0 or 1, or `N == 0`
+/// (an empty product would be vacuously true).
+pub fn pairing_check<const N: usize>(_ ps: [G1; N], _ qs: [G2; N]) -> bool
+uses (call: Call)
+{
+    assert(N != 0)
+    var input = MemBuffer::with_capacity(N * 192)
+    var i: usize = 0
+    while i < N {
+        let p = ps[i]
+        let q = qs[i]
+        let o = i * 6
+        put(mut input, o, p.x.to_canonical())
+        put(mut input, o + 1, p.y.to_canonical())
+        put(mut input, o + 2, q.x.c1.to_canonical())
+        put(mut input, o + 3, q.x.c0.to_canonical())
+        put(mut input, o + 4, q.y.c1.to_canonical())
+        put(mut input, o + 5, q.y.c0.to_canonical())
+        i += 1
+    }
+    var out = MemBuffer::with_capacity(32)
+    call_checked(
+        8,
+        50000 + 40000 * (N as u256),
+        mut input,
+        N * 192,
+        mut out,
+        32,
+    )
+    let w = get(out, 0)
+    assert(w <= 1)
+    w == 1
+}

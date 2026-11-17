@@ -1,0 +1,188 @@
+//! Poseidon over the BN254 scalar field, compatible with circomlib / circomlibjs `poseidon`.
+//!
+//! `poseidon_n(inputs)` is `circomlibjs.poseidon([inputs...])`: state `[0, inputs...]`
+//! (t = n + 1), 8 full rounds, 56..60 partial rounds, x^5 S-box. This is the "optimized" form
+//! (Neptune sparse matrices) of the same permutation: partial rounds cost O(t) field
+//! multiplications instead of O(t^2); the output is identical to the plain form.
+//!
+//! Inputs are `Bn254Fr`, so a non-canonical input cannot be passed (safety rule 1).
+use ingot::field::{Bn254Fr, Field}
+use super::poseidon_constants::{
+    POSEIDON_C2,
+    POSEIDON_C3,
+    POSEIDON_C4,
+    POSEIDON_C5,
+    POSEIDON_C6,
+    POSEIDON_M2,
+    POSEIDON_M3,
+    POSEIDON_M4,
+    POSEIDON_M5,
+    POSEIDON_M6,
+    POSEIDON_P2,
+    POSEIDON_P3,
+    POSEIDON_P4,
+    POSEIDON_P5,
+    POSEIDON_P6,
+    POSEIDON_S2,
+    POSEIDON_S3,
+    POSEIDON_S4,
+    POSEIDON_S5,
+    POSEIDON_S6,
+}
+
+fn k(_ v: u256) -> Bn254Fr {
+    Bn254Fr::reduce(v)
+}
+
+fn sbox(_ x: Bn254Fr) -> Bn254Fr {
+    x.square().square().mul(x)
+}
+
+/// `out_i = sum_j m[j * T + i] * s_j`.
+fn mix<const T: usize, const NM: usize>(_ s: [Bn254Fr; T], _ m: [u256; NM]) -> [Bn254Fr; T] {
+    var out: [Bn254Fr; T] = [Bn254Fr::zero(); T]
+    var i: usize = 0
+    while i < T {
+        var acc = Bn254Fr::zero()
+        var j: usize = 0
+        while j < T {
+            acc = acc.add(k(m[j * T + i]).mul(s[j]))
+            j += 1
+        }
+        out[i] = acc
+        i += 1
+    }
+    out
+}
+
+fn add_round<const T: usize, const NC: usize>(
+    _ s: [Bn254Fr; T],
+    _ c: [u256; NC],
+    _ offset: usize,
+) -> [Bn254Fr; T] {
+    var out: [Bn254Fr; T] = s
+    var i: usize = 0
+    while i < T {
+        out[i] = s[i].add(k(c[offset + i]))
+        i += 1
+    }
+    out
+}
+
+fn sbox_all<const T: usize>(_ s: [Bn254Fr; T]) -> [Bn254Fr; T] {
+    var out: [Bn254Fr; T] = s
+    var i: usize = 0
+    while i < T {
+        out[i] = sbox(s[i])
+        i += 1
+    }
+    out
+}
+
+/// The circomlib optimized permutation on a width-`T` state; returns lane 0.
+fn permute<const T: usize, const NC: usize, const NS: usize, const NM: usize>(
+    _ input: [Bn254Fr; T],
+    _ c: [u256; NC],
+    _ s: [u256; NS],
+    _ m: [u256; NM],
+    _ p: [u256; NM],
+    _ n_p: usize,
+) -> Bn254Fr {
+    var st = add_round(input, c, 0)
+    var r: usize = 0
+    while r < 3 {
+        st = add_round(sbox_all(st), c, (r + 1) * T)
+        st = mix(st, m)
+        r += 1
+    }
+    st = add_round(sbox_all(st), c, 4 * T)
+    st = mix(st, p)
+
+    r = 0
+    while r < n_p {
+        let x0 = sbox(st[0]).add(k(c[5 * T + r]))
+        let base = (2 * T - 1) * r
+        var s0 = k(s[base]).mul(x0)
+        var j: usize = 1
+        while j < T {
+            s0 = s0.add(k(s[base + j]).mul(st[j]))
+            j += 1
+        }
+        var k2: usize = 1
+        while k2 < T {
+            st[k2] = st[k2].add(x0.mul(k(s[base + T + k2 - 1])))
+            k2 += 1
+        }
+        st[0] = s0
+        r += 1
+    }
+
+    r = 0
+    while r < 3 {
+        st = add_round(sbox_all(st), c, 5 * T + n_p + r * T)
+        st = mix(st, m)
+        r += 1
+    }
+    st = mix(sbox_all(st), m)
+    st[0]
+}
+
+/// `circomlibjs.poseidon([a])`.
+pub fn poseidon_1(_ a: Bn254Fr) -> Bn254Fr {
+    permute(
+        [Bn254Fr::zero(), a],
+        POSEIDON_C2,
+        POSEIDON_S2,
+        POSEIDON_M2,
+        POSEIDON_P2,
+        56,
+    )
+}
+
+/// `circomlibjs.poseidon([a, b])`.
+pub fn poseidon_2(_ a: Bn254Fr, _ b: Bn254Fr) -> Bn254Fr {
+    permute(
+        [Bn254Fr::zero(), a, b],
+        POSEIDON_C3,
+        POSEIDON_S3,
+        POSEIDON_M3,
+        POSEIDON_P3,
+        57,
+    )
+}
+
+/// `circomlibjs.poseidon([a, b, c])`.
+pub fn poseidon_3(_ a: Bn254Fr, _ b: Bn254Fr, _ c: Bn254Fr) -> Bn254Fr {
+    permute(
+        [Bn254Fr::zero(), a, b, c],
+        POSEIDON_C4,
+        POSEIDON_S4,
+        POSEIDON_M4,
+        POSEIDON_P4,
+        56,
+    )
+}
+
+/// `circomlibjs.poseidon([a, b, c, d])`.
+pub fn poseidon_4(_ a: Bn254Fr, _ b: Bn254Fr, _ c: Bn254Fr, _ d: Bn254Fr) -> Bn254Fr {
+    permute(
+        [Bn254Fr::zero(), a, b, c, d],
+        POSEIDON_C5,
+        POSEIDON_S5,
+        POSEIDON_M5,
+        POSEIDON_P5,
+        60,
+    )
+}
+
+/// `circomlibjs.poseidon([a, b, c, d, e])`.
+pub fn poseidon_5(_ a: Bn254Fr, _ b: Bn254Fr, _ c: Bn254Fr, _ d: Bn254Fr, _ e: Bn254Fr) -> Bn254Fr {
+    permute(
+        [Bn254Fr::zero(), a, b, c, d, e],
+        POSEIDON_C6,
+        POSEIDON_S6,
+        POSEIDON_M6,
+        POSEIDON_P6,
+        60,
+    )
+}

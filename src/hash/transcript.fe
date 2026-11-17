@@ -1,0 +1,68 @@
+//! Keccak-256 Fiat-Shamir transcript.
+//!
+//! The transcript is a hash chain over 32-byte words. Every operation is one Keccak-256 of
+//! a fixed number of big-endian 32-byte words (Solidity `keccak256(abi.encode(...))`), so a
+//! Solidity or Rust verifier can mirror it exactly:
+//!
+//! ```text
+//! new(label):        state   = keccak256(1 ++ label)
+//! absorb(x):         state   = keccak256(2 ++ state ++ x)
+//! squeeze(label):    h       = keccak256(3 ++ state ++ label ++ counter)
+//!                    state   = h
+//!                    counter = counter + 1
+//!                    return h mod r        (r = BN254 scalar field order)
+//! ```
+//!
+//! `1`, `2`, `3` are 32-byte big-endian words. The domain tags make the three operations
+//! unambiguous (they also differ in preimage length: 64, 96, 128 bytes). `label` should be the
+//! protocol name (for `new`) and a distinct challenge name (for `squeeze`), e.g. a short ASCII
+//! string right-aligned in a word, or a Keccak digest of it. Absorb the verifying-key digest
+//! right after `new`, then every public input and every commitment, in the reference order
+//! (safety rule 5). A point is absorbed as two words, `x` then `y`.
+//!
+//! Reduction note: `h mod r` is the same choice reference verifiers make. Since `2^256` is only
+//! about 5.3 times `r`, the challenge is not perfectly uniform (small residues are slightly
+//! more likely). Do not use it where exact uniformity matters (e.g. key material).
+//!
+//! Absorbed values are plain `u256` words. Callers that absorb field elements use
+//! `absorb_fr`, which only accepts canonical `Bn254Fr`, so two different encodings of one
+//! element can never produce different challenges.
+use ingot::field::{Bn254Fr, Field}
+use std::evm::crypto::keccak_words
+
+const TAG_INIT: u256 = 1
+const TAG_ABSORB: u256 = 2
+const TAG_SQUEEZE: u256 = 3
+
+pub struct Transcript { state: u256, counter: u256 }
+
+impl Transcript {
+    /// A fresh transcript bound to the protocol `label`.
+    pub fn new(_ label: u256) -> Transcript {
+        Transcript { state: keccak_words([TAG_INIT, label]), counter: 0 }
+    }
+
+    /// Absorb one 32-byte word.
+    pub fn absorb(mut self, _ x: u256) {
+        self.state = keccak_words([TAG_ABSORB, self.state, x])
+    }
+
+    /// Absorb a canonical field element (as its canonical `u256`).
+    pub fn absorb_fr(mut self, _ x: Bn254Fr) {
+        self.absorb(x.to_canonical())
+    }
+
+    /// Absorb a curve point given by its two coordinates, `x` then `y`.
+    pub fn absorb_point(mut self, _ x: u256, _ y: u256) {
+        self.absorb(x)
+        self.absorb(y)
+    }
+
+    /// Squeeze a challenge in `Fr`, domain-separated by `label` and the squeeze counter.
+    pub fn squeeze(mut self, _ label: u256) -> Bn254Fr {
+        let h = keccak_words([TAG_SQUEEZE, self.state, label, self.counter])
+        self.state = h
+        self.counter += 1
+        Bn254Fr::reduce(h)
+    }
+}

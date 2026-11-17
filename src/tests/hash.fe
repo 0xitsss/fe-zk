@@ -1,0 +1,180 @@
+//! Hand-written hash tests: transcript binding (safety rule 5), non-canonical rejection at the
+//! type boundary, Merkle path shape, and gas per hash (`fe test --show-logs`).
+//! Reference-vector tests are in `hash_vectors.fe` (generated).
+use ingot::field::{Bn254Fr, Field, KoalaBear}
+use ingot::hash::{
+    Bn254Poseidon2,
+    Transcript,
+    bn254_t3_permute,
+    koalabear_t16_permute,
+    merkle_root,
+    poseidon_1,
+    poseidon_2,
+    poseidon_3,
+    poseidon_4,
+    poseidon_5,
+}
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+fn fr(_ v: u256) -> Bn254Fr {
+    match Bn254Fr::from_canonical(v) {
+        Option::Some(x) => x,
+        Option::None => {
+            assert(false)
+            Bn254Fr::zero()
+        },
+    }
+}
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+/// One challenge after absorbing `a`, `b`, point `(c, d)`, `e` under `label`.
+fn challenge(_ label: u256, _ a: u256, _ b: u256, _ c: u256, _ d: u256, _ e: u256) -> Bn254Fr {
+    var t = Transcript::new(label)
+    t.absorb(a)
+    t.absorb(b)
+    t.absorb_point(c, d)
+    t.absorb(e)
+    t.squeeze(7)
+}
+
+#[test]
+fn transcript_changing_any_input_changes_the_challenge() {
+    let base = challenge(1, 2, 3, 4, 5, 6).to_canonical()
+    assert(base == challenge(1, 2, 3, 4, 5, 6).to_canonical())
+    assert(base != challenge(9, 2, 3, 4, 5, 6).to_canonical())
+    assert(base != challenge(1, 9, 3, 4, 5, 6).to_canonical())
+    assert(base != challenge(1, 2, 9, 4, 5, 6).to_canonical())
+    assert(base != challenge(1, 2, 3, 9, 5, 6).to_canonical())
+    assert(base != challenge(1, 2, 3, 4, 9, 6).to_canonical())
+    assert(base != challenge(1, 2, 3, 4, 5, 9).to_canonical())
+    // order matters: swapping two absorbed words, and swapping the point coordinates
+    assert(base != challenge(1, 3, 2, 4, 5, 6).to_canonical())
+    assert(base != challenge(1, 2, 3, 5, 4, 6).to_canonical())
+}
+
+#[test]
+fn transcript_domain_separation() {
+    // the squeeze label changes the challenge
+    var a = Transcript::new(1)
+    a.absorb(5)
+    var b = Transcript::new(1)
+    b.absorb(5)
+    assert(a.squeeze(1).to_canonical() != b.squeeze(2).to_canonical())
+    // consecutive squeezes with the same label differ (counter and chaining)
+    var t = Transcript::new(1)
+    let c1 = t.squeeze(1).to_canonical()
+    let c2 = t.squeeze(1).to_canonical()
+    assert(c1 != c2)
+    // an absorbed word is not the same as a squeeze (tags separate the operations)
+    var u = Transcript::new(1)
+    u.absorb(0)
+    var v = Transcript::new(1)
+    assert(u.squeeze(0).to_canonical() != v.squeeze(0).to_canonical())
+    // absorbing x twice differs from once; absorb_fr is absorb of the canonical value
+    var w1 = Transcript::new(1)
+    w1.absorb(5)
+    var w2 = Transcript::new(1)
+    w2.absorb(5)
+    w2.absorb(5)
+    assert(
+        w1.squeeze(0).to_canonical() != w2.squeeze(0).to_canonical(),
+    )
+    var f1 = Transcript::new(1)
+    f1.absorb_fr(fr(R - 1))
+    var f2 = Transcript::new(1)
+    f2.absorb(R - 1)
+    assert(
+        f1.squeeze(0).to_canonical() == f2.squeeze(0).to_canonical(),
+    )
+}
+
+#[test]
+fn poseidon_inputs_must_be_canonical() {
+    // The only way to build an input is Bn254Fr::from_canonical, which rejects >= r.
+    assert(Bn254Fr::from_canonical(R).is_none())
+    assert(Bn254Fr::from_canonical(R + 12345).is_none())
+}
+
+#[test]
+fn poseidon_is_input_sensitive() {
+    let h = poseidon_2(fr(1), fr(2)).to_canonical()
+    assert(h != poseidon_2(fr(2), fr(1)).to_canonical())
+    assert(h != poseidon_2(fr(1), fr(3)).to_canonical())
+    // different arity, same leading values: domain separated by the width
+    assert(
+        poseidon_1(fr(1)).to_canonical() != poseidon_2(fr(1), fr(0)).to_canonical(),
+    )
+}
+
+#[test]
+fn merkle_rejects_index_outside_tree() {
+    let z = fr(0)
+    let o = merkle_root<Bn254Poseidon2, Bn254Fr, 2>(z, 3, [z, z])
+    assert(o.is_some())
+    assert(
+        merkle_root<Bn254Poseidon2, Bn254Fr, 2>(z, 4, [z, z]).is_none(),
+    )
+    // left and right child are not interchangeable
+    let a = merkle_root<Bn254Poseidon2, Bn254Fr, 1>(fr(1), 0, [fr(2)]).unwrap()
+    let b = merkle_root<Bn254Poseidon2, Bn254Fr, 1>(fr(1), 1, [fr(2)]).unwrap()
+    assert(!a.eq(b))
+}
+
+#[test]
+fn gas_per_hash() uses (evm: mut Evm) {
+    let g0 = evm.gas()
+    let x = Bn254Fr::reduce(g0)
+    let h1 = poseidon_1(x.add(fr(1)))
+    let g1 = evm.gas()
+    let h2 = poseidon_2(x.add(fr(1)), x.add(fr(2)))
+    let g2 = evm.gas()
+    let h3 = poseidon_3(x.add(fr(1)), x.add(fr(2)), x.add(fr(3)))
+    let g3 = evm.gas()
+    let h4 = poseidon_4(x.add(fr(1)), x.add(fr(2)), x.add(fr(3)), x.add(fr(4)))
+    let g4 = evm.gas()
+    let h5 = poseidon_5(
+        x.add(fr(1)),
+        x.add(fr(2)),
+        x.add(fr(3)),
+        x.add(fr(4)),
+        x.add(fr(5)),
+    )
+    let g5 = evm.gas()
+    let p = bn254_t3_permute([x.add(fr(0)), x.add(fr(1)), x.add(fr(2))])
+    let g6 = evm.gas()
+    let q = koalabear_t16_permute([KoalaBear::reduce(g0); 16])
+    let g7 = evm.gas()
+    var t = Transcript::new(g0)
+    t.absorb(g0)
+    let g8 = evm.gas()
+    let c = t.squeeze(2)
+    let g9 = evm.gas()
+    evm.emit(GasUsed { what: 1001, gas: g0 - g1 })
+    evm.emit(GasUsed { what: 1002, gas: g1 - g2 })
+    evm.emit(GasUsed { what: 1003, gas: g2 - g3 })
+    evm.emit(GasUsed { what: 1004, gas: g3 - g4 })
+    evm.emit(GasUsed { what: 1005, gas: g4 - g5 })
+    evm.emit(GasUsed { what: 2003, gas: g5 - g6 })
+    evm.emit(GasUsed { what: 2016, gas: g6 - g7 })
+    evm.emit(GasUsed { what: 3001, gas: g7 - g8 })
+    evm.emit(GasUsed { what: 3002, gas: g8 - g9 })
+    // use the results so nothing is optimized away
+    evm.emit(
+        GasUsed {
+            what: 9999,
+            gas: c.to_canonical()
+                ^ h1.to_canonical()
+                ^ h2.to_canonical()
+                ^ h3.to_canonical()
+                ^ h4.to_canonical()
+                ^ h5.to_canonical()
+                ^ p[0].to_canonical()
+                ^ p[2].to_canonical()
+                ^ q[0].to_canonical()
+                ^ q[15].to_canonical(),
+        },
+    )
+}

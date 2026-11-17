@@ -23,4 +23,15 @@ jobs:
       - run: fe --version
       - run: fe fmt --check
       - run: fe test
-      - run: fe build
+      # The root ingot is a library with no contract; contracts live in the example ingots.
+      - name: Game of Life example
+        working-directory: examples/life
+        run: |
+          fe fmt --check
+          fe test
+          fe build
+      - name: life-cli
+        working-directory: examples/life/cli
+        run: |
+          cargo test --release
+          cargo run --release -- --pattern glider --gens 64 --no-anim --check --bin ../out/Life.bin

@@ -44,3 +44,67 @@ The prebuilt `fe` from `feup` stops with `Illegal instruction` on CPUs without A
 same tag (`v26.5.0`) from source with `cargo build --release -p fe` works. The build needs the
 `tree-sitter` CLI on `PATH` (`npm ci` in `crates/tree-sitter-fe`). CI uses the prebuilt
 binary.
+
+More findings (from building `examples/life`):
+
+- Path dependencies work: `[dependencies] fe_zk = { path = "../.." }` in `fe.toml`.
+- `~x` (bitwise not) and `u256` shifts by a runtime `u256` amount work.
+- Source files under `src/` are modules without a `mod` declaration.
+- A message handler without a `uses` clause cannot touch storage: pure handlers are checked by the compiler.
+- `fe build` needs at least one contract in the ingot; the root library ingot has none, so CI builds the example ingots.
+
+## Game of Life (`examples/life`)
+
+One 16×16 toroidal board is one `u256`. Bit `row * 16 + col`; each row is a 16-bit lane, col 0 is
+the least significant bit of the lane. Horizontal neighbours come from a masked lane rotation,
+vertical neighbours from a 16-bit rotation of the whole word. A bitwise adder network computes the
+neighbour count for all 256 cells at once, and B3/S23 becomes one boolean expression:
+`twos & ~big & (ones | board)`. A generation is about 60 word operations and no per-cell loop.
+
+Gas (revm, Osaka, execution gas without the 21 000 intrinsic): `step` ≈ 624; `run(board, 64)` = 34 187;
+`run(board, 100)` = 53 267. On-chain stepping costs about 530 gas per generation, so a Groth16
+proof of N generations (one pairing check with 4 pairs, roughly 200–250k gas) is cheaper only for
+N above roughly 450 generations, and the verifier's cost is constant in N.
+
+## Curve layer (`src/ec/`)
+
+- Point types have private fields; `G1::from_coords` / `G2::from_coords` are the only way in from raw words.
+- All precompile calls go through `src/ec/precompile.fe`: success flag, exact returndata length, pairing word
+  exactly 1 (any other word reverts), and an explicit gas cap per call. A failing precompile consumes all gas
+  forwarded to it, so forwarding "all gas" would let one invalid point burn 63/64 of the caller's gas.
+- G2 subgroup: the Fe check `psi(P) == [6x^2]P` costs about 755k gas. The pairing precompile of the test EVM
+  (revm) also rejects an on-curve non-subgroup point (test `precompile_vs_non_subgroup`).
+- The test EVM supports Prague: EIP-2537 (BLS12-381) and EIP-4844 point evaluation work in `fe test`.
+- More Fe findings: `use super::x::*` globs work; const-generic functions over `[Struct; N]` work; `Evm`
+  implements `Call`, so tests call `uses (call: Call)` functions directly; `fe fmt` moves trailing `//`
+  comments inside argument lists (put comments above the call).
+
+### Decision: G2 points from proofs (safety rule 3)
+
+EIP-197 makes the subgroup check part of the pairing precompile's consensus rules:
+"For `G_2`, in addition to that, the order of the element has to be checked to be equal to the group order"
+and "If ... any of the inputs are not elements of the respective group ... the call fails."
+(https://eips.ethereum.org/EIPS/eip-197). The test `precompile_vs_non_subgroup` shows the test EVM rejects an
+on-curve point outside the subgroup.
+
+So fe-zk uses two G2 types:
+
+- `G2` — fully checked in Fe (canonical, on curve, `psi(P) == [6x^2]P`). Used for verifying-key constants
+  (the generator also checks them in Rust with arkworks) and by anyone who needs a G2 point outside a pairing.
+- `G2Proof` (proof elements such as Groth16 `B`) — canonical and on-curve checked in Fe (cheap); the subgroup
+  check is completed by the pairing precompile, which is the only operation this type allows. A `G2Proof`
+  cannot be turned into a `G2` or passed to anything except `pairing_check`, so the type system keeps the
+  guarantee: an unchecked point can only reach the one place that checks it.
+
+## Hash layer (`src/hash/`)
+
+- **One Poseidon2 for every field:** `permute_generic<F: Field + Copy, const T: usize, const NE: usize, const NI: usize>`
+  instantiated as BN254 t=3 (x^5) and KoalaBear t=16 (x^3, Plonky3 constants). The external layer is chosen by `T`
+  (circ(2,1,..) for T < 4, Plonky3 M4 blocks for T % 4 == 0); the internal layer is `s_i = sum + diag_i * s_i`.
+- Generic Merkle path: `merkle_root<H: Compression<D>, D: Copy, const N: usize>`, with `D = Bn254Fr` or `D = [KoalaBear; 8]`.
+- Circomlib Poseidon uses the optimized sparse-matrix form (identical outputs to the plain form).
+- Keccak transcript: every operation is one `keccak_words` over 32-byte words — `new`: `keccak(1, label)`,
+  `absorb`: `keccak(2, state, x)`, `squeeze`: `h = keccak(3, state, label, counter)`, challenge `h mod r`.
+- Fe findings: user traits with type parameters, marker types and turbofish calls work in generic code; `[F::zero(); T]`
+  with indexed mutation works; constant tables of ~1300 `u256` compile in about 2 s; results not used in a test are
+  removed by the optimizer, so gas measurements must emit the result in an event.

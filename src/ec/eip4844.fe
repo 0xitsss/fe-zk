@@ -1,0 +1,65 @@
+//! EIP-4844 point-evaluation precompile (0x0a).
+//!
+//! Input (192 bytes, no length prefix):
+//! `versioned_hash (32) | z (32) | y (32) | commitment (48) | proof (48)`
+//! where `commitment` and `proof` are compressed BLS12-381 G1 points (48 bytes, big-endian,
+//! ZCash serialization) and `z`, `y` are big-endian scalars `< BLS_MODULUS`.
+//! On success the precompile returns 64 bytes: `FIELD_ELEMENTS_PER_BLOB (4096)` and
+//! `BLS_MODULUS`, as two 32-byte words. It fails (consumes the gas, returns nothing) if the
+//! versioned hash does not match the commitment, an input is malformed, or the proof is invalid.
+use core::ptr::MemBuffer
+use std::evm::Call
+use ingot::field::Field
+use super::bls12_381::{BLS12_381_R, Bls12381Fr}
+use super::precompile::{call_try, get, put, put_at}
+
+const FIELD_ELEMENTS_PER_BLOB: u256 = 4096
+
+/// 48 raw bytes as `(hi, lo)` = (first 16 bytes, last 32 bytes), `hi < 2^128`.
+pub struct Bytes48 { hi: u256, lo: u256 }
+impl Copy for Bytes48 {}
+
+impl Bytes48 {
+    /// `None` if `hi` does not fit in 16 bytes.
+    pub fn new(_ hi: u256, _ lo: u256) -> Option<Bytes48> {
+        if hi >> 128 != 0 {
+            Option::None
+        } else {
+            Option::Some(Bytes48 { hi, lo })
+        }
+    }
+}
+
+/// `true` iff the precompile accepts the opening proof: the polynomial committed by
+/// `commitment` (whose versioned hash is `versioned_hash`) evaluates to `y` at `z`.
+/// `false` if the precompile fails (bad hash, bad proof, malformed point). Reverts if it
+/// succeeds but returns anything other than exactly `(4096, BLS_MODULUS)`.
+pub fn kzg_point_evaluation(
+    _ versioned_hash: u256,
+    _ z: Bls12381Fr,
+    _ y: Bls12381Fr,
+    _ commitment: Bytes48,
+    _ proof: Bytes48,
+) -> bool
+uses (call: Call)
+{
+    var input = MemBuffer::with_capacity(192)
+    // A 48-byte field is written as an unaligned word whose low 16 bytes hold the first 16 bytes
+    // of the value, plus an aligned word for the last 32. Each store's zero padding is
+    // overwritten by a later store, so the order matters: proof (bytes 128..192), commitment
+    // (80..144), then y (64..96), z, hash.
+    put_at(mut input, 128, proof.hi)
+    put_at(mut input, 160, proof.lo)
+    put_at(mut input, 112, commitment.lo)
+    put_at(mut input, 80, commitment.hi)
+    put(mut input, 2, y.to_canonical())
+    put(mut input, 1, z.to_canonical())
+    put(mut input, 0, versioned_hash)
+    var out = MemBuffer::with_capacity(64)
+    if !call_try(0x0a, 60000, mut input, 192, mut out, 64) {
+        return false
+    }
+    assert(get(out, 0) == FIELD_ELEMENTS_PER_BLOB)
+    assert(get(out, 1) == BLS12_381_R)
+    true
+}
