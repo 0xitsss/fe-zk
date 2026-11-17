@@ -78,3 +78,20 @@ N above roughly 450 generations, and the verifier's cost is constant in N.
 - More Fe findings: `use super::x::*` globs work; const-generic functions over `[Struct; N]` work; `Evm`
   implements `Call`, so tests call `uses (call: Call)` functions directly; `fe fmt` moves trailing `//`
   comments inside argument lists (put comments above the call).
+
+### Decision: G2 points from proofs (safety rule 3)
+
+EIP-197 makes the subgroup check part of the pairing precompile's consensus rules:
+"For `G_2`, in addition to that, the order of the element has to be checked to be equal to the group order"
+and "If ... any of the inputs are not elements of the respective group ... the call fails."
+(https://eips.ethereum.org/EIPS/eip-197). The test `precompile_vs_non_subgroup` shows the test EVM rejects an
+on-curve point outside the subgroup.
+
+So fe-zk uses two G2 types:
+
+- `G2` — fully checked in Fe (canonical, on curve, `psi(P) == [6x^2]P`). Used for verifying-key constants
+  (the generator also checks them in Rust with arkworks) and by anyone who needs a G2 point outside a pairing.
+- `G2Proof` (proof elements such as Groth16 `B`) — canonical and on-curve checked in Fe (cheap); the subgroup
+  check is completed by the pairing precompile, which is the only operation this type allows. A `G2Proof`
+  cannot be turned into a `G2` or passed to anything except `pairing_check`, so the type system keeps the
+  guarantee: an unchecked point can only reach the one place that checks it.
