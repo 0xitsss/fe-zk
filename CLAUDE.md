@@ -66,6 +66,17 @@ code is safer than the Solidity equivalents.
    Groth16 membership proof (circom circuit from Semaphore-style membership, or a trivial
    circuit compiled with circom/snarkjs). Reproducible from `scripts/demo.sh`.
 
+7a. `examples/life/` — **zk Game of Life** (second demo, high priority for the jury): a 16×16
+   (or 32×32) toroidal board packed bit-wise into `u256` words, one Fe contract that
+   (a) steps the board on chain with word-parallel bit tricks (neighbour counts with shifts and
+   bitwise adders, no per-cell loops) and reports gas per generation, and (b) accepts a Groth16
+   proof that `N` generations (e.g. 64 or 256) were computed correctly off chain from a committed
+   start board to a committed end board (Poseidon commitments), verified by a verifier emitted by
+   `fe-zk-gen`. The circuit (circom) and a script that proves a run are under
+   `examples/life/circuit/`; `scripts/life-demo.sh` runs both paths and prints the gas of N
+   on-chain steps vs one proof verification. Pure on-chain stepping is P0-level simple and should
+   come first; the zk path depends on the Groth16 verifier and generator.
+
 **P1 — should ship**
 7. `src/verifier/plonk.fe` — PLONK (snarkjs `plonk` and gnark PLONK) over BN254 with KZG,
    Keccak Fiat–Shamir exactly as the reference verifier.
