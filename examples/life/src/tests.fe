@@ -1,0 +1,128 @@
+// Contract-level tests and gas measurement. Boards come from ref/life.py (see vectors.json).
+use super::{Life, LifeMsg}
+use std::evm::{Address, Evm}
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+// ref/life.py: "glider" start and its state after 1 and 4 generations
+const GLIDER: u256 = 0x700040002
+const GLIDER_1: u256 = 0x2000600050000
+const GLIDER_4: u256 = 0xe000800040000
+// ref/life.py: "random" (seed 20261117) start and its state after 1, 64 and 256 generations
+const RND: u256 = 0x61dc4e61d790efa344a91f9e96070d6fb24c8be1e409e0f6a117dd7fc1d0c009
+const RND_1: u256 = 0x27df180010121022402830d0906061f0d0080bfe360c10f00b0019400b400005
+const RND_64: u256 = 0x1c002dc00481d903e8042000c000c000000400088000800480
+const RND_256: u256 = 0x6000600800140012000c0000000000000000
+
+fn deploy() -> Address uses (evm: mut Evm) {
+    evm.create2<Life>(value: Wei::zero(), args: (), salt: 0)
+}
+
+fn call_step(_ p: Address, _ b: u256) -> (u256, u256) uses (evm: mut Evm) {
+    let g0 = evm.gas()
+    let r: u256 = evm
+        .call(
+            addr: p,
+            gas: 10000000,
+            value: Wei::zero(),
+            message: LifeMsg::Step { board: b },
+        )
+    (r, g0 - evm.gas())
+}
+
+fn call_run(_ p: Address, _ b: u256, _ n: u256) -> (u256, u256)
+uses (evm: mut Evm)
+{
+    let g0 = evm.gas()
+    let r: u256 = evm
+        .call(
+            addr: p,
+            gas: 100000000,
+            value: Wei::zero(),
+            message: LifeMsg::Run { board: b, n: n },
+        )
+    (r, g0 - evm.gas())
+}
+
+#[test]
+fn pure_step_gas() uses (evm: mut Evm) {
+    let p = deploy()
+    let (r, gas) = call_step(p, RND)
+    assert(r == RND_1)
+    evm.emit(GasUsed { what: 1, gas: gas })
+}
+
+#[test]
+fn pure_run_gas() uses (evm: mut Evm) {
+    let p = deploy()
+    let (r64, g64) = call_run(p, RND, 64)
+    assert(r64 == RND_64)
+    evm.emit(GasUsed { what: 64, gas: g64 })
+    let (r256, g256) = call_run(p, RND, 256)
+    assert(r256 == RND_256)
+    evm.emit(GasUsed { what: 256, gas: g256 })
+    // run(0) is the identity
+    let (r0, _) = call_run(p, RND, 0)
+    assert(r0 == RND)
+}
+
+#[test]
+fn glider_via_contract() uses (evm: mut Evm) {
+    let p = deploy()
+    let (r1, _) = call_step(p, GLIDER)
+    assert(r1 == GLIDER_1)
+    let (r4, _) = call_run(p, GLIDER, 4)
+    assert(r4 == GLIDER_4)
+}
+
+#[test]
+fn stateful_advance() uses (evm: mut Evm) {
+    let p = deploy()
+    let b0: u256 = evm.call(
+            addr: p,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: LifeMsg::Board {},
+        )
+    assert(b0 == 0)
+    evm.call(
+        addr: p,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: LifeMsg::Set { board: RND },
+    )
+    let b1: u256 = evm.call(
+            addr: p,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: LifeMsg::Board {},
+        )
+    assert(b1 == RND)
+    let g0 = evm.gas()
+    let r: u256 = evm
+        .call(
+            addr: p,
+            gas: 10000000,
+            value: Wei::zero(),
+            message: LifeMsg::Advance { n: 1 },
+        )
+    evm.emit(GasUsed { what: 1001, gas: g0 - evm.gas() })
+    assert(r == RND_1)
+    // storage kept the new board; advancing 63 more gives generation 64
+    let r64: u256 = evm
+        .call(
+            addr: p,
+            gas: 10000000,
+            value: Wei::zero(),
+            message: LifeMsg::Advance { n: 63 },
+        )
+    assert(r64 == RND_64)
+    let b64: u256 = evm.call(
+            addr: p,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: LifeMsg::Board {},
+        )
+    assert(b64 == RND_64)
+}

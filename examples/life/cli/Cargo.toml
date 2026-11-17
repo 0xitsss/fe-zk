@@ -1,0 +1,15 @@
+[package]
+name = "life-cli"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Terminal demo: plays Game of Life by executing the compiled Fe `Life` contract in revm"
+
+[[bin]]
+name = "life-cli"
+path = "src/main.rs"
+
+[dependencies]
+revm = { version = "=33.1.0", default-features = false, features = ["std"] }
+
+[workspace]
