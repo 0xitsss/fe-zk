@@ -1,4 +1,4 @@
-//! Regenerates vectors/halo2/standard_plonk_lookup/*. Deterministic (fixed seeds).
+//! Regenerates vectors/halo2/standard_plonk_lookup/*. vk is deterministic; proof bytes are not (see scripts/regen-halo2.sh).
 use fe_zk_halo2_vectors::circuit::Demo;
 use fe_zk_halo2_vectors::export::*;
 use halo2_base::halo2_proofs::{
