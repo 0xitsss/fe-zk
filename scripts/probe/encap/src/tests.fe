@@ -1,0 +1,6 @@
+use ingot::Fr
+#[test]
+fn forge() {
+    let x = Fr { v: 100 }
+    assert(x.raw() == 100)
+}

@@ -1,0 +1,64 @@
+// Probe: trait with associated consts + generic fn over the trait + const-generic modulus.
+use std::evm::crypto::{addmod, mulmod}
+
+pub trait Field {
+    const MODULUS: u256
+    fn from_raw(_ v: u256) -> Self
+    fn raw(self) -> u256
+    fn add(self, _ o: Self) -> Self
+    fn mul(self, _ o: Self) -> Self
+}
+
+pub struct Fp<const P: u256> { v: u256 }
+
+impl<const P: u256> Copy for Fp<P> {}
+
+impl<const P: u256> Field for Fp<P> {
+    const MODULUS: u256 = P
+    fn from_raw(_ v: u256) -> Self {
+        Fp { v: v % P }
+    }
+    fn raw(self) -> u256 {
+        self.v
+    }
+    fn add(self, _ o: Self) -> Self {
+        Fp { v: addmod(self.v, o.v, P) }
+    }
+    fn mul(self, _ o: Self) -> Self {
+        Fp { v: mulmod(self.v, o.v, P) }
+    }
+}
+
+type KoalaBear = Fp<0x7f000001>
+type BabyBear = Fp<0x78000001>
+
+// generic over the trait
+fn sq_plus<F: Field + Copy>(_ x: F) -> F {
+    x.mul(x).add(F::from_raw(1))
+}
+
+fn modulus_of<F: Field>() -> u256 {
+    F::MODULUS
+}
+
+// generic over array length + trait
+fn sum<F: Field + Copy, const N: usize>(_ xs: [F; N]) -> F {
+    var acc = F::from_raw(0)
+    for x in xs {
+        acc = acc.add(x)
+    }
+    acc
+}
+
+#[test]
+fn trait_generics() {
+    let a = KoalaBear::from_raw(0x7f000000)
+    assert(sq_plus(a).raw() == 2)
+    assert(modulus_of<BabyBear>() == 0x78000001)
+    let xs: [BabyBear; 3] = [
+        BabyBear::from_raw(1),
+        BabyBear::from_raw(2),
+        BabyBear::from_raw(0x78000000),
+    ]
+    assert(sum(xs).raw() == 2)
+}

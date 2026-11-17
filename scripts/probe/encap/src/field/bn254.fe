@@ -1,0 +1,10 @@
+pub struct Fr {
+    v: u256,
+}
+impl Copy for Fr {}
+impl Fr {
+    pub fn checked(_ v: u256) -> Option<Fr> {
+        if v < 7 { Option::Some(Fr { v }) } else { Option::None }
+    }
+    pub fn raw(self) -> u256 { self.v }
+}

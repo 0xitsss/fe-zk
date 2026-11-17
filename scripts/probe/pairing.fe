@@ -1,0 +1,85 @@
+// Probe: BN254 pairing via Call.raw_staticcall (success + returndata length + ==1),
+// a contract message with a fixed-size array argument, gas measured in a test, logs.
+use core::ptr::{self, MemBuffer}
+use core::abi::{load_word, store_word}
+use std::evm::{Address, Call, Evm}
+
+const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+
+msg ProbeMsg {
+    #[selector = sol("pair(uint256[12])")]
+    Pair { words: [u256; 12] } -> bool,
+}
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+fn pairing2(_ w: [u256; 12]) -> bool uses (call: Call) {
+    var input = MemBuffer::with_capacity(384)
+    var i: usize = 0
+    while i < 12 {
+        unsafe {
+            store_word(
+                ptr: ptr::offset_bytes(input.ptr(), (i * 32) as u256),
+                value: w[i],
+            )
+        }
+        i += 1
+    }
+    unsafe {
+        input.set_len(384)
+    }
+    var out = MemBuffer::with_capacity(32)
+    let r = call
+        .raw_staticcall(
+            addr: Address::new(8),
+            gas: 200000,
+            args: input.span(),
+            ret: mut out,
+        )
+    if !r.success() || r.returndata_len() != 32 {
+        return false
+    }
+    unsafe { load_word(out.ptr()) } == 1
+}
+
+pub contract Probe uses (call: Call) {
+    recv ProbeMsg {
+        Pair { words } -> bool uses (call) {
+            pairing2(words)
+        }
+    }
+}
+
+const G2: [u256; 4] = [
+    11559732032986387107991004021392285783925812861821192530917403151452391805634,
+    10857046999023057135944570762232829481370756359578518086990519993285655852781,
+    4082367875863433681332203403145435568316851327593401208105741076214120093531,
+    8495653923123431417604973247489272438418190587263600148770280649306958101930,
+]
+
+#[test]
+fn pairing_ok_and_gas() uses (evm: mut Evm) {
+    let p = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 0)
+    let good: [u256; 12] = [1, 2, G2[0], G2[1], G2[2], G2[3], 1, Q - 2, G2[0], G2[1], G2[2], G2[3]]
+    let g0 = evm.gas()
+    let ok: bool = evm
+        .call(
+            addr: p,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: ProbeMsg::Pair { words: good },
+        )
+    let used = g0 - evm.gas()
+    evm.emit(GasUsed { what: 1, gas: used })
+    assert(ok)
+    let bad: [u256; 12] = [1, 2, G2[0], G2[1], G2[2], G2[3], 1, 2, G2[0], G2[1], G2[2], G2[3]]
+    let no: bool = evm
+        .call(
+            addr: p,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: ProbeMsg::Pair { words: bad },
+        )
+    assert(!no)
+}
