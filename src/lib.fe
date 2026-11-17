@@ -22,6 +22,9 @@ pub use ec::{
     g1_mul,
     kzg_point_evaluation,
     pairing_check,
+    pairing_check_proof,
+    pairing_try_proof,
+    G2Proof,
 }
 pub use hash::{
     Bn254Poseidon2,

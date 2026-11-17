@@ -1,0 +1,117 @@
+//! Groth16 verifier over BN254, written once for every public-input count `N`.
+//!
+//! One pairing check: `e(-A, B) * e(alpha, beta) * e(vk_x, gamma) * e(C, delta) == 1` with
+//! `vk_x = IC0 + sum_i IC_i * x_i`.
+//!
+//! Safety rules (docs/SAFETY.md):
+//! * rule 1: `verify_raw` rejects any public input `>= r` and any coordinate `>= q` (never reduced);
+//! * rule 2: `A` and `C` must be on `y^2 = x^3 + 3` (or the explicit infinity `(0, 0)`);
+//! * rule 3: `B` is a `G2Proof` (canonical + on the twist). The subgroup check is completed by the
+//!   pairing precompile (EIP-197), the only consumer of a `G2Proof`. Verifying-key points are
+//!   `G2` / `G1` values built by the generator-validated, `unsafe` `from_validated_coords`;
+//! * rule 4: the number of public inputs is the type-level `N` of `Groth16Vk<N>` and of the
+//!   `[u256; N]` argument; there is no dynamic length to drop or append inputs;
+//! * rule 6: every precompile call goes through `call_try`/`call_checked` (success flag and
+//!   returned length are checked); the pairing result must be exactly 1.
+//!
+//! Failure policy: `verify` / `verify_raw` return `false` for every invalid input, including a
+//! `B` outside the subgroup (the pairing call fails, the failure is mapped to `false`), like
+//! snarkjs' Solidity verifier. They only revert if a precompile violates its output contract.
+//!
+//! Purity: everything here is `uses (call: Call)` only (static calls to precompiles); no storage,
+//! no logs, no value.
+//!
+//! Malleability (rule 8): Groth16 proofs are malleable. Given a valid `(A, B, C)` anyone can
+//! produce another valid triple for the same statement (re-randomisation). Never use a proof or
+//! its hash as a nullifier or unique id; bind uniqueness to a public input (a nullifier derived
+//! inside the circuit).
+use std::evm::Call
+use ingot::ec::{G1, G2, G2Proof, g1_add, g1_mul, pairing_try_proof}
+use ingot::field::{Bn254Fr, Field}
+
+/// A Groth16 verifying key with `N` public inputs. `ic0` is the constant term, `ic[i]` pairs with
+/// public input `i`. Points are typed, so a key can only be assembled from checked points (or
+/// from `unsafe` `from_validated_coords`, used by `fe-zk-gen` for keys it validated).
+pub struct Groth16Vk<const N: usize> {
+    pub alpha: G1,
+    pub beta: G2,
+    pub gamma: G2,
+    pub delta: G2,
+    pub ic0: G1,
+    pub ic: [G1; N],
+}
+
+/// A proof whose points have passed the cheap checks (canonical, on curve).
+pub struct Groth16Proof { pub a: G1, pub b: G2Proof, pub c: G1 }
+
+/// Verifies `proof` against `vk` for the canonical public `inputs`.
+pub fn verify<const N: usize>(
+    _ vk: Groth16Vk<N>,
+    _ proof: Groth16Proof,
+    _ inputs: [Bn254Fr; N],
+) -> bool
+uses (call: Call)
+{
+    var vk_x = vk.ic0
+    var i: usize = 0
+    while i < N {
+        vk_x = g1_add(vk_x, g1_mul(vk.ic[i], inputs[i]))
+        i += 1
+    }
+    pairing_try_proof(
+        [proof.a.neg(), vk.alpha, vk_x, proof.c],
+        [
+            proof.b,
+            G2Proof::from_g2(vk.beta),
+            G2Proof::from_g2(vk.gamma),
+            G2Proof::from_g2(vk.delta),
+        ],
+    )
+}
+
+/// Verifier entry for raw words. `b` is `[[x_real, x_imag], [y_real, y_imag]]`, the order of
+/// snarkjs' JSON proof (NOT the swapped order of snarkjs' Solidity calldata; the generated
+/// contract un-swaps it). Returns `false` if any input is `>= r`, any coordinate is `>= q`,
+/// `A` / `C` / `B` are not on their curves, or the pairing fails.
+pub fn verify_raw<const N: usize>(
+    _ vk: Groth16Vk<N>,
+    _ a: [u256; 2],
+    _ b: [[u256; 2]; 2],
+    _ c: [u256; 2],
+    _ inputs: [u256; N],
+) -> bool
+uses (call: Call)
+{
+    var fr = [Bn254Fr::zero(); N]
+    var i: usize = 0
+    while i < N {
+        match Bn254Fr::from_canonical(inputs[i]) {
+            Option::Some(v) => {
+                fr[i] = v
+            },
+            Option::None => {
+                return false
+            },
+        }
+        i += 1
+    }
+    let pa = match G1::from_coords(a[0], a[1]) {
+        Option::Some(p) => p,
+        Option::None => {
+            return false
+        },
+    }
+    let pc = match G1::from_coords(c[0], c[1]) {
+        Option::Some(p) => p,
+        Option::None => {
+            return false
+        },
+    }
+    let pb = match G2Proof::from_coords(b[0][0], b[0][1], b[1][0], b[1][1]) {
+        Option::Some(p) => p,
+        Option::None => {
+            return false
+        },
+    }
+    verify(vk, Groth16Proof { a: pa, b: pb, c: pc }, fr)
+}

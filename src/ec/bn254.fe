@@ -13,7 +13,7 @@
 use core::ptr::MemBuffer
 use std::evm::Call
 use ingot::field::{Bn254Fq, Bn254Fr, Field}
-use super::precompile::{call_checked, get, put}
+use super::precompile::{call_checked, call_try, get, put}
 
 /// `6 x^2` for the BN254 parameter `x = 4965661367192848881`; `psi(P) = [6 x^2] P` on G2.
 const SIX_X_SQ: u256 = 147946756881789318990833708069417712966
@@ -114,6 +114,14 @@ impl G1 {
         } else {
             Option::None
         }
+    }
+
+    /// Builds a point from coordinates that were validated elsewhere (the verifying-key constants
+    /// of a generated verifier, checked by `fe-zk-gen` and re-checked in the generated tests with
+    /// `from_coords`). Nothing is checked here, so the caller must `unsafe`-acknowledge it.
+    /// Never use on calldata.
+    pub unsafe fn from_validated_coords(_ x: u256, _ y: u256) -> G1 {
+        G1 { x: fq(x), y: fq(y) }
     }
 
     pub fn generator() -> G1 {
@@ -267,6 +275,13 @@ impl G2 {
         }
     }
 
+    /// Same contract as `G1::from_validated_coords`: no checks, `unsafe` marks the trust boundary.
+    /// Exists because the full subgroup check costs ~750k gas, far too much to repeat for every
+    /// verifying-key constant on every proof. Never use on calldata.
+    pub unsafe fn from_validated_coords(_ x0: u256, _ x1: u256, _ y0: u256, _ y1: u256) -> G2 {
+        G2 { x: Fq2::new(fq(x0), fq(x1)), y: Fq2::new(fq(y0), fq(y1)) }
+    }
+
     pub fn generator() -> G2 {
         G2 {
             x: Fq2::new(
@@ -319,6 +334,50 @@ impl G2 {
 }
 
 // ---------------------------------------------------------------------------------------
+// G2Proof: untrusted G2 points from proofs
+// ---------------------------------------------------------------------------------------
+
+/// A G2 point taken from a proof (e.g. Groth16 `B`): canonical coordinates and twist-curve
+/// membership are checked in Fe, the subgroup check is NOT done here. EIP-197 makes the pairing
+/// precompile (0x08) fail unless every G2 input has order `r`
+/// (https://eips.ethereum.org/EIPS/eip-197), so the check is completed by the only operation this
+/// type supports: `pairing_check_proof` / `pairing_try_proof`. There is deliberately no conversion
+/// to `G2` and no accessor that yields a `G2`; a `G2Proof` can only reach the pairing. The test
+/// `proof_g2_non_subgroup_rejected_by_pairing` pins the precompile behaviour.
+pub struct G2Proof { x: Fq2, y: Fq2 }
+impl Copy for G2Proof {}
+
+impl G2Proof {
+    /// `None` if any coordinate is `>= q` (never reduced) or the point is not on the twist.
+    /// All-zero is infinity. Real part first, like `G2::from_coords`.
+    pub fn from_coords(_ x0: u256, _ x1: u256, _ y0: u256, _ y1: u256) -> Option<G2Proof> {
+        let a = Bn254Fq::from_canonical(x0)
+        let b = Bn254Fq::from_canonical(x1)
+        let c = Bn254Fq::from_canonical(y0)
+        let d = Bn254Fq::from_canonical(y1)
+        if a.is_none() || b.is_none() || c.is_none() || d.is_none() {
+            return Option::None
+        }
+        let x = Fq2::new(a.unwrap(), b.unwrap())
+        let y = Fq2::new(c.unwrap(), d.unwrap())
+        if x.is_zero() && y.is_zero() {
+            return Option::Some(G2Proof { x, y })
+        }
+        let b2 = Fq2::new(fq(B2_C0), fq(B2_C1))
+        if y.square().eq(x.square().mul(x).add(b2)) {
+            Option::Some(G2Proof { x, y })
+        } else {
+            Option::None
+        }
+    }
+
+    /// Widening: every checked `G2` is a valid pairing operand.
+    pub fn from_g2(_ g: G2) -> G2Proof {
+        G2Proof { x: g.x, y: g.y }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // Precompile wrappers
 // ---------------------------------------------------------------------------------------
 
@@ -346,10 +405,8 @@ pub fn g1_mul(_ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
     G1 { x: fq(get(out, 0)), y: fq(get(out, 1)) }
 }
 
-/// `true` iff `prod_i e(ps[i], qs[i]) == 1`, via precompile 0x08. Reverts if the call fails,
-/// returns a length other than 32, returns a word other than 0 or 1, or `N == 0`
-/// (an empty product would be vacuously true).
-pub fn pairing_check<const N: usize>(_ ps: [G1; N], _ qs: [G2; N]) -> bool
+/// Result code of `pairing_raw`: 0 = product != 1, 1 = product == 1, 2 = precompile call failed.
+fn pairing_raw<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> u256
 uses (call: Call)
 {
     assert(N != 0)
@@ -368,7 +425,8 @@ uses (call: Call)
         i += 1
     }
     var out = MemBuffer::with_capacity(32)
-    call_checked(
+    // Explicit gas cap: a failing pairing burns everything forwarded to it.
+    let ok = call_try(
         8,
         50000 + 40000 * (N as u256),
         mut input,
@@ -376,7 +434,45 @@ uses (call: Call)
         mut out,
         32,
     )
+    if !ok { return 2 }
     let w = get(out, 0)
     assert(w <= 1)
+    w
+}
+
+/// `true` iff `prod_i e(ps[i], qs[i]) == 1`, via precompile 0x08. Reverts if the call fails,
+/// returns a length other than 32, returns a word other than 0 or 1, or `N == 0`
+/// (an empty product would be vacuously true).
+pub fn pairing_check<const N: usize>(_ ps: [G1; N], _ qs: [G2; N]) -> bool
+uses (call: Call)
+{
+    var ws = [G2Proof::from_g2(G2::infinity()); N]
+    var i: usize = 0
+    while i < N {
+        ws[i] = G2Proof::from_g2(qs[i])
+        i += 1
+    }
+    let w = pairing_raw(ps, ws)
+    assert(w <= 1)
     w == 1
+}
+
+/// Like `pairing_check` for untrusted `G2Proof` operands, strict: reverts if the precompile
+/// call fails (which is what happens for a point outside the order-`r` subgroup).
+pub fn pairing_check_proof<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> bool
+uses (call: Call)
+{
+    let w = pairing_raw(ps, qs)
+    assert(w <= 1)
+    w == 1
+}
+
+/// Like `pairing_check_proof` but a failing precompile call (malformed or non-subgroup G2)
+/// yields `false` instead of reverting. Success flag and returned length are still checked;
+/// "call failed" is mapped to rejection, never to acceptance. The failing call burns only the
+/// capped gas of `pairing_raw`.
+pub fn pairing_try_proof<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> bool
+uses (call: Call)
+{
+    pairing_raw(ps, qs) == 1
 }
