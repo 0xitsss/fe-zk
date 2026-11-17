@@ -365,9 +365,7 @@ fn transcript_absorbs_coordinates() {
 
 #[test]
 fn transcript_one_word_squeeze_is_domain_separated() {
-    // buf of exactly one word hashes with a 0x01 suffix: squeeze(); squeeze() differs from
-    // a transcript that absorbed the first digest explicitly... but both chain; check the
-    // second squeeze differs from the first and from the one-word-no-suffix hash.
+    // A buffer of exactly one word is hashed with a 0x01 suffix; two squeezes in a row chain.
     var t = Halo2Transcript::new()
     t.absorb(1)
     let c1 = t.squeeze()
@@ -375,7 +373,7 @@ fn transcript_one_word_squeeze_is_domain_separated() {
     assert(!c1.eq(c2))
     var u = Halo2Transcript::new()
     u.absorb(1)
-    // 32-byte buffer + 0x01 suffix, never the bare keccak of the word
+    // deterministic
     assert(u.squeeze().eq(c1))
 }
 
