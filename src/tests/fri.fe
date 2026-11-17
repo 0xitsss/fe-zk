@@ -1,0 +1,378 @@
+//! Tests for the extension field, the Keccak challenger and the FRI/STARK verifier.
+//! All expected values and the proof come from Plonky3 (`vectors/plonky3-stark`, p3 0.4.2), never
+//! from this repository's code; see `fri_fixture.fe` (generated).
+use ingot::field::{Field, KoalaBear}
+use ingot::field::ext::{Ext4, KoalaBearExt4}
+use std::evm::Evm
+use ingot::verifier::fri::{check_air, check_query, proof_is_canonical, replay_transcript, verify}
+use ingot::verifier::fri::challenger::Challenger
+use ingot::tests::fri_fixture::{
+    CHAL_BITS,
+    CHAL_EXT,
+    CHAL_FELTS,
+    CHAL_GRIND_BITS,
+    CHAL_HASH,
+    CHAL_WITNESS,
+    EXT_CASES,
+    FIB_PUBLIC,
+    GENERATOR,
+    TR_ALPHA,
+    TR_BETAS,
+    TR_FRI_ALPHA,
+    TR_INDICES,
+    TR_ZETA,
+    TWO_ADIC_GENERATORS,
+    TWO_ADIC_GENERATOR_24,
+    fib_proof,
+}
+
+const P: u256 = 0x7f000001
+
+fn kb(_ v: u256) -> KoalaBear {
+    KoalaBear::from_canonical(v).unwrap()
+}
+
+fn ext(_ c: [u256; 4]) -> KoalaBearExt4 {
+    KoalaBearExt4::new(kb(c[0]), kb(c[1]), kb(c[2]), kb(c[3]))
+}
+
+fn same(_ e: KoalaBearExt4, _ c: [u256; 4]) -> bool {
+    e.eq(ext(c))
+}
+
+// ---- extension field vs Plonky3 BinomialExtensionField<KoalaBear, 4> ----
+
+#[test]
+fn ext_matches_plonky3() {
+    var i: usize = 0
+    while i < 5 {
+        let t = EXT_CASES[i]
+        let a = ext(t[0])
+        let b = ext(t[1])
+        assert(same(a.add(b), t[2]))
+        assert(same(a.sub(b), t[3]))
+        assert(same(a.mul(b), t[4]))
+        assert(same(a.square(), t[5]))
+        assert(same(a.inv().unwrap(), t[6]))
+        assert(same(a.pow(1000003), t[7]))
+        // inverse really inverts
+        assert(a.mul(a.inv().unwrap()).eq(KoalaBearExt4::one()))
+        i += 1
+    }
+    assert(KoalaBearExt4::zero().inv().is_none())
+}
+
+#[test]
+fn two_adic_generators_match_plonky3() {
+    // the verifier derives g_k from g_24 by repeated squaring
+    let g24 = kb(TWO_ADIC_GENERATOR_24)
+    var k: usize = 0
+    while k < 9 {
+        assert(
+            g24.pow(1 << (24 - (k as u256))).to_canonical() == TWO_ADIC_GENERATORS[k],
+        )
+        k += 1
+    }
+    assert(GENERATOR == 3)
+}
+
+// ---- Keccak challenger vs Plonky3 SerializingChallenger32<HashChallenger<u8, Keccak256Hash>> ----
+
+#[test]
+fn challenger_matches_plonky3() {
+    var c = Challenger::new()
+    var i: usize = 0
+    while i < 4 {
+        c.observe_felt(kb(CHAL_FELTS[i]))
+        i += 1
+    }
+    assert(same(c.sample_ext(), CHAL_EXT[0]))
+    c.observe_hash(CHAL_HASH)
+    assert(c.sample_bits(5) == CHAL_BITS)
+    i = 1
+    while i < 7 {
+        assert(same(c.sample_ext(), CHAL_EXT[i]))
+        i += 1
+    }
+    assert(c.check_witness(CHAL_GRIND_BITS, kb(CHAL_WITNESS)))
+    assert(same(c.sample_ext(), CHAL_EXT[7]))
+}
+
+// ---- the proof ----
+
+#[test]
+fn transcript_matches_plonky3() {
+    let ch = replay_transcript(fib_proof(), FIB_PUBLIC)
+    assert(ch.pow_ok)
+    assert(same(ch.alpha, TR_ALPHA))
+    assert(same(ch.zeta, TR_ZETA))
+    assert(same(ch.fri_alpha, TR_FRI_ALPHA))
+    var i: usize = 0
+    while i < 3 {
+        assert(same(ch.betas[i], TR_BETAS[i]))
+        i += 1
+    }
+    i = 0
+    while i < 4 {
+        assert(ch.indices[i] == TR_INDICES[i])
+        i += 1
+    }
+}
+
+#[test]
+fn accepts_plonky3_fibonacci_proof() {
+    assert(proof_is_canonical(fib_proof(), FIB_PUBLIC))
+    let ch = replay_transcript(fib_proof(), FIB_PUBLIC)
+    assert(check_air(fib_proof(), FIB_PUBLIC, ch))
+    var q: usize = 0
+    while q < 4 {
+        assert(check_query(fib_proof(), ch, q))
+        q += 1
+    }
+    assert(verify(fib_proof(), FIB_PUBLIC))
+}
+
+// ---- rejections ----
+
+#[test]
+fn rejects_tampered_merkle_siblings() {
+    var p = fib_proof()
+    p.queries[1].trace_path[3] = p.queries[1].trace_path[3] ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.queries[2].quotient_path[0] = p.queries[2].quotient_path[0] ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+    // commit-phase openings: first, middle and last sibling of the concatenated paths
+    p = fib_proof()
+    p.queries[0].fold_paths[0] = p.queries[0].fold_paths[0] ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.queries[3].fold_paths[7] = p.queries[3].fold_paths[7] ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.queries[3].fold_paths[11] = p.queries[3].fold_paths[11] ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+}
+
+#[test]
+fn rejects_tampered_opened_values() {
+    // query row opened from the trace commitment
+    var p = fib_proof()
+    p.queries[0].trace_row[1] = (p.queries[0].trace_row[1] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    // query row opened from the quotient commitment
+    p = fib_proof()
+    p.queries[0].quotient_row[2] = (p.queries[0].quotient_row[2] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    // commit-phase sibling value
+    p = fib_proof()
+    p.queries[1].fold_sibling[1][0] = (p.queries[1].fold_sibling[1][0] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    // claimed evaluations at zeta (FRI and the AIR check both catch it)
+    p = fib_proof()
+    p.trace_local[0][0] = (p.trace_local[0][0] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.trace_next[1][3] = (p.trace_next[1][3] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.quotient_chunk[0][0] = (p.quotient_chunk[0][0] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+}
+
+#[test]
+fn rejects_tampered_final_poly() {
+    var p = fib_proof()
+    p.final_poly[0][0] = (p.final_poly[0][0] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.final_poly[1][2] = (p.final_poly[1][2] + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+}
+
+#[test]
+fn rejects_wrong_public_values() {
+    // x = fib(15) = 987; a wrong output must be rejected
+    assert(FIB_PUBLIC[2] == 987)
+    assert(!verify(fib_proof(), [FIB_PUBLIC[0], FIB_PUBLIC[1], 988]))
+    assert(!verify(fib_proof(), [FIB_PUBLIC[0], 2, FIB_PUBLIC[2]]))
+    assert(!verify(fib_proof(), [1, FIB_PUBLIC[1], FIB_PUBLIC[2]]))
+    // swapped inputs
+    assert(
+        !verify(
+            fib_proof(),
+            [FIB_PUBLIC[1], FIB_PUBLIC[0], FIB_PUBLIC[2]],
+        ),
+    )
+}
+
+#[test]
+fn rejects_changed_commitments() {
+    var p = fib_proof()
+    p.trace_commit = p.trace_commit ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.quotient_commit = p.quotient_commit ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.fri_commits[1] = p.fri_commits[1] ^ 1
+    assert(!verify(p, FIB_PUBLIC))
+}
+
+#[test]
+fn rejects_bad_proof_of_work_witness() {
+    var p = fib_proof()
+    p.query_pow_witness = (p.query_pow_witness + 1) % P
+    assert(!verify(p, FIB_PUBLIC))
+    // witnesses of a zero-bit commit-phase pow are pinned to zero
+    p = fib_proof()
+    p.commit_pow_witnesses[0] = 1
+    assert(!verify(p, FIB_PUBLIC))
+}
+
+// ---- rule 1: non-canonical encodings ----
+
+#[test]
+fn rejects_non_canonical_elements() {
+    // p itself and p + 1 encode 0 and 1 but must not be accepted
+    var p = fib_proof()
+    p.trace_local[0][0] = P
+    assert(!proof_is_canonical(p, FIB_PUBLIC))
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.quotient_chunk[0][3] = P + 5
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.final_poly[1][1] = 0xffffffff
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.queries[2].trace_row[0] = p.queries[2].trace_row[0] + P
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.queries[0].fold_sibling[0][1] = P
+    assert(!verify(p, FIB_PUBLIC))
+    p = fib_proof()
+    p.query_pow_witness = p.query_pow_witness + P
+    assert(!verify(p, FIB_PUBLIC))
+    // public values: a + p is the same field element but a different encoding
+    assert(
+        !verify(
+            fib_proof(),
+            [FIB_PUBLIC[0] + P, FIB_PUBLIC[1], FIB_PUBLIC[2]],
+        ),
+    )
+    assert(
+        !verify(
+            fib_proof(),
+            [FIB_PUBLIC[0], FIB_PUBLIC[1], FIB_PUBLIC[2] + P],
+        ),
+    )
+}
+
+// ---- rule 5: every transcript input changes the challenges ----
+
+fn ne(_ a: KoalaBearExt4, _ b: KoalaBearExt4) -> bool {
+    !a.eq(b)
+}
+
+#[test]
+fn every_transcript_input_changes_the_challenges() {
+    let base = replay_transcript(fib_proof(), FIB_PUBLIC)
+
+    // public values and trace commitment come before alpha
+    var i: usize = 0
+    while i < 3 {
+        var pv = FIB_PUBLIC
+        pv[i] = (pv[i] + 1) % P
+        let c = replay_transcript(fib_proof(), pv)
+        assert(ne(c.alpha, base.alpha))
+        assert(ne(c.zeta, base.zeta))
+        assert(ne(c.fri_alpha, base.fri_alpha))
+        i += 1
+    }
+    var p = fib_proof()
+    p.trace_commit = p.trace_commit ^ 1
+    var c = replay_transcript(p, FIB_PUBLIC)
+    assert(ne(c.alpha, base.alpha))
+    assert(ne(c.zeta, base.zeta))
+
+    // quotient commitment: alpha unchanged (sampled before it), zeta changes
+    p = fib_proof()
+    p.quotient_commit = p.quotient_commit ^ 1
+    c = replay_transcript(p, FIB_PUBLIC)
+    assert(!ne(c.alpha, base.alpha))
+    assert(ne(c.zeta, base.zeta))
+
+    // each claimed evaluation: zeta unchanged, FRI batching challenge changes
+    p = fib_proof()
+    p.trace_local[1][2] = (p.trace_local[1][2] + 1) % P
+    c = replay_transcript(p, FIB_PUBLIC)
+    assert(!ne(c.zeta, base.zeta))
+    assert(ne(c.fri_alpha, base.fri_alpha))
+    p = fib_proof()
+    p.trace_next[0][0] = (p.trace_next[0][0] + 1) % P
+    assert(
+        ne(
+            replay_transcript(p, FIB_PUBLIC).fri_alpha,
+            base.fri_alpha,
+        ),
+    )
+    p = fib_proof()
+    p.quotient_chunk[3][3] = (p.quotient_chunk[3][3] + 1) % P
+    assert(
+        ne(
+            replay_transcript(p, FIB_PUBLIC).fri_alpha,
+            base.fri_alpha,
+        ),
+    )
+
+    // each commit-phase commitment: its own beta and every later beta change
+    var j: usize = 0
+    while j < 3 {
+        p = fib_proof()
+        p.fri_commits[j] = p.fri_commits[j] ^ 1
+        c = replay_transcript(p, FIB_PUBLIC)
+        assert(!ne(c.fri_alpha, base.fri_alpha))
+        assert(ne(c.betas[j], base.betas[j]))
+        assert(ne(c.betas[2], base.betas[2]))
+        j += 1
+    }
+
+    // final polynomial and the query witness: the query indices change
+    p = fib_proof()
+    p.final_poly[0][0] = (p.final_poly[0][0] + 1) % P
+    c = replay_transcript(p, FIB_PUBLIC)
+    assert(!ne(c.betas[2], base.betas[2]))
+    assert(
+        c.indices[0] != base.indices[0]
+            || c.indices[1] != base.indices[1]
+            || c.indices[2] != base.indices[2]
+            || c.indices[3] != base.indices[3]
+            || !c.pow_ok,
+    )
+    p = fib_proof()
+    p.final_poly[1][3] = (p.final_poly[1][3] + 1) % P
+    c = replay_transcript(p, FIB_PUBLIC)
+    assert(
+        c.indices[0] != base.indices[0]
+            || c.indices[1] != base.indices[1]
+            || c.indices[2] != base.indices[2]
+            || c.indices[3] != base.indices[3]
+            || !c.pow_ok,
+    )
+}
+
+// ---- gas ----
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+#[test]
+fn gas_of_verification() uses (evm: mut Evm) {
+    let proof = fib_proof()
+    let g0 = evm.gas()
+    let ok = verify(proof, FIB_PUBLIC)
+    let used = g0 - evm.gas()
+    evm.emit(GasUsed { what: 1, gas: used })
+    assert(ok)
+}

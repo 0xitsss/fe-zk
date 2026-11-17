@@ -1,6 +1,8 @@
 //! fe-zk: zero-knowledge proof verification for Fe contracts.
 
 pub use field::{BabyBear, Bn254Fq, Bn254Fr, Field, Fp, Goldilocks, KoalaBear}
+
+pub use field::ext::{Ext4, KoalaBearExt4}
 pub use ec::{
     BLS12_381_R,
     Bls12381Fr,
@@ -41,3 +43,4 @@ pub use hash::{
     poseidon_4,
     poseidon_5,
 }
+pub use verifier::{KzgVk, kzg_batch_verify_gwc, kzg_verify, kzg_verify_shplonk}

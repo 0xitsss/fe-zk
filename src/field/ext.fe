@@ -1,0 +1,169 @@
+//! Degree-4 binomial extension `F[x] / (x^4 - W)` of a prime field `F`.
+//!
+//! One implementation for every base field that has `x^4 - W` irreducible: the base field
+//! `F` is a type parameter (`F: Field`) and the non-residue `W` a const generic.
+//! `KoalaBearExt4` is Plonky3's `BinomialExtensionField<KoalaBear, 4>` (`W = 3`), the
+//! challenge field of the FRI/STARK verifier.
+//!
+//! Coefficients are base-field elements, hence always canonical (safety rule 1). The
+//! coefficient fields are private: an `Ext4` is made from `F` values only.
+use super::Field
+use super::fp::KoalaBear
+
+/// `c0 + c1 x + c2 x^2 + c3 x^3` with `x^4 = W`.
+pub struct Ext4<F: Field + Copy, const W: u256> { c0: F, c1: F, c2: F, c3: F }
+
+impl<F: Field + Copy, const W: u256> Copy for Ext4<F, W> {}
+
+/// Plonky3's `BinomialExtensionField<KoalaBear, 4>`.
+pub type KoalaBearExt4 = Ext4<KoalaBear, 3>
+
+impl<F: Field + Copy, const W: u256> Ext4<F, W> {
+    pub fn new(_ c0: F, _ c1: F, _ c2: F, _ c3: F) -> Self {
+        Ext4 { c0, c1, c2, c3 }
+    }
+
+    pub fn zero() -> Self {
+        Ext4 { c0: F::zero(), c1: F::zero(), c2: F::zero(), c3: F::zero() }
+    }
+
+    pub fn one() -> Self {
+        Ext4 { c0: F::one(), c1: F::zero(), c2: F::zero(), c3: F::zero() }
+    }
+
+    /// Embed a base-field element.
+    pub fn from_base(_ a: F) -> Self {
+        Ext4 { c0: a, c1: F::zero(), c2: F::zero(), c3: F::zero() }
+    }
+
+    /// The `i`-th coefficient (`i < 4`).
+    pub fn coeff(self, _ i: usize) -> F {
+        if i == 0 {
+            self.c0
+        } else if i == 1 {
+            self.c1
+        } else if i == 2 { self.c2 } else { self.c3 }
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.c0.is_zero() && self.c1.is_zero() && self.c2.is_zero() && self.c3.is_zero()
+    }
+
+    pub fn eq(self, _ o: Self) -> bool {
+        self.c0.eq(o.c0) && self.c1.eq(o.c1) && self.c2.eq(o.c2) && self.c3.eq(o.c3)
+    }
+
+    pub fn add(self, _ o: Self) -> Self {
+        Ext4 {
+            c0: self.c0.add(o.c0),
+            c1: self.c1.add(o.c1),
+            c2: self.c2.add(o.c2),
+            c3: self.c3.add(o.c3),
+        }
+    }
+
+    pub fn sub(self, _ o: Self) -> Self {
+        Ext4 {
+            c0: self.c0.sub(o.c0),
+            c1: self.c1.sub(o.c1),
+            c2: self.c2.sub(o.c2),
+            c3: self.c3.sub(o.c3),
+        }
+    }
+
+    pub fn neg(self) -> Self {
+        Ext4 { c0: self.c0.neg(), c1: self.c1.neg(), c2: self.c2.neg(), c3: self.c3.neg() }
+    }
+
+    /// Multiply by a base-field element.
+    pub fn scale(self, _ k: F) -> Self {
+        Ext4 { c0: self.c0.mul(k), c1: self.c1.mul(k), c2: self.c2.mul(k), c3: self.c3.mul(k) }
+    }
+
+    pub fn mul(self, _ o: Self) -> Self {
+        let w = F::reduce(W)
+        // x^4 = W
+        let c0 = self
+            .c0
+            .mul(o.c0)
+            .add(
+                w.mul(
+                    self.c1.mul(o.c3).add(self.c2.mul(o.c2)).add(self.c3.mul(o.c1)),
+                ),
+            )
+        let c1 = self
+            .c0
+            .mul(o.c1)
+            .add(self.c1.mul(o.c0))
+            .add(w.mul(self.c2.mul(o.c3).add(self.c3.mul(o.c2))))
+        let c2 = self
+            .c0
+            .mul(o.c2)
+            .add(self.c1.mul(o.c1))
+            .add(self.c2.mul(o.c0))
+            .add(w.mul(self.c3.mul(o.c3)))
+        let c3 = self
+            .c0
+            .mul(o.c3)
+            .add(self.c1.mul(o.c2))
+            .add(self.c2.mul(o.c1))
+            .add(self.c3.mul(o.c0))
+        Ext4 { c0, c1, c2, c3 }
+    }
+
+    pub fn square(self) -> Self {
+        self.mul(self)
+    }
+
+    /// `self ^ e` by square and multiply.
+    pub fn pow(self, _ e: u256) -> Self {
+        var acc = Self::one()
+        var base = self
+        var k: u256 = e
+        while k != 0 {
+            if k & 1 == 1 {
+                acc = acc.mul(base)
+            }
+            base = base.square()
+            k = k >> 1
+        }
+        acc
+    }
+
+    /// `self ^ (2^k)`.
+    pub fn exp_power_of_2(self, _ k: usize) -> Self {
+        var r = self
+        var i: usize = 0
+        while i < k {
+            r = r.square()
+            i += 1
+        }
+        r
+    }
+
+    /// Multiplicative inverse, `None` for zero. One base-field inversion.
+    ///
+    /// Write `a = A + x B` with `A = a0 + a2 y`, `B = a1 + a3 y`, `y = x^2`, `y^2 = W`.
+    /// Then `a * (A - x B) = A^2 - y B^2 = n0 + n1 y` lies in the quadratic subfield
+    /// `F[y]`, whose inverse is `(n0 - n1 y) / (n0^2 - W n1^2)`.
+    pub fn inv(self) -> Option<Self> {
+        let w = F::reduce(W)
+        let two = F::one().add(F::one())
+        let a1a3 = self.c1.mul(self.c3)
+        // n0 = a0^2 + W a2^2 - 2 W a1 a3
+        let n0 = self.c0.square().add(w.mul(self.c2.square())).sub(w.mul(two.mul(a1a3)))
+        // n1 = 2 a0 a2 - a1^2 - W a3^2
+        let n1 = two.mul(self.c0.mul(self.c2)).sub(self.c1.square()).sub(w.mul(self.c3.square()))
+        let d = n0.square().sub(w.mul(n1.square()))
+        match d.inv() {
+            Option::Some(d_inv) => {
+                let m0 = n0.mul(d_inv)
+                let m1 = n1.neg().mul(d_inv)
+                let conj = Ext4 { c0: self.c0, c1: self.c1.neg(), c2: self.c2, c3: self.c3.neg() }
+                let m = Ext4 { c0: m0, c1: F::zero(), c2: m1, c3: F::zero() }
+                Option::Some(conj.mul(m))
+            },
+            Option::None => Option::None,
+        }
+    }
+}

@@ -1,0 +1,441 @@
+{
+  "commitments": {
+    "quotient_chunks": {
+      "_marker": null,
+      "value": "0x2d2b965f7d2b59def71fe743ef66df2b8b825c1a92cbad83bd6943d290b9935d"
+    },
+    "random": null,
+    "trace": {
+      "_marker": null,
+      "value": "0x0b99e352787a10880f300492d0c0cab960aeaa184b835a1dd1eba1394e3b18de"
+    }
+  },
+  "degree_bits": 4,
+  "opened_values": {
+    "preprocessed_local": null,
+    "preprocessed_next": null,
+    "quotient_chunks": [
+      [
+        [
+          1421581718,
+          652993194,
+          431920121,
+          593739106
+        ],
+        [
+          351851766,
+          1697198815,
+          554889784,
+          1952781128
+        ],
+        [
+          339276177,
+          1804930157,
+          144730811,
+          344624666
+        ],
+        [
+          2029454108,
+          1043656847,
+          1569861700,
+          451396004
+        ]
+      ]
+    ],
+    "random": null,
+    "trace_local": [
+      [
+        1119878155,
+        194041120,
+        1917790199,
+        197469251
+      ],
+      [
+        1115058850,
+        575813438,
+        462907119,
+        1696096529
+      ]
+    ],
+    "trace_next": [
+      [
+        638146558,
+        1683384108,
+        1700746422,
+        1626904424
+      ],
+      [
+        103734299,
+        566116002,
+        1616924863,
+        285652753
+      ]
+    ]
+  },
+  "opening_proof": {
+    "commit_phase_commits": [
+      {
+        "_marker": null,
+        "value": "0x9e60ecd17afaa3a005e901f80bc2e84b0df2b2ab874bc92c4694163b70d82ba8"
+      },
+      {
+        "_marker": null,
+        "value": "0xb411d58de31f1312c6257d22e77cac5c14d01ddeb3d0ae4a079e59eedad837c3"
+      },
+      {
+        "_marker": null,
+        "value": "0xd073b3821b9d1600df3a7ab894a02b64ad43366629e2ff1e2a1b0c50dc4c2932"
+      }
+    ],
+    "commit_pow_witnesses": [
+      0,
+      0,
+      0
+    ],
+    "final_poly": [
+      [
+        1348295114,
+        494944516,
+        534362144,
+        696522406
+      ],
+      [
+        1705190030,
+        977232302,
+        1202522086,
+        6460655
+      ]
+    ],
+    "query_pow_witness": 67108860,
+    "query_proofs": [
+      {
+        "commit_phase_openings": [
+          {
+            "opening_proof": [
+              "0xadaa0448a8e96e23b86e884af6cc47898c935c02bc23fe536490b60da959954b",
+              "0x90471875e15a5c7d8d6f424d4e49038277e43949f40865da850f8517813aed97",
+              "0x56f025dc4f24cd3b159f63893f38ad7728cd47025e4996e900f2064c37997529",
+              "0x1cc9a3ced1c321611f408947d1c903f1fe38d763236f9b0eaf0196cd8627c98f",
+              "0x568001b993de07d07cdb4efdddebb15895270bf48d1035d4a52d2f58994e80f7"
+            ],
+            "sibling_value": [
+              1678820499,
+              1301087324,
+              1429890289,
+              933987170
+            ]
+          },
+          {
+            "opening_proof": [
+              "0x5f51ba46bb1f82e0821ccfc2c016325af16a4b02d70a67208bc49818b3a56a19",
+              "0x9f1dd701fa7d02a74c5f2a70aa6af1112251e64850f63a2e28a2cfb054f5d233",
+              "0x11d11c31c9c29549d887e5e0570d61bcee80973dfa168e1bc30bdc92ba057f0a",
+              "0x1e44024e63bd643f9168fa3250635079637109ed277816cf3b8fa598105f9870"
+            ],
+            "sibling_value": [
+              1646819616,
+              1373111809,
+              1505541083,
+              222658548
+            ]
+          },
+          {
+            "opening_proof": [
+              "0xff9be2512930e747ab70a550339a56a539b68624662311fffff6f9c4ff3ec1df",
+              "0xdb68d39271332dab2b62ddf2959e2c606b75c69545b10cee7b31226e83571444",
+              "0xc620569a321430c091f8ecfb3fcf5b9c733ad64fb12b64b89fd7d05747daeb30"
+            ],
+            "sibling_value": [
+              2047525527,
+              1509367711,
+              1647134001,
+              1937601521
+            ]
+          }
+        ],
+        "input_proof": [
+          {
+            "opened_values": [
+              [
+                850620804,
+                980316056
+              ]
+            ],
+            "opening_proof": [
+              "0xfb9d6b240084e02bd811f512655ef3fd35334a3b14b82cbbdb433620cbab3980",
+              "0x7e8abffe8743613655fee219b2a9b80975f517e922a75d1bfd99a337b93654f6",
+              "0xa3931ef4c6e054924046941e7d7daed453f41d67e6fb4e42b8dad98c3b26522a",
+              "0x42ffbab8d666d96c7cd9c0f4207aaff6a8ec250fed791b71c553b79abe771ff5",
+              "0xdafbafd3ddd05e0f2cc3c70f2e0e1067639e35d4d9d047de172a7eaf28105bc2",
+              "0xed7edb450b65f49b3ed714718ea1000f70f107a5ad094d1d0d03980e2b7c68e7"
+            ]
+          },
+          {
+            "opened_values": [
+              [
+                1599497194,
+                868218074,
+                541888701,
+                2004293330
+              ]
+            ],
+            "opening_proof": [
+              "0xb5fdad7c1ee7372c820519a7d1f0d45d122ec808acee62724c5555a7c5cd703d",
+              "0x9966fad673bf3cc299ce27d46cbcfbc46f2c919c3ad0a4b15135550d48a5ef48",
+              "0x18c6ae7f46d43a08af28db16e961ea23248b788010a5c45aabce5fd432c49b70",
+              "0x3815054b0754b454af2dd94e119e17c689638cd3a512949051b30618503dba6c",
+              "0x714f46e70ae239a1b60cf53596d01b542fa3a372649065980279e646de8a5f02",
+              "0x9a2c72d1e163d69beb27e501651ad1f38a5eaa848506bc7448bce7294a94caa7"
+            ]
+          }
+        ]
+      },
+      {
+        "commit_phase_openings": [
+          {
+            "opening_proof": [
+              "0x80171be69cc20252411010e05c257e4d104775360ccded6e0ce1310fc8634318",
+              "0x57da769789bbed744acc3e53ab9ecfc0759086e6a62f6e730eea8f3ac8afb1d0",
+              "0xc611d5b840353493052732ae7420b9aa4b876d057aedd21424b2898b77bad28d",
+              "0xfee1935816c29c3c6fc013c33e09bbf648a018bedb38512c9daca9ee2d3c1981",
+              "0xe42d137da0011a0bf2d618acd55484df33fba5eb32b89bbf31d0b4c2bd6318cc"
+            ],
+            "sibling_value": [
+              1680251560,
+              1341882491,
+              2068963254,
+              394317766
+            ]
+          },
+          {
+            "opening_proof": [
+              "0xcdf8447b399b20ce2dfcec3d4c144b23434ab4f6f45ef2a3ab62ebebe25a1047",
+              "0x0be4b8473ec828e10987df419c2371687e70c78c7e3fc455b3e35b65178926f7",
+              "0x4afb99c24682d7ecc414ae1cdab24dbc6431a1ba50249c43c4861d90a29056f6",
+              "0xfc6e793c2b3382fd982c77713fa53ce5191cb02073f83eb40f95755887e72c33"
+            ],
+            "sibling_value": [
+              1324286884,
+              899761561,
+              1471569944,
+              106828797
+            ]
+          },
+          {
+            "opening_proof": [
+              "0x09c68eed8255acffc33e584a7f05b8e83e7a072ce04bf12c46316b5bb39f0ef5",
+              "0x59992b55f445eedc88c0812588670938ac5117e236a6434ec2e736e2a0fcdc08",
+              "0x243e439c293778d107f50a2a3cbba490a21fa2035cb9176c9a7541a76cb22930"
+            ],
+            "sibling_value": [
+              319304950,
+              1365166172,
+              1834714132,
+              2054742871
+            ]
+          }
+        ],
+        "input_proof": [
+          {
+            "opened_values": [
+              [
+                846544574,
+                942751847
+              ]
+            ],
+            "opening_proof": [
+              "0x10553d5098bfc840d7cb4d0c0918f2b4994704695d22db0cda5d17fc375e9673",
+              "0x39682fefff2cc7f9160150ae23443cc968841f3d3bab1f68692b608768c7c1f2",
+              "0xe1c10cd2c61792edb8ae7cdfcda9ec404f670d8c7658d92bbfd036518c6434aa",
+              "0x4fc83d09f7cf3176577a87abc3b2f01bbb38b5d03d3a00e55620e5a1df083b94",
+              "0x596b83abac476b36ca294db6c4d0495186f4112bdd8f6cb2488ddbe5b20be198",
+              "0xa53c078ca6f33352522cdfee35fc1008c2cf0ec2d899d789fc7c4fd6a8ae5f23"
+            ]
+          },
+          {
+            "opened_values": [
+              [
+                1082693903,
+                1254553311,
+                1484504533,
+                681349085
+              ]
+            ],
+            "opening_proof": [
+              "0xe6a1ff22116182833d31fe52d6addf3bc167a1ae62d7fa255fd7e73105ab6f3d",
+              "0xd7e880ac61550d1bd947ee6c7159b7ee7a1f0061339500611c2c977ed053f0b3",
+              "0x1623e48b45f8bcd3ab916ca50abccd0e7abad5e3093dbd960739929ff94c311c",
+              "0x07e81f286297d9e4f94c3f06aa9f17b94e477685bf0b07391268d5c92c2fffe3",
+              "0x7d8a97244aa047761566225beaf3d9106e235e63e703d5ba6068711c1250568a",
+              "0x21ab55488b557d43a8a67731b4057e0da463d4b89756226f34dc5378d5d64dc9"
+            ]
+          }
+        ]
+      },
+      {
+        "commit_phase_openings": [
+          {
+            "opening_proof": [
+              "0x675dfad976532c30cec4802f6df59e4beb08a9287cdadb1213644de47c12dffb",
+              "0xa9a089c7f9159983bf969dc681528188df05de43b2e000d9be2c7eb2ce158935",
+              "0xae193be778b1a7082f691204ca926b5a5568d8a7fb817245ad785bb3a119c355",
+              "0x9f44f1a1ceaeb070bb00a0df006a45f9b9c719833ad4c05c796577cfae816234",
+              "0x568001b993de07d07cdb4efdddebb15895270bf48d1035d4a52d2f58994e80f7"
+            ],
+            "sibling_value": [
+              14799375,
+              1399296858,
+              1340738119,
+              1115289814
+            ]
+          },
+          {
+            "opening_proof": [
+              "0xb2c54739df9566726eac34077d420fd6d5253b87f7e511e7f6548c372310cf4f",
+              "0xeb1c23efb8359c6f17099078a1bde27c88ffc60c7f51bda58035501aa54262b1",
+              "0xc62d2efb6a1f4696362cc344e6af58acd2c676f4e6e168b63c52d06f87cfb11d",
+              "0x1e44024e63bd643f9168fa3250635079637109ed277816cf3b8fa598105f9870"
+            ],
+            "sibling_value": [
+              1931896917,
+              414864922,
+              457377387,
+              2107607933
+            ]
+          },
+          {
+            "opening_proof": [
+              "0x6e06ce9066277f0d1d95ddac3c5a2a1e8186938241eb19858bc621bdb2d9d6bc",
+              "0x469cc7fb5eadd609b07029b3748f2597bd4b9f4bd0ac24d3fd2791765bccf8b8",
+              "0xc620569a321430c091f8ecfb3fcf5b9c733ad64fb12b64b89fd7d05747daeb30"
+            ],
+            "sibling_value": [
+              423621232,
+              10379865,
+              1926619228,
+              1998809399
+            ]
+          }
+        ],
+        "input_proof": [
+          {
+            "opened_values": [
+              [
+                2093312888,
+                606582490
+              ]
+            ],
+            "opening_proof": [
+              "0xd3ba9bdbbe94f84515257093c97cf533e18dba9a5591cf9086a16178f6cbfe4b",
+              "0x5e59ef8a263b744a87439333a0dbcf69248a04737cc6e5cc280dd0ed8d844b79",
+              "0xbadaef161d08878e95a1ca9daab24ac8727e6bf6558a2eb9f540e14dddf8b542",
+              "0x66db0ab43199a1e939a61433bfc0793f396221f986186e335f5de5966832d1df",
+              "0x09a79429b64936a5fab57af9ea98b30f0514fb3666abb3dc7cc9100ba27983e8",
+              "0xed7edb450b65f49b3ed714718ea1000f70f107a5ad094d1d0d03980e2b7c68e7"
+            ]
+          },
+          {
+            "opened_values": [
+              [
+                1448112031,
+                1207450874,
+                1598841525,
+                1740448959
+              ]
+            ],
+            "opening_proof": [
+              "0xefa74d3207736db4e40c9463ae08ecb76d171dfb32cb611a1c68bc1bde1d662d",
+              "0xa2db9120ced91f82f1ff6b5981cb5e43d9bfa9882799802b6dd07ccdc9fa8d32",
+              "0x265029dc4bb6639e1c4c042c65591459852ecbebfe8f22d0c1003355064b9253",
+              "0xf443c5a110d1cb1669095ddff5c05e64b0097b561db7e8319e74e8118d7dec7b",
+              "0xc19f6fe7a5d3023553ba98eea61103536c8ab8ba73fc53763414f023226d16b8",
+              "0x9a2c72d1e163d69beb27e501651ad1f38a5eaa848506bc7448bce7294a94caa7"
+            ]
+          }
+        ]
+      },
+      {
+        "commit_phase_openings": [
+          {
+            "opening_proof": [
+              "0x764f387fc39d71d84439092cdbad689446f14c59060424ab9d64c92958aca44f",
+              "0xd045dcb0f9750e8207f908adca44f57c2f1a31bfa4810442382de3bf01695914",
+              "0x2a4d7f8ae961316595ec1a9426f2812439e1d02041b941adcc0f9cc5e20a5377",
+              "0xd72d6b96e22a696822f2b0b8ef23be1ff24c6ece450e21121f546c139e95825f",
+              "0xe42d137da0011a0bf2d618acd55484df33fba5eb32b89bbf31d0b4c2bd6318cc"
+            ],
+            "sibling_value": [
+              1377253058,
+              842722194,
+              280527374,
+              1144740606
+            ]
+          },
+          {
+            "opening_proof": [
+              "0xd211168f2a36a52d8e7c384a0466fec6580060382100ab3c2509a5e3db7fded0",
+              "0xb6f9711b49d92a9945f37148e529373ed5404a2ab8a1d689641ddfa712502c1d",
+              "0x06a7c98a0c70d98c13020b37d6ac2067e93c93a992e127722e9aeefe3fe25794",
+              "0xfc6e793c2b3382fd982c77713fa53ce5191cb02073f83eb40f95755887e72c33"
+            ],
+            "sibling_value": [
+              1642991609,
+              731278093,
+              707650954,
+              965151118
+            ]
+          },
+          {
+            "opening_proof": [
+              "0x31983089d1f2f50bad83b5c11f8b2df3afaf617aed98a89edd3eb2f40ba02c36",
+              "0x472761b5719fc08b44f59334c3abe038ee1ffa4d37220fbc4b4a06b57e6216a2",
+              "0x243e439c293778d107f50a2a3cbba490a21fa2035cb9176c9a7541a76cb22930"
+            ],
+            "sibling_value": [
+              586195135,
+              390752099,
+              1642897540,
+              133203990
+            ]
+          }
+        ],
+        "input_proof": [
+          {
+            "opened_values": [
+              [
+                1695490009,
+                387395828
+              ]
+            ],
+            "opening_proof": [
+              "0xc030c796af8aad34af518a19706b7fc852cd406632d99afaa8a32716974840d3",
+              "0x8ba1b45c86b799d8996fb687e7dae035174f1356b47779e1fa8d092a5ee4745d",
+              "0xf179adbf31b42b6e32dbeff5360c61bf623d59be488792d1469179116bcd5e07",
+              "0xba87e4663d92f503fe2fea434eec23a25309298febf3a7a41a64fe40666cf2d3",
+              "0x5201e157e00f552573a673c4ef0080b819b4d993136966df7eb5521b96c57f0d",
+              "0xa53c078ca6f33352522cdfee35fc1008c2cf0ec2d899d789fc7c4fd6a8ae5f23"
+            ]
+          },
+          {
+            "opened_values": [
+              [
+                841301116,
+                1158015534,
+                204799399,
+                447143086
+              ]
+            ],
+            "opening_proof": [
+              "0x94eb2a258cb5f88980f1ffc4b296d739b41dd00bb156d87bdcf2c52b31b977e8",
+              "0x0399fc9d83b251afa8afae90cc768d5af0ffaedd7a62a8dcdc26d4e4f48cd903",
+              "0x0499421053ff24fc432f506be33040b1c0a341c8a2940de9aa15cfbd3680dce2",
+              "0xb226cf2d396d02d6b28455798527a7ca5cd83c64e2d3c3ee4c27fc94bbe6611a",
+              "0xb67f81656ddb53ca54582eea1a0546585e7d43924be979b6f1e2670cb4fa105f",
+              "0x21ab55488b557d43a8a67731b4057e0da463d4b89756226f34dc5378d5d64dc9"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
