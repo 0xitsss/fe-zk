@@ -44,3 +44,24 @@ The prebuilt `fe` from `feup` stops with `Illegal instruction` on CPUs without A
 same tag (`v26.5.0`) from source with `cargo build --release -p fe` works. The build needs the
 `tree-sitter` CLI on `PATH` (`npm ci` in `crates/tree-sitter-fe`). CI uses the prebuilt
 binary.
+
+More findings (from building `examples/life`):
+
+- Path dependencies work: `[dependencies] fe_zk = { path = "../.." }` in `fe.toml`.
+- `~x` (bitwise not) and `u256` shifts by a runtime `u256` amount work.
+- Source files under `src/` are modules without a `mod` declaration.
+- A message handler without a `uses` clause cannot touch storage: pure handlers are checked by the compiler.
+- `fe build` needs at least one contract in the ingot; the root library ingot has none, so CI builds the example ingots.
+
+## Game of Life (`examples/life`)
+
+One 16×16 toroidal board is one `u256`. Bit `row * 16 + col`; each row is a 16-bit lane, col 0 is
+the least significant bit of the lane. Horizontal neighbours come from a masked lane rotation,
+vertical neighbours from a 16-bit rotation of the whole word. A bitwise adder network computes the
+neighbour count for all 256 cells at once, and B3/S23 becomes one boolean expression:
+`twos & ~big & (ones | board)`. A generation is about 60 word operations and no per-cell loop.
+
+Gas (revm, Osaka, execution gas without the 21 000 intrinsic): `step` ≈ 624; `run(board, 64)` = 34 187;
+`run(board, 100)` = 53 267. On-chain stepping costs about 530 gas per generation, so a Groth16
+proof of N generations (one pairing check with 4 pairs, roughly 200–250k gas) is cheaper only for
+N above roughly 450 generations, and the verifier's cost is constant in N.
