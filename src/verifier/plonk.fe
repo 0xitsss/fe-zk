@@ -1,0 +1,458 @@
+//! PLONK verifier over BN254 with KZG, for snarkjs `plonk` proofs and keys.
+//!
+//! This mirrors snarkjs 0.7.6 `templates/verifier_plonk.sol.ejs` step by step, including the
+//! Keccak-256 Fiat-Shamir transcript, so a proof that the snarkjs verifier (JS or Solidity)
+//! accepts is accepted here and vice versa. Formulas (`q` = scalar field order, `n = 2^power`,
+//! `w` a primitive `n`-th root of unity, `xi` the evaluation challenge):
+//!
+//! ```text
+//! beta  = keccak(Qm Ql Qr Qo Qc S1 S2 S3 (16 words), pub_1..pub_NP, A, B, C (6 words)) mod q
+//! gamma = keccak(beta) mod q
+//! alpha = keccak(beta, gamma, Z) mod q
+//! xi    = keccak(alpha, T1, T2, T3) mod q
+//! v     = keccak(xi, eval_a, eval_b, eval_c, eval_s1, eval_s2, eval_zw) mod q
+//! u     = keccak(Wxi, Wxiw) mod q
+//! L_i(xi) = w^(i-1) (xi^n - 1) / (n (xi - w^(i-1)))      PI = - sum_i L_i pub_i
+//! r0 = PI - L_1 alpha^2 - alpha (a + beta s1 + gamma)(b + beta s2 + gamma)(c + gamma) zw
+//! D  = Qc + a b Qm + a Ql + b Qr + c Qo
+//!      + (alpha (a + beta xi + gamma)(b + beta k1 xi + gamma)(c + beta k2 xi + gamma) + alpha^2 L_1 + u) Z
+//!      - alpha beta zw (a + beta s1 + gamma)(b + beta s2 + gamma) S3
+//!      - (xi^n - 1)(T1 + xi^n T2 + xi^2n T3)
+//! F  = D + v A + v^2 B + v^3 C + v^4 S1 + v^5 S2
+//! E  = [ -r0 + v a + v^2 b + v^3 c + v^4 s1 + v^5 s2 + u zw ]_1
+//! e(-(Wxi + u Wxiw), [x]_2) * e(xi Wxi + u xi w Wxiw + F - E, [1]_2) == 1
+//! ```
+//!
+//! Safety rules, enforced by types:
+//! - Rule 1/2: `PlonkProof` can only be built by `PlonkProof::from_words`, which makes every
+//!   commitment a `G1` (canonical coordinates, on the curve) and every evaluation a canonical
+//!   `Bn254Fr`. Public inputs are checked canonical in `plonk_verify`; nothing is reduced.
+//!   Like the snarkjs verifier, the point at infinity `(0, 0)` is rejected for proof commitments
+//!   (an honest prover never produces it, and the snarkjs verifier reverts on it).
+//! - Rule 3: `[x]_2` of the key is a fully checked `G2` (on curve and in the subgroup).
+//! - Rule 4: the number of public inputs is the const generic `NP` of `PlonkVk<NP>`, so
+//!   `plonk_verify` takes exactly `[u256; NP]`; a different length does not type-check.
+//! - Rule 5: `beta` binds all 16 words of the 8 key commitments, every public input and
+//!   `A, B, C`; later challenges chain on the earlier ones and bind every other commitment and
+//!   every evaluation (as in snarkjs). The domain parameters `n, w, k1, k2, [x]_2` are not
+//!   hashed (neither in snarkjs): they are constants of the verifier, not prover-controlled.
+//!   Tests: every transcript input changes the challenges.
+//! - Rule 6: precompile failures revert in `ingot::ec`; the pairing word must be 0 or 1.
+//!
+//! Verification is read-only: `uses (call: Call)` and no storage. Limitations: `NP >= 1`
+//! (the circom compiler always emits at least one public signal), `power <= 28`.
+use core::ptr::MemBuffer
+use std::evm::Call
+use std::evm::crypto::keccak256
+use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
+use ingot::ec::precompile::put
+use ingot::field::{Bn254Fr, Field}
+
+/// snarkjs verifying key for `NP` public signals (outputs first, then inputs, circom order).
+/// Private fields: build with `PlonkVk::new`, which validates the domain parameters. The curve
+/// points are validated by their types.
+pub struct PlonkVk<const NP: usize> {
+    power: u256,
+    w: Bn254Fr,
+    k1: Bn254Fr,
+    k2: Bn254Fr,
+    qm: G1,
+    ql: G1,
+    qr: G1,
+    qo: G1,
+    qc: G1,
+    s1: G1,
+    s2: G1,
+    s3: G1,
+    x2: G2,
+}
+impl<const NP: usize> Copy for PlonkVk<NP> {}
+
+impl<const NP: usize> PlonkVk<NP> {
+    /// `None` if: `NP == 0`; `power` is 0 or above 28; `w` is not a primitive `2^power`-th root
+    /// of unity; `k1`, `k2` do not give three distinct cosets of the evaluation domain
+    /// (`k1^n`, `k2^n`, `(k1/k2)^n` must all differ from 1); or `[x]_2` is the point at infinity
+    /// (a degenerate key makes the pairing trivially true).
+    pub fn new(
+        _ power: u256,
+        _ w: Bn254Fr,
+        _ k1: Bn254Fr,
+        _ k2: Bn254Fr,
+        _ commitments: [G1; 8],
+        _ x2: G2,
+    ) -> Option<PlonkVk<NP>> {
+        if NP == 0 || NP > 1000000 || power == 0 || power > 28 {
+            return Option::None
+        }
+        if x2.is_infinity() {
+            return Option::None
+        }
+        let n = 1 << power
+        // w^(n/2) = -1 (so w has order exactly n, n being a power of two) and w^n = 1.
+        let half = w.pow(n >> 1)
+        if !half.eq(Bn254Fr::one().neg()) {
+            return Option::None
+        }
+        if k1.is_zero() || k2.is_zero() {
+            return Option::None
+        }
+        let one = Bn254Fr::one()
+        let k2_inv = k2.inv().unwrap()
+        if k1.pow(n).eq(one) || k2.pow(n).eq(one) || k1.mul(k2_inv).pow(n).eq(one) {
+            return Option::None
+        }
+        Option::Some(
+            PlonkVk {
+                power,
+                w,
+                k1,
+                k2,
+                qm: commitments[0],
+                ql: commitments[1],
+                qr: commitments[2],
+                qo: commitments[3],
+                qc: commitments[4],
+                s1: commitments[5],
+                s2: commitments[6],
+                s3: commitments[7],
+                x2,
+            },
+        )
+    }
+}
+
+/// A snarkjs PLONK proof: 9 commitments and 6 evaluations. Private fields: build with
+/// `PlonkProof::from_words`.
+pub struct PlonkProof {
+    a: G1,
+    b: G1,
+    c: G1,
+    z: G1,
+    t1: G1,
+    t2: G1,
+    t3: G1,
+    wxi: G1,
+    wxiw: G1,
+    eval_a: Bn254Fr,
+    eval_b: Bn254Fr,
+    eval_c: Bn254Fr,
+    eval_s1: Bn254Fr,
+    eval_s2: Bn254Fr,
+    eval_zw: Bn254Fr,
+}
+impl Copy for PlonkProof {}
+
+fn proof_point(_ w: [u256; 24], _ i: usize) -> Option<G1> {
+    // Same rejection set as the snarkjs verifier: off-curve (incl. (0,0)) and non-canonical.
+    match G1::from_coords(w[2 * i], w[2 * i + 1]) {
+        Option::Some(p) => {
+            if p.is_infinity() {
+                Option::None
+            } else {
+                Option::Some(p)
+            }
+        },
+        Option::None => Option::None,
+    }
+}
+
+impl PlonkProof {
+    /// The snarkjs Solidity calldata layout `uint256[24]`: `A, B, C, Z, T1, T2, T3, Wxi, Wxiw`
+    /// (x then y each), then `eval_a, eval_b, eval_c, eval_s1, eval_s2, eval_zw`.
+    /// `None` if any point is not a canonical on-curve non-infinity point or any evaluation is
+    /// `>= r`.
+    pub fn from_words(_ w: [u256; 24]) -> Option<PlonkProof> {
+        let a = proof_point(w, 0)
+        let b = proof_point(w, 1)
+        let c = proof_point(w, 2)
+        let z = proof_point(w, 3)
+        let t1 = proof_point(w, 4)
+        let t2 = proof_point(w, 5)
+        let t3 = proof_point(w, 6)
+        let wxi = proof_point(w, 7)
+        let wxiw = proof_point(w, 8)
+        let ea = Bn254Fr::from_canonical(w[18])
+        let eb = Bn254Fr::from_canonical(w[19])
+        let ec = Bn254Fr::from_canonical(w[20])
+        let es1 = Bn254Fr::from_canonical(w[21])
+        let es2 = Bn254Fr::from_canonical(w[22])
+        let ezw = Bn254Fr::from_canonical(w[23])
+        if a.is_none() || b.is_none() || c.is_none() || z.is_none() || t1.is_none() {
+            return Option::None
+        }
+        if t2.is_none() || t3.is_none() || wxi.is_none() || wxiw.is_none() {
+            return Option::None
+        }
+        if ea.is_none() || eb.is_none() || ec.is_none() {
+            return Option::None
+        }
+        if es1.is_none() || es2.is_none() || ezw.is_none() {
+            return Option::None
+        }
+        Option::Some(
+            PlonkProof {
+                a: a.unwrap(),
+                b: b.unwrap(),
+                c: c.unwrap(),
+                z: z.unwrap(),
+                t1: t1.unwrap(),
+                t2: t2.unwrap(),
+                t3: t3.unwrap(),
+                wxi: wxi.unwrap(),
+                wxiw: wxiw.unwrap(),
+                eval_a: ea.unwrap(),
+                eval_b: eb.unwrap(),
+                eval_c: ec.unwrap(),
+                eval_s1: es1.unwrap(),
+                eval_s2: es2.unwrap(),
+                eval_zw: ezw.unwrap(),
+            },
+        )
+    }
+}
+
+/// The six Fiat-Shamir challenges. Public so that tests and generators can inspect them.
+pub struct PlonkChallenges {
+    pub beta: Bn254Fr,
+    pub gamma: Bn254Fr,
+    pub alpha: Bn254Fr,
+    pub xi: Bn254Fr,
+    pub v: Bn254Fr,
+    pub u: Bn254Fr,
+}
+impl Copy for PlonkChallenges {}
+
+fn put_g1(_ buf: mut MemBuffer, _ at: usize, _ p: G1) {
+    put(mut buf, at, p.x())
+    put(mut buf, at + 1, p.y())
+}
+
+/// keccak256 of the first `words` words of `buf`, reduced mod r (challenge derivation, as in
+/// snarkjs; never applied to untrusted values that must stay canonical).
+fn hash_to_fr(_ buf: mut MemBuffer, _ words: usize) -> Bn254Fr {
+    unsafe {
+        buf.set_len(words * 32)
+    }
+    Bn254Fr::reduce(keccak256(buf.span()))
+}
+
+/// `beta, gamma, alpha, xi, v, u` exactly as snarkjs computes them (see the module comment).
+pub fn plonk_challenges<const NP: usize>(
+    _ vk: PlonkVk<NP>,
+    _ pubs: [Bn254Fr; NP],
+    _ p: PlonkProof,
+) -> PlonkChallenges {
+    // beta
+    let words = 16 + NP + 6
+    var buf = MemBuffer::with_capacity(words * 32)
+    put_g1(mut buf, 0, vk.qm)
+    put_g1(mut buf, 2, vk.ql)
+    put_g1(mut buf, 4, vk.qr)
+    put_g1(mut buf, 6, vk.qo)
+    put_g1(mut buf, 8, vk.qc)
+    put_g1(mut buf, 10, vk.s1)
+    put_g1(mut buf, 12, vk.s2)
+    put_g1(mut buf, 14, vk.s3)
+    var i: usize = 0
+    while i < NP {
+        put(mut buf, 16 + i, pubs[i].to_canonical())
+        i += 1
+    }
+    put_g1(mut buf, 16 + NP, p.a)
+    put_g1(mut buf, 18 + NP, p.b)
+    put_g1(mut buf, 20 + NP, p.c)
+    let beta = hash_to_fr(mut buf, words)
+    // gamma
+    var b1 = MemBuffer::with_capacity(32)
+    put(mut b1, 0, beta.to_canonical())
+    let gamma = hash_to_fr(mut b1, 1)
+    // alpha
+    var b2 = MemBuffer::with_capacity(128)
+    put(mut b2, 0, beta.to_canonical())
+    put(mut b2, 1, gamma.to_canonical())
+    put_g1(mut b2, 2, p.z)
+    let alpha = hash_to_fr(mut b2, 4)
+    // xi
+    var b3 = MemBuffer::with_capacity(224)
+    put(mut b3, 0, alpha.to_canonical())
+    put_g1(mut b3, 1, p.t1)
+    put_g1(mut b3, 3, p.t2)
+    put_g1(mut b3, 5, p.t3)
+    let xi = hash_to_fr(mut b3, 7)
+    // v
+    var b4 = MemBuffer::with_capacity(224)
+    put(mut b4, 0, xi.to_canonical())
+    put(mut b4, 1, p.eval_a.to_canonical())
+    put(mut b4, 2, p.eval_b.to_canonical())
+    put(mut b4, 3, p.eval_c.to_canonical())
+    put(mut b4, 4, p.eval_s1.to_canonical())
+    put(mut b4, 5, p.eval_s2.to_canonical())
+    put(mut b4, 6, p.eval_zw.to_canonical())
+    let v = hash_to_fr(mut b4, 7)
+    // u
+    var b5 = MemBuffer::with_capacity(128)
+    put_g1(mut b5, 0, p.wxi)
+    put_g1(mut b5, 2, p.wxiw)
+    let u = hash_to_fr(mut b5, 4)
+    PlonkChallenges { beta, gamma, alpha, xi, v, u }
+}
+
+/// Verifies `proof` for public signals `pubs` against `vk`. `false` if any public input is
+/// `>= r` (never reduced) or the pairing check fails. Reverts only if a precompile call fails.
+pub fn plonk_verify<const NP: usize>(
+    _ vk: PlonkVk<NP>,
+    _ proof: PlonkProof,
+    _ pubs_raw: [u256; NP],
+) -> bool
+uses (call: Call)
+{
+    // Rule 1: canonical public inputs.
+    var pubs = [Bn254Fr::zero(); NP]
+    var i: usize = 0
+    while i < NP {
+        match Bn254Fr::from_canonical(pubs_raw[i]) {
+            Option::Some(f) => {
+                pubs[i] = f
+            },
+            Option::None => {
+                return false
+            },
+        }
+        i += 1
+    }
+    let ch = plonk_challenges(vk, pubs, proof)
+    let one = Bn254Fr::one()
+
+    // xi^n and Z_H(xi) = xi^n - 1
+    var xin = ch.xi
+    var k: u256 = 0
+    while k < vk.power {
+        xin = xin.square()
+        k += 1
+    }
+    let zh = xin.sub(one)
+    let n_fr = Bn254Fr::reduce(1 << vk.power)
+
+    // Lagrange evaluations L_1..L_NP at xi with one batched inversion of n (xi - w^(i-1)).
+    var dens = [Bn254Fr::zero(); NP]
+    var prefix = [Bn254Fr::zero(); NP]
+    var wi = one
+    var acc = one
+    i = 0
+    while i < NP {
+        let d = n_fr.mul(ch.xi.sub(wi))
+        dens[i] = d
+        prefix[i] = acc
+        acc = acc.mul(d)
+        wi = wi.mul(vk.w)
+        i += 1
+    }
+    // xi in the evaluation domain: every denominator product is zero; the proof is not valid.
+    if acc.is_zero() {
+        return false
+    }
+    var inv_acc = acc.inv().unwrap()
+    var lag = [Bn254Fr::zero(); NP]
+    // w^(NP-1) .. w^0, walking back
+    var wpow = [Bn254Fr::zero(); NP]
+    wi = one
+    i = 0
+    while i < NP {
+        wpow[i] = wi
+        wi = wi.mul(vk.w)
+        i += 1
+    }
+    i = NP
+    while i > 0 {
+        i -= 1
+        let d_inv = inv_acc.mul(prefix[i])
+        inv_acc = inv_acc.mul(dens[i])
+        lag[i] = wpow[i].mul(zh).mul(d_inv)
+    }
+    let l1 = lag[0]
+
+    // PI(xi) = - sum_i L_i pub_i
+    var pi_xi = Bn254Fr::zero()
+    i = 0
+    while i < NP {
+        pi_xi = pi_xi.sub(lag[i].mul(pubs[i]))
+        i += 1
+    }
+
+    let alpha2 = ch.alpha.square()
+    let beta = ch.beta
+    let gamma = ch.gamma
+    let ea = proof.eval_a
+    let eb = proof.eval_b
+    let ec = proof.eval_c
+
+    // r0
+    let e3a = ea.add(beta.mul(proof.eval_s1)).add(gamma)
+    let e3b = eb.add(beta.mul(proof.eval_s2)).add(gamma)
+    let e3c = ec.add(gamma)
+    let e3 = e3a.mul(e3b).mul(e3c).mul(proof.eval_zw).mul(ch.alpha)
+    let r0 = pi_xi.sub(l1.mul(alpha2)).sub(e3)
+
+    // D
+    let betaxi = beta.mul(ch.xi)
+    let val1 = ea.add(betaxi).add(gamma)
+    let val2 = eb.add(betaxi.mul(vk.k1)).add(gamma)
+    let val3 = ec.add(betaxi.mul(vk.k2)).add(gamma)
+    let d2a = val1.mul(val2).mul(val3).mul(ch.alpha)
+    let d2b = l1.mul(alpha2)
+    let z_scalar = d2a.add(d2b).add(ch.u)
+    let s3_scalar = e3a.mul(e3b).mul(ch.alpha.mul(beta).mul(proof.eval_zw))
+    var d = g1_add(vk.qc, g1_mul(vk.qm, ea.mul(eb)))
+    d = g1_add(d, g1_mul(vk.ql, ea))
+    d = g1_add(d, g1_mul(vk.qr, eb))
+    d = g1_add(d, g1_mul(vk.qo, ec))
+    d = g1_add(d, g1_mul(proof.z, z_scalar))
+    d = g1_add(d, g1_mul(vk.s3, s3_scalar).neg())
+    var tsum = g1_add(proof.t1, g1_mul(proof.t2, xin))
+    tsum = g1_add(tsum, g1_mul(proof.t3, xin.square()))
+    d = g1_add(d, g1_mul(tsum, zh).neg())
+
+    // F
+    var f = g1_add(d, g1_mul(proof.a, ch.v))
+    let v2 = ch.v.square()
+    let v3 = v2.mul(ch.v)
+    let v4 = v3.mul(ch.v)
+    let v5 = v4.mul(ch.v)
+    f = g1_add(f, g1_mul(proof.b, v2))
+    f = g1_add(f, g1_mul(proof.c, v3))
+    f = g1_add(f, g1_mul(vk.s1, v4))
+    f = g1_add(f, g1_mul(vk.s2, v5))
+
+    // E
+    var s = r0.neg()
+    s = s.add(ea.mul(ch.v))
+    s = s.add(eb.mul(v2))
+    s = s.add(ec.mul(v3))
+    s = s.add(proof.eval_s1.mul(v4))
+    s = s.add(proof.eval_s2.mul(v5))
+    s = s.add(proof.eval_zw.mul(ch.u))
+    let e = g1_mul(G1::generator(), s)
+
+    // Pairing: e(-(Wxi + u Wxiw), [x]_2) * e(xi Wxi + u xi w Wxiw + F - E, [1]_2) == 1
+    let a1 = g1_add(proof.wxi, g1_mul(proof.wxiw, ch.u)).neg()
+    let sw = ch.u.mul(ch.xi).mul(vk.w)
+    var b1 = g1_add(g1_mul(proof.wxi, ch.xi), g1_mul(proof.wxiw, sw))
+    b1 = g1_add(b1, f)
+    b1 = g1_add(b1, e.neg())
+    pairing_check([a1, b1], [vk.x2, G2::generator()])
+}
+
+/// One call from raw calldata words: `false` if the proof words are not canonical on-curve
+/// data, a public input is not canonical, or the proof does not verify.
+pub fn plonk_verify_words<const NP: usize>(
+    _ vk: PlonkVk<NP>,
+    _ proof_words: [u256; 24],
+    _ pubs: [u256; NP],
+) -> bool
+uses (call: Call)
+{
+    match PlonkProof::from_words(proof_words) {
+        Option::Some(p) => plonk_verify(vk, p, pubs),
+        Option::None => false,
+    }
+}

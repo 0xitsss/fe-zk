@@ -9,3 +9,5 @@ pub use kzg::{
     shplonk_challenge_u,
     shplonk_challenge_y,
 }
+
+pub use plonk::{PlonkProof, PlonkVk, plonk_challenges, plonk_verify, plonk_verify_words}
