@@ -1,3 +1,20 @@
-//! BN254 / BLS12-381 curve layer.
+//! Elliptic-curve layer: BN254 (G1/G2, subgroup checks, precompiles 0x06-0x08) and BLS12-381
+//! (EIP-2537 precompiles 0x0b-0x11) plus the EIP-4844 point-evaluation precompile (0x0a).
 
 pub use bn254::{G1, G2, g1_add, g1_mul, pairing_check}
+pub use bls12_381::{
+    BLS12_381_R,
+    Bls12381Fr,
+    G1Bls,
+    G2Bls,
+    bls_g1_add,
+    bls_g1_msm,
+    bls_g1_mul,
+    bls_g2_add,
+    bls_g2_msm,
+    bls_g2_mul,
+    bls_map_fp2_to_g2,
+    bls_map_fp_to_g1,
+    bls_pairing_check,
+}
+pub use eip4844::{Bytes48, kzg_point_evaluation}

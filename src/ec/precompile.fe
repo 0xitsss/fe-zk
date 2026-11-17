@@ -1,0 +1,76 @@
+//! Shared helpers for calling EVM precompiles with explicit success and length checks
+//! (safety rule 6). Not re-exported: every public wrapper lives next to its point types.
+use core::ptr::{self, MemBuffer}
+use core::abi::{load_word, store_word}
+use std::evm::{Address, Call}
+
+// Every call passes an explicit gas cap just above the precompile's price. A failing precompile
+// (invalid point, bad proof) consumes ALL gas forwarded to it, so forwarding "everything" would
+// let one rejected point burn 63/64 of the transaction's gas.
+
+/// Writes `v` as the 32-byte word at byte offset `32 * index`.
+pub fn put(_ buf: mut MemBuffer, _ index: usize, _ v: u256) {
+    unsafe {
+        store_word(
+            ptr: ptr::offset_bytes(buf.ptr(), (index * 32) as u256),
+            value: v,
+        )
+    }
+}
+
+/// Writes `v` as the 32-byte word at byte offset `at` (need not be word aligned).
+pub fn put_at(_ buf: mut MemBuffer, _ at: u256, _ v: u256) {
+    unsafe {
+        store_word(ptr: ptr::offset_bytes(buf.ptr(), at), value: v)
+    }
+}
+
+/// Reads the 32-byte word at byte offset `32 * index`.
+pub fn get(_ buf: MemBuffer, _ index: usize) -> u256 {
+    unsafe {
+        load_word(ptr::offset_bytes(buf.ptr(), (index * 32) as u256))
+    }
+}
+
+/// Static call to precompile `addr` with the first `in_len` bytes of `input`.
+/// Returns the call's success flag. If the call succeeded, reverts unless it returned
+/// exactly `out_len` bytes.
+pub fn call_try(
+    _ addr: u256,
+    _ gas: u256,
+    _ input: mut MemBuffer,
+    _ in_len: usize,
+    _ out: mut MemBuffer,
+    _ out_len: u256,
+) -> bool
+uses (call: Call)
+{
+    unsafe {
+        input.set_len(in_len)
+    }
+    let r = call
+        .raw_staticcall(
+            addr: Address::new(addr),
+            gas: gas,
+            args: input.span(),
+            ret: mut out,
+        )
+    if r.success() {
+        assert(r.returndata_len() == out_len)
+    }
+    r.success()
+}
+
+/// Like `call_try`, but reverts if the call fails.
+pub fn call_checked(
+    _ addr: u256,
+    _ gas: u256,
+    _ input: mut MemBuffer,
+    _ in_len: usize,
+    _ out: mut MemBuffer,
+    _ out_len: u256,
+)
+uses (call: Call)
+{
+    assert(call_try(addr, gas, mut input, in_len, mut out, out_len))
+}

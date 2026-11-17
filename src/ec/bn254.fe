@@ -10,13 +10,10 @@
 //!
 //! Precompile word order for G2 (EIP-197): `x_imag, x_real, y_imag, y_real`. The Fe API uses
 //! `(x0, x1, y0, y1)` = `(x_real, x_imag, y_real, y_imag)`, the order of py_ecc / arkworks.
-use core::ptr::{self, MemBuffer}
-use core::abi::{load_word, store_word}
-use std::evm::{Address, Call}
+use core::ptr::MemBuffer
+use std::evm::Call
 use ingot::field::{Bn254Fq, Bn254Fr, Field}
-
-/// Gas forwarded to a precompile. The EVM caps it at 63/64 of the remaining gas.
-const PRECOMPILE_GAS: u256 = 0xffffffffffff
+use super::precompile::{call_checked, get, put}
 
 /// `6 x^2` for the BN254 parameter `x = 4965661367192848881`; `psi(P) = [6 x^2] P` on G2.
 const SIX_X_SQ: u256 = 147946756881789318990833708069417712966
@@ -325,46 +322,6 @@ impl G2 {
 // Precompile wrappers
 // ---------------------------------------------------------------------------------------
 
-fn put(_ buf: mut MemBuffer, _ index: usize, _ v: u256) {
-    unsafe {
-        store_word(
-            ptr: ptr::offset_bytes(buf.ptr(), (index * 32) as u256),
-            value: v,
-        )
-    }
-}
-
-fn get(_ buf: MemBuffer, _ index: usize) -> u256 {
-    unsafe {
-        load_word(ptr::offset_bytes(buf.ptr(), (index * 32) as u256))
-    }
-}
-
-/// Static call to precompile `addr`; reverts unless it succeeds and returns exactly
-/// `out_len` bytes.
-fn call_checked(
-    _ addr: u256,
-    _ input: mut MemBuffer,
-    _ in_len: usize,
-    _ out: mut MemBuffer,
-    _ out_len: u256,
-)
-uses (call: Call)
-{
-    unsafe {
-        input.set_len(in_len)
-    }
-    let r = call
-        .raw_staticcall(
-            addr: Address::new(addr),
-            gas: PRECOMPILE_GAS,
-            args: input.span(),
-            ret: mut out,
-        )
-    assert(r.success())
-    assert(r.returndata_len() == out_len)
-}
-
 /// `a + b` via precompile 0x06. Reverts on failure.
 pub fn g1_add(_ a: G1, _ b: G1) -> G1 uses (call: Call) {
     var input = MemBuffer::with_capacity(128)
@@ -373,7 +330,7 @@ pub fn g1_add(_ a: G1, _ b: G1) -> G1 uses (call: Call) {
     put(mut input, 2, b.x.to_canonical())
     put(mut input, 3, b.y.to_canonical())
     var out = MemBuffer::with_capacity(64)
-    call_checked(6, mut input, 128, mut out, 64)
+    call_checked(6, 500, mut input, 128, mut out, 64)
     // The precompile only outputs on-curve, canonical points (or (0,0)).
     G1 { x: fq(get(out, 0)), y: fq(get(out, 1)) }
 }
@@ -385,7 +342,7 @@ pub fn g1_mul(_ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
     put(mut input, 1, p.y.to_canonical())
     put(mut input, 2, s.to_canonical())
     var out = MemBuffer::with_capacity(64)
-    call_checked(7, mut input, 96, mut out, 64)
+    call_checked(7, 7000, mut input, 96, mut out, 64)
     G1 { x: fq(get(out, 0)), y: fq(get(out, 1)) }
 }
 
@@ -411,7 +368,14 @@ uses (call: Call)
         i += 1
     }
     var out = MemBuffer::with_capacity(32)
-    call_checked(8, mut input, N * 192, mut out, 32)
+    call_checked(
+        8,
+        50000 + 40000 * (N as u256),
+        mut input,
+        N * 192,
+        mut out,
+        32,
+    )
     let w = get(out, 0)
     assert(w <= 1)
     w == 1
