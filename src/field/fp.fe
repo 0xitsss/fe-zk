@@ -1,0 +1,111 @@
+use std::evm::crypto::{addmod, mulmod}
+use super::Field
+
+/// BN254 scalar field `r` (the field of circuit values and public inputs).
+pub const BN254_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+/// BN254 base field `q` (the field of curve coordinates).
+pub const BN254_Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+/// KoalaBear: `2^31 - 2^24 + 1`.
+pub const KOALABEAR_P: u256 = 0x7f000001
+/// BabyBear: `2^31 - 2^27 + 1`.
+pub const BABYBEAR_P: u256 = 0x78000001
+/// Goldilocks: `2^64 - 2^32 + 1`.
+pub const GOLDILOCKS_P: u256 = 0xffffffff00000001
+
+/// An element of the prime field of order `P`. Invariant: `v < P`.
+pub struct Fp<const P: u256> { v: u256 }
+
+impl<const P: u256> Copy for Fp<P> {}
+
+pub type Bn254Fr = Fp<BN254_R>
+pub type Bn254Fq = Fp<BN254_Q>
+pub type KoalaBear = Fp<KOALABEAR_P>
+pub type BabyBear = Fp<BABYBEAR_P>
+pub type Goldilocks = Fp<GOLDILOCKS_P>
+
+impl<const P: u256> Field for Fp<P> {
+    const MODULUS: u256 = P
+
+    fn zero() -> Self {
+        Fp { v: 0 }
+    }
+
+    fn one() -> Self {
+        Fp { v: 1 }
+    }
+
+    fn is_canonical(_ v: u256) -> bool {
+        v < P
+    }
+
+    fn from_canonical(_ v: u256) -> Option<Self> {
+        if v < P {
+            Option::Some(Fp { v })
+        } else {
+            Option::None
+        }
+    }
+
+    fn reduce(_ v: u256) -> Self {
+        Fp { v: v % P }
+    }
+
+    fn to_canonical(self) -> u256 {
+        self.v
+    }
+
+    fn is_zero(self) -> bool {
+        self.v == 0
+    }
+
+    fn eq(self, _ other: Self) -> bool {
+        self.v == other.v
+    }
+
+    fn add(self, _ other: Self) -> Self {
+        Fp { v: addmod(self.v, other.v, P) }
+    }
+
+    fn sub(self, _ other: Self) -> Self {
+        // other.v < P, so P - other.v is in (0, P]; addmod reduces P to 0.
+        Fp { v: addmod(self.v, P - other.v, P) }
+    }
+
+    fn neg(self) -> Self {
+        if self.v == 0 {
+            self
+        } else {
+            Fp { v: P - self.v }
+        }
+    }
+
+    fn mul(self, _ other: Self) -> Self {
+        Fp { v: mulmod(self.v, other.v, P) }
+    }
+
+    fn square(self) -> Self {
+        Fp { v: mulmod(self.v, self.v, P) }
+    }
+
+    fn pow(self, _ e: u256) -> Self {
+        var acc: u256 = 1
+        var base: u256 = self.v
+        var k: u256 = e
+        while k != 0 {
+            if k & 1 == 1 {
+                acc = mulmod(acc, base, P)
+            }
+            base = mulmod(base, base, P)
+            k = k >> 1
+        }
+        Fp { v: acc }
+    }
+
+    fn inv(self) -> Option<Self> {
+        if self.v == 0 {
+            return Option::None
+        }
+        // Fermat: a^(P-2) = a^-1 for prime P and a != 0.
+        Option::Some(self.pow(P - 2))
+    }
+}

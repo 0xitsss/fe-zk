@@ -1,0 +1,86 @@
+use ingot::field::{BabyBear, Bn254Fq, Bn254Fr, Field, Goldilocks, KoalaBear}
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+const A: u256 = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+
+fn fr(_ v: u256) -> Bn254Fr {
+    match Bn254Fr::from_canonical(v) {
+        Option::Some(x) => x,
+        Option::None => {
+            assert(false)
+            Bn254Fr::zero()
+        },
+    }
+}
+
+#[test]
+fn rejects_non_canonical() {
+    assert(Bn254Fr::from_canonical(R).is_none())
+    assert(Bn254Fr::from_canonical(R + 1).is_none())
+    assert(Bn254Fr::from_canonical(R - 1).is_some())
+    assert(KoalaBear::from_canonical(0x7f000001).is_none())
+    assert(Goldilocks::from_canonical(0xffffffff00000001).is_none())
+    assert(
+        !Bn254Fq::is_canonical(
+            21888242871839275222246405745257275088696311157297823662689037894645226208583,
+        ),
+    )
+}
+
+#[test]
+fn bn254_fr_arith() {
+    // a = A % R; Python: a * (R - 5) % R
+    let a = Bn254Fr::reduce(A)
+    let b = fr(R - 5)
+    assert(
+        a.mul(b).to_canonical()
+            == 0x5c2ec8aef083aa8159adb122fa7ab0ef56220362017db772cbe3acd0ca4fa57,
+    )
+    // Python: pow(a, -1, R)
+    let ai = a.inv().unwrap()
+    assert(
+        ai.to_canonical() == 0x2bb13c11312079eabcc30b313613a9e013db48335cbdb86b9b83ed107fcaea83,
+    )
+    assert(a.mul(ai).eq(Bn254Fr::one()))
+    // Python: pow(a, 0xdeadbeef, R)
+    assert(
+        a.pow(0xdeadbeef).to_canonical()
+            == 0x2fce1701db78d73ae2b21a63157b4aadfaf4b86262f434b6541c1f09ece73cb,
+    )
+    assert(a.sub(a).is_zero())
+    assert(a.add(a.neg()).is_zero())
+    assert(Bn254Fr::zero().neg().is_zero())
+    assert(Bn254Fr::zero().inv().is_none())
+    assert(fr(5).sub(fr(7)).to_canonical() == R - 2)
+}
+
+#[test]
+fn small_fields() {
+    // Python: pow(3, -1, 0x7f000001)
+    assert(
+        KoalaBear::reduce(3).inv().unwrap().to_canonical() == 710235478,
+    )
+    let g = 0xffffffff00000001
+    // Python: (g - 1) * (g - 2) % g, pow(7, -1, g)
+    assert(
+        Goldilocks::reduce(g - 1).mul(Goldilocks::reduce(g - 2)).to_canonical() == 2,
+    )
+    assert(
+        Goldilocks::reduce(7).inv().unwrap().to_canonical() == 2635249152773512046,
+    )
+    assert(
+        BabyBear::reduce(0x78000000).add(BabyBear::one()).is_zero(),
+    )
+}
+
+// One generic function, every field.
+fn cube_plus_one<F: Field>(_ x: F) -> F {
+    x.square().mul(x).add(F::one())
+}
+
+#[test]
+fn generic_over_fields() {
+    assert(cube_plus_one(KoalaBear::reduce(2)).to_canonical() == 9)
+    assert(cube_plus_one(Bn254Fr::reduce(R - 1)).to_canonical() == 0)
+    assert(cube_plus_one(Goldilocks::reduce(3)).to_canonical() == 28)
+}

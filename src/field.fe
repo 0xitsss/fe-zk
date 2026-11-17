@@ -1,0 +1,42 @@
+//! Prime fields behind one `Field` trait.
+//!
+//! Every field in fe-zk is `Fp<P>`, a canonical residue modulo the prime `P`, stored in a
+//! `u256`. The EVM's `addmod` / `mulmod` work with 512-bit intermediates, so the same
+//! code is correct for the 254-bit BN254 fields and for the 31/64-bit STARK fields.
+//! No Montgomery form is needed: `mulmod` already costs a single opcode (8 gas).
+//!
+//! The value field of `Fp` is private. Outside this module an `Fp<P>` can only be made by
+//! `Fp::from_canonical` (rejects values `>= P`, safety rule 1) or `Fp::reduce` (explicit
+//! reduction, for constants and hash outputs only, never for untrusted input).
+
+pub use fp::{BabyBear, Bn254Fq, Bn254Fr, Fp, Goldilocks, KoalaBear}
+
+/// A prime field. Elements are always canonical (`< MODULUS`).
+pub trait Field {
+    /// The prime modulus.
+    const MODULUS: u256
+
+    /// The additive identity.
+    fn zero() -> Self
+    /// The multiplicative identity.
+    fn one() -> Self
+    /// `true` iff `v < MODULUS`.
+    fn is_canonical(_ v: u256) -> bool
+    /// The element `v`, or `None` if `v` is not canonical. Use this for untrusted input.
+    fn from_canonical(_ v: u256) -> Option<Self>
+    /// `v mod MODULUS`. Silent reduction: never use it on untrusted input (safety rule 1).
+    fn reduce(_ v: u256) -> Self
+    /// The canonical representative in `[0, MODULUS)`.
+    fn to_canonical(self) -> u256
+    fn is_zero(self) -> bool
+    fn eq(self, _ other: Self) -> bool
+    fn add(self, _ other: Self) -> Self
+    fn sub(self, _ other: Self) -> Self
+    fn neg(self) -> Self
+    fn mul(self, _ other: Self) -> Self
+    fn square(self) -> Self
+    /// `self ^ e`.
+    fn pow(self, _ e: u256) -> Self
+    /// Multiplicative inverse, or `None` for zero.
+    fn inv(self) -> Option<Self>
+}
