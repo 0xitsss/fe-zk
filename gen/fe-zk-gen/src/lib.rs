@@ -11,9 +11,11 @@ pub mod parse;
 pub mod validate;
 
 pub use digest::{key_digest, DIGEST_DOMAIN};
-pub use emit::emit_fe;
-pub use model::{Groth16Vk, VkError, G1, G2};
-pub use parse::{parse_arkworks, parse_snarkjs};
+pub use emit::{emit_fe, emit_ingot, EmitOptions, EmittedIngot, TestFixture};
+pub use model::{Groth16Proof, Groth16Vk, VkError, G1, G2};
+pub use parse::{
+    parse_arkworks, parse_arkworks_proof, parse_public, parse_snarkjs, parse_snarkjs_proof,
+};
 
 /// Tool version embedded in generated file headers.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");

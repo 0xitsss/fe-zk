@@ -24,6 +24,9 @@ pub use ec::{
     g1_mul,
     kzg_point_evaluation,
     pairing_check,
+    pairing_check_proof,
+    pairing_try_proof,
+    G2Proof,
 }
 pub use hash::{
     Bn254Poseidon2,
@@ -41,6 +44,10 @@ pub use hash::{
     poseidon_5,
 }
 pub use verifier::{
+    Groth16Proof,
+    Groth16Vk,
+    groth16_verify,
+    groth16_verify_raw,
     Halo2Vk,
     KzgVk,
     PlonkProof,

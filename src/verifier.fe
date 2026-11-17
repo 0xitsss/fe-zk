@@ -11,4 +11,10 @@ pub use kzg::{
     shplonk_challenge_y,
 }
 
+pub use groth16::{
+    Groth16Proof,
+    Groth16Vk,
+    verify as groth16_verify,
+    verify_raw as groth16_verify_raw,
+}
 pub use plonk::{PlonkProof, PlonkVk, plonk_challenges, plonk_verify, plonk_verify_words}
