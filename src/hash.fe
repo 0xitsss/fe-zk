@@ -20,7 +20,9 @@ pub use poseidon2::{
     Compression,
     KoalaBearPoseidon2,
     bn254_t3_permute,
+    bn254_t3_permute_generic,
     koalabear_t16_permute,
+    koalabear_t16_permute_generic,
     merkle_root,
     permute_generic,
 }

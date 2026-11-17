@@ -6,7 +6,9 @@ use ingot::hash::{
     Bn254Poseidon2,
     Transcript,
     bn254_t3_permute,
+    bn254_t3_permute_generic,
     koalabear_t16_permute,
+    koalabear_t16_permute_generic,
     merkle_root,
     poseidon_1,
     poseidon_2,
@@ -18,6 +20,14 @@ use ingot::hash::{
     reference_poseidon_3,
     reference_poseidon_4,
     reference_poseidon_5,
+}
+use ingot::hash::poseidon2_constants::{
+    P2_BN254_T3_DIAG,
+    P2_BN254_T3_EXT,
+    P2_BN254_T3_INT,
+    P2_KOALABEAR_T16_DIAG,
+    P2_KOALABEAR_T16_EXT,
+    P2_KOALABEAR_T16_INT,
 }
 use ingot::hash::poseidon_constants::{
     POSEIDON_C2,
@@ -263,4 +273,72 @@ fn poseidon_fast_equals_reference() {
 
 fn zero_fr() -> Bn254Fr {
     Bn254Fr::zero()
+}
+
+#[test]
+fn poseidon2_tables_are_canonical() {
+    assert(all_below(P2_BN254_T3_EXT, R))
+    assert(all_below(P2_BN254_T3_INT, R))
+    assert(all_below(P2_BN254_T3_DIAG, R))
+    assert(all_below(P2_KOALABEAR_T16_EXT, 0x7f000001))
+    assert(all_below(P2_KOALABEAR_T16_INT, 0x7f000001))
+    assert(all_below(P2_KOALABEAR_T16_DIAG, 0x7f000001))
+}
+
+/// Unrolled fast paths equal the single generic implementation, also on maximal inputs.
+#[test]
+fn poseidon2_fast_equals_generic() {
+    let m = fr(R - 1)
+    let ins = [
+        [zero_fr(), zero_fr(), zero_fr()],
+        [fr(1), fr(2), fr(3)],
+        [m, m, m],
+        [m, zero_fr(), m],
+    ]
+    var i: usize = 0
+    while i < 4 {
+        let f = bn254_t3_permute(ins[i])
+        let g = bn254_t3_permute_generic(ins[i])
+        assert(f[0].eq(g[0]) && f[1].eq(g[1]) && f[2].eq(g[2]))
+        i += 1
+    }
+    let pm = KoalaBear::reduce(0x7f000000)
+    var lanes: [[KoalaBear; 16]; 3] = [[KoalaBear::zero(); 16]; 3]
+    lanes[1] = [pm; 16]
+    var k: usize = 0
+    while k < 16 {
+        lanes[2][k] = KoalaBear::reduce((k as u256) * 7919 + 1)
+        k += 1
+    }
+    i = 0
+    while i < 3 {
+        let f = koalabear_t16_permute(lanes[i])
+        let g = koalabear_t16_permute_generic(lanes[i])
+        k = 0
+        while k < 16 {
+            assert(f[k].eq(g[k]))
+            k += 1
+        }
+        i += 1
+    }
+}
+
+/// Gas of the readable / generic versions (what: 1102 = array poseidon_2, 2103 = generic
+/// Poseidon2 BN254 t=3, 2116 = generic Poseidon2 KoalaBear t=16). Compare with `gas_per_hash`.
+#[test]
+fn gas_per_hash_reference() uses (evm: mut Evm) {
+    let g0 = evm.gas()
+    let x = Bn254Fr::reduce(g0)
+    let h = reference_poseidon_2(x.add(fr(1)), x.add(fr(2)))
+    let g1 = evm.gas()
+    let p = bn254_t3_permute_generic([x, x.add(fr(1)), x.add(fr(2))])
+    let g2 = evm.gas()
+    let q = koalabear_t16_permute_generic([KoalaBear::reduce(g0); 16])
+    let g3 = evm.gas()
+    evm.emit(GasUsed { what: 1102, gas: g0 - g1 })
+    evm.emit(GasUsed { what: 2103, gas: g1 - g2 })
+    evm.emit(GasUsed { what: 2116, gas: g2 - g3 })
+    evm.emit(
+        GasUsed { what: 9999, gas: h.to_canonical() ^ p[0].to_canonical() ^ q[0].to_canonical() },
+    )
 }

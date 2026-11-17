@@ -1,0 +1,420 @@
+//! GENERATED FILE, do not edit: `scripts/gen-poseidon2-unrolled.py`.
+//!
+//! Poseidon2 for BN254 t = 3 and KoalaBear t = 16 on scalar locals with lazy reduction.
+//! Same arithmetic as `poseidon2::permute_generic` (the single generic implementation, kept
+//! as the reference); the unit tests assert both agree. Table entries are canonical (tests
+//! `poseidon2_tables_are_canonical`). Arithmetic is `unchecked` only where the bound comment
+//! on each function proves no overflow.
+use std::evm::crypto::{addmod, mulmod}
+use super::poseidon2_constants::{
+    P2_BN254_T3_DIAG,
+    P2_BN254_T3_EXT,
+    P2_BN254_T3_INT,
+    P2_KOALABEAR_T16_DIAG,
+    P2_KOALABEAR_T16_EXT,
+    P2_KOALABEAR_T16_INT,
+}
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+const P: u256 = 0x7f000001
+
+#[arithmetic(unchecked)]
+fn sbox5(_ x: u256) -> u256 {
+    let x2 = mulmod(x, x, R)
+    let x4 = mulmod(x2, x2, R)
+    mulmod(x4, x, R)
+}
+
+#[arithmetic(unchecked)]
+/// BN254 Fr t = 3 Poseidon2 (HorizenLabs `poseidon2_instance_bn256`), x^5.
+///
+/// Bounds: every addmod/mulmod result is < R, R < 0.1889 * 2^256. `sum` adds three lanes
+/// (< 3 * R, no overflow) and goes straight into `addmod`, which is exact for any u256
+/// operands, so no separate reduction is needed. Inputs are canonical (typed `Bn254Fr`).
+pub fn permute_bn254_t3(_ a: u256, _ b: u256, _ c: u256) -> [u256; 3] {
+    var s0: u256 = a
+    var s1: u256 = b
+    var s2: u256 = c
+    let sum = s0 + s1 + s2
+    s0 = addmod(s0, sum, R)
+    s1 = addmod(s1, sum, R)
+    s2 = addmod(s2, sum, R)
+    var r: usize = 0
+    while r < 4 {
+        s0 = sbox5(addmod(s0, P2_BN254_T3_EXT[0 + r * 3 + 0], R))
+        s1 = sbox5(addmod(s1, P2_BN254_T3_EXT[0 + r * 3 + 1], R))
+        s2 = sbox5(addmod(s2, P2_BN254_T3_EXT[0 + r * 3 + 2], R))
+        let sum = s0 + s1 + s2
+        s0 = addmod(s0, sum, R)
+        s1 = addmod(s1, sum, R)
+        s2 = addmod(s2, sum, R)
+        r += 1
+    }
+    r = 0
+    while r < 56 {
+        s0 = sbox5(addmod(s0, P2_BN254_T3_INT[r], R))
+        let sum = s0 + s1 + s2
+        s0 = addmod(sum, mulmod(P2_BN254_T3_DIAG[0], s0, R), R)
+        s1 = addmod(sum, mulmod(P2_BN254_T3_DIAG[1], s1, R), R)
+        s2 = addmod(sum, mulmod(P2_BN254_T3_DIAG[2], s2, R), R)
+        r += 1
+    }
+    r = 0
+    while r < 4 {
+        s0 = sbox5(addmod(s0, P2_BN254_T3_EXT[12 + r * 3 + 0], R))
+        s1 = sbox5(addmod(s1, P2_BN254_T3_EXT[12 + r * 3 + 1], R))
+        s2 = sbox5(addmod(s2, P2_BN254_T3_EXT[12 + r * 3 + 2], R))
+        let sum = s0 + s1 + s2
+        s0 = addmod(s0, sum, R)
+        s1 = addmod(s1, sum, R)
+        s2 = addmod(s2, sum, R)
+        r += 1
+    }
+    [s0, s1, s2]
+}
+
+#[arithmetic(unchecked)]
+/// KoalaBear t = 16 Poseidon2 (Plonky3 `default_koalabear_poseidon2_16`), x^3.
+///
+/// Bounds (all lanes are plain u256 sums/products of values below 2^40, no overflow):
+///  - inputs are canonical: lane < P < 2^31.
+///  - external layer: each mat4 output is a combination with coefficient sum 7, then each lane
+///    adds the sum of 4 such outputs: lane <= 7B + 4 * 7B = 35 * B for lanes <= B.
+///    With B = P this is <= 35 * P < 2^37.
+///  - full round: (lane + rc) <= 36 * P < 2^37, cube < 2^111, `% P` brings it below P; the
+///    following external layer gives <= 35 * P again. So the invariant "lane <= 35 * P on
+///    entry to a full round" holds from the first round to the last.
+///  - partial rounds need lanes < P: reduce once on entry. Then
+///    sum of 16 lanes < 16 * P and `D[i] * lane < P * P < 2^62`, so
+///    `(sum + D[i] * lane) % P` is exact and again < P.
+///  - output: lanes <= 35 * P, reduced once.
+pub fn permute_koalabear_t16(_ input: [u256; 16]) -> [u256; 16] {
+    var s0: u256 = input[0]
+    var s1: u256 = input[1]
+    var s2: u256 = input[2]
+    var s3: u256 = input[3]
+    var s4: u256 = input[4]
+    var s5: u256 = input[5]
+    var s6: u256 = input[6]
+    var s7: u256 = input[7]
+    var s8: u256 = input[8]
+    var s9: u256 = input[9]
+    var s10: u256 = input[10]
+    var s11: u256 = input[11]
+    var s12: u256 = input[12]
+    var s13: u256 = input[13]
+    var s14: u256 = input[14]
+    var s15: u256 = input[15]
+    let m0_t01 = s0 + s1
+    let m0_t23 = s2 + s3
+    let m0_t0123 = m0_t01 + m0_t23
+    let m0_t01123 = m0_t0123 + s1
+    let m0_t01233 = m0_t0123 + s3
+    let m0_o3 = m0_t01233 + s0 + s0
+    let m0_o1 = m0_t01123 + s2 + s2
+    let m0_o0 = m0_t01123 + m0_t01
+    let m0_o2 = m0_t01233 + m0_t23
+    let m1_t01 = s4 + s5
+    let m1_t23 = s6 + s7
+    let m1_t0123 = m1_t01 + m1_t23
+    let m1_t01123 = m1_t0123 + s5
+    let m1_t01233 = m1_t0123 + s7
+    let m1_o3 = m1_t01233 + s4 + s4
+    let m1_o1 = m1_t01123 + s6 + s6
+    let m1_o0 = m1_t01123 + m1_t01
+    let m1_o2 = m1_t01233 + m1_t23
+    let m2_t01 = s8 + s9
+    let m2_t23 = s10 + s11
+    let m2_t0123 = m2_t01 + m2_t23
+    let m2_t01123 = m2_t0123 + s9
+    let m2_t01233 = m2_t0123 + s11
+    let m2_o3 = m2_t01233 + s8 + s8
+    let m2_o1 = m2_t01123 + s10 + s10
+    let m2_o0 = m2_t01123 + m2_t01
+    let m2_o2 = m2_t01233 + m2_t23
+    let m3_t01 = s12 + s13
+    let m3_t23 = s14 + s15
+    let m3_t0123 = m3_t01 + m3_t23
+    let m3_t01123 = m3_t0123 + s13
+    let m3_t01233 = m3_t0123 + s15
+    let m3_o3 = m3_t01233 + s12 + s12
+    let m3_o1 = m3_t01123 + s14 + s14
+    let m3_o0 = m3_t01123 + m3_t01
+    let m3_o2 = m3_t01233 + m3_t23
+    let st0 = m0_o0 + m1_o0 + m2_o0 + m3_o0
+    let st1 = m0_o1 + m1_o1 + m2_o1 + m3_o1
+    let st2 = m0_o2 + m1_o2 + m2_o2 + m3_o2
+    let st3 = m0_o3 + m1_o3 + m2_o3 + m3_o3
+    s0 = m0_o0 + st0
+    s1 = m0_o1 + st1
+    s2 = m0_o2 + st2
+    s3 = m0_o3 + st3
+    s4 = m1_o0 + st0
+    s5 = m1_o1 + st1
+    s6 = m1_o2 + st2
+    s7 = m1_o3 + st3
+    s8 = m2_o0 + st0
+    s9 = m2_o1 + st1
+    s10 = m2_o2 + st2
+    s11 = m2_o3 + st3
+    s12 = m3_o0 + st0
+    s13 = m3_o1 + st1
+    s14 = m3_o2 + st2
+    s15 = m3_o3 + st3
+    var r: usize = 0
+    while r < 4 {
+        let x0 = s0 + P2_KOALABEAR_T16_EXT[r * 16 + 0]
+        s0 = (x0 * x0 * x0) % P
+        let x1 = s1 + P2_KOALABEAR_T16_EXT[r * 16 + 1]
+        s1 = (x1 * x1 * x1) % P
+        let x2 = s2 + P2_KOALABEAR_T16_EXT[r * 16 + 2]
+        s2 = (x2 * x2 * x2) % P
+        let x3 = s3 + P2_KOALABEAR_T16_EXT[r * 16 + 3]
+        s3 = (x3 * x3 * x3) % P
+        let x4 = s4 + P2_KOALABEAR_T16_EXT[r * 16 + 4]
+        s4 = (x4 * x4 * x4) % P
+        let x5 = s5 + P2_KOALABEAR_T16_EXT[r * 16 + 5]
+        s5 = (x5 * x5 * x5) % P
+        let x6 = s6 + P2_KOALABEAR_T16_EXT[r * 16 + 6]
+        s6 = (x6 * x6 * x6) % P
+        let x7 = s7 + P2_KOALABEAR_T16_EXT[r * 16 + 7]
+        s7 = (x7 * x7 * x7) % P
+        let x8 = s8 + P2_KOALABEAR_T16_EXT[r * 16 + 8]
+        s8 = (x8 * x8 * x8) % P
+        let x9 = s9 + P2_KOALABEAR_T16_EXT[r * 16 + 9]
+        s9 = (x9 * x9 * x9) % P
+        let x10 = s10 + P2_KOALABEAR_T16_EXT[r * 16 + 10]
+        s10 = (x10 * x10 * x10) % P
+        let x11 = s11 + P2_KOALABEAR_T16_EXT[r * 16 + 11]
+        s11 = (x11 * x11 * x11) % P
+        let x12 = s12 + P2_KOALABEAR_T16_EXT[r * 16 + 12]
+        s12 = (x12 * x12 * x12) % P
+        let x13 = s13 + P2_KOALABEAR_T16_EXT[r * 16 + 13]
+        s13 = (x13 * x13 * x13) % P
+        let x14 = s14 + P2_KOALABEAR_T16_EXT[r * 16 + 14]
+        s14 = (x14 * x14 * x14) % P
+        let x15 = s15 + P2_KOALABEAR_T16_EXT[r * 16 + 15]
+        s15 = (x15 * x15 * x15) % P
+        let m0_t01 = s0 + s1
+        let m0_t23 = s2 + s3
+        let m0_t0123 = m0_t01 + m0_t23
+        let m0_t01123 = m0_t0123 + s1
+        let m0_t01233 = m0_t0123 + s3
+        let m0_o3 = m0_t01233 + s0 + s0
+        let m0_o1 = m0_t01123 + s2 + s2
+        let m0_o0 = m0_t01123 + m0_t01
+        let m0_o2 = m0_t01233 + m0_t23
+        let m1_t01 = s4 + s5
+        let m1_t23 = s6 + s7
+        let m1_t0123 = m1_t01 + m1_t23
+        let m1_t01123 = m1_t0123 + s5
+        let m1_t01233 = m1_t0123 + s7
+        let m1_o3 = m1_t01233 + s4 + s4
+        let m1_o1 = m1_t01123 + s6 + s6
+        let m1_o0 = m1_t01123 + m1_t01
+        let m1_o2 = m1_t01233 + m1_t23
+        let m2_t01 = s8 + s9
+        let m2_t23 = s10 + s11
+        let m2_t0123 = m2_t01 + m2_t23
+        let m2_t01123 = m2_t0123 + s9
+        let m2_t01233 = m2_t0123 + s11
+        let m2_o3 = m2_t01233 + s8 + s8
+        let m2_o1 = m2_t01123 + s10 + s10
+        let m2_o0 = m2_t01123 + m2_t01
+        let m2_o2 = m2_t01233 + m2_t23
+        let m3_t01 = s12 + s13
+        let m3_t23 = s14 + s15
+        let m3_t0123 = m3_t01 + m3_t23
+        let m3_t01123 = m3_t0123 + s13
+        let m3_t01233 = m3_t0123 + s15
+        let m3_o3 = m3_t01233 + s12 + s12
+        let m3_o1 = m3_t01123 + s14 + s14
+        let m3_o0 = m3_t01123 + m3_t01
+        let m3_o2 = m3_t01233 + m3_t23
+        let st0 = m0_o0 + m1_o0 + m2_o0 + m3_o0
+        let st1 = m0_o1 + m1_o1 + m2_o1 + m3_o1
+        let st2 = m0_o2 + m1_o2 + m2_o2 + m3_o2
+        let st3 = m0_o3 + m1_o3 + m2_o3 + m3_o3
+        s0 = m0_o0 + st0
+        s1 = m0_o1 + st1
+        s2 = m0_o2 + st2
+        s3 = m0_o3 + st3
+        s4 = m1_o0 + st0
+        s5 = m1_o1 + st1
+        s6 = m1_o2 + st2
+        s7 = m1_o3 + st3
+        s8 = m2_o0 + st0
+        s9 = m2_o1 + st1
+        s10 = m2_o2 + st2
+        s11 = m2_o3 + st3
+        s12 = m3_o0 + st0
+        s13 = m3_o1 + st1
+        s14 = m3_o2 + st2
+        s15 = m3_o3 + st3
+        r += 1
+    }
+    s0 = s0 % P
+    s1 = s1 % P
+    s2 = s2 % P
+    s3 = s3 % P
+    s4 = s4 % P
+    s5 = s5 % P
+    s6 = s6 % P
+    s7 = s7 % P
+    s8 = s8 % P
+    s9 = s9 % P
+    s10 = s10 % P
+    s11 = s11 % P
+    s12 = s12 % P
+    s13 = s13 % P
+    s14 = s14 % P
+    s15 = s15 % P
+    r = 0
+    while r < 20 {
+        let x = s0 + P2_KOALABEAR_T16_INT[r]
+        s0 = (x * x * x) % P
+        let sum = s0
+            + s1
+            + s2
+            + s3
+            + s4
+            + s5
+            + s6
+            + s7
+            + s8
+            + s9
+            + s10
+            + s11
+            + s12
+            + s13
+            + s14
+            + s15
+        s0 = (sum + P2_KOALABEAR_T16_DIAG[0] * s0) % P
+        s1 = (sum + P2_KOALABEAR_T16_DIAG[1] * s1) % P
+        s2 = (sum + P2_KOALABEAR_T16_DIAG[2] * s2) % P
+        s3 = (sum + P2_KOALABEAR_T16_DIAG[3] * s3) % P
+        s4 = (sum + P2_KOALABEAR_T16_DIAG[4] * s4) % P
+        s5 = (sum + P2_KOALABEAR_T16_DIAG[5] * s5) % P
+        s6 = (sum + P2_KOALABEAR_T16_DIAG[6] * s6) % P
+        s7 = (sum + P2_KOALABEAR_T16_DIAG[7] * s7) % P
+        s8 = (sum + P2_KOALABEAR_T16_DIAG[8] * s8) % P
+        s9 = (sum + P2_KOALABEAR_T16_DIAG[9] * s9) % P
+        s10 = (sum + P2_KOALABEAR_T16_DIAG[10] * s10) % P
+        s11 = (sum + P2_KOALABEAR_T16_DIAG[11] * s11) % P
+        s12 = (sum + P2_KOALABEAR_T16_DIAG[12] * s12) % P
+        s13 = (sum + P2_KOALABEAR_T16_DIAG[13] * s13) % P
+        s14 = (sum + P2_KOALABEAR_T16_DIAG[14] * s14) % P
+        s15 = (sum + P2_KOALABEAR_T16_DIAG[15] * s15) % P
+        r += 1
+    }
+    r = 0
+    while r < 4 {
+        let x0 = s0 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 0]
+        s0 = (x0 * x0 * x0) % P
+        let x1 = s1 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 1]
+        s1 = (x1 * x1 * x1) % P
+        let x2 = s2 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 2]
+        s2 = (x2 * x2 * x2) % P
+        let x3 = s3 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 3]
+        s3 = (x3 * x3 * x3) % P
+        let x4 = s4 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 4]
+        s4 = (x4 * x4 * x4) % P
+        let x5 = s5 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 5]
+        s5 = (x5 * x5 * x5) % P
+        let x6 = s6 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 6]
+        s6 = (x6 * x6 * x6) % P
+        let x7 = s7 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 7]
+        s7 = (x7 * x7 * x7) % P
+        let x8 = s8 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 8]
+        s8 = (x8 * x8 * x8) % P
+        let x9 = s9 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 9]
+        s9 = (x9 * x9 * x9) % P
+        let x10 = s10 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 10]
+        s10 = (x10 * x10 * x10) % P
+        let x11 = s11 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 11]
+        s11 = (x11 * x11 * x11) % P
+        let x12 = s12 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 12]
+        s12 = (x12 * x12 * x12) % P
+        let x13 = s13 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 13]
+        s13 = (x13 * x13 * x13) % P
+        let x14 = s14 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 14]
+        s14 = (x14 * x14 * x14) % P
+        let x15 = s15 + P2_KOALABEAR_T16_EXT[64 + r * 16 + 15]
+        s15 = (x15 * x15 * x15) % P
+        let m0_t01 = s0 + s1
+        let m0_t23 = s2 + s3
+        let m0_t0123 = m0_t01 + m0_t23
+        let m0_t01123 = m0_t0123 + s1
+        let m0_t01233 = m0_t0123 + s3
+        let m0_o3 = m0_t01233 + s0 + s0
+        let m0_o1 = m0_t01123 + s2 + s2
+        let m0_o0 = m0_t01123 + m0_t01
+        let m0_o2 = m0_t01233 + m0_t23
+        let m1_t01 = s4 + s5
+        let m1_t23 = s6 + s7
+        let m1_t0123 = m1_t01 + m1_t23
+        let m1_t01123 = m1_t0123 + s5
+        let m1_t01233 = m1_t0123 + s7
+        let m1_o3 = m1_t01233 + s4 + s4
+        let m1_o1 = m1_t01123 + s6 + s6
+        let m1_o0 = m1_t01123 + m1_t01
+        let m1_o2 = m1_t01233 + m1_t23
+        let m2_t01 = s8 + s9
+        let m2_t23 = s10 + s11
+        let m2_t0123 = m2_t01 + m2_t23
+        let m2_t01123 = m2_t0123 + s9
+        let m2_t01233 = m2_t0123 + s11
+        let m2_o3 = m2_t01233 + s8 + s8
+        let m2_o1 = m2_t01123 + s10 + s10
+        let m2_o0 = m2_t01123 + m2_t01
+        let m2_o2 = m2_t01233 + m2_t23
+        let m3_t01 = s12 + s13
+        let m3_t23 = s14 + s15
+        let m3_t0123 = m3_t01 + m3_t23
+        let m3_t01123 = m3_t0123 + s13
+        let m3_t01233 = m3_t0123 + s15
+        let m3_o3 = m3_t01233 + s12 + s12
+        let m3_o1 = m3_t01123 + s14 + s14
+        let m3_o0 = m3_t01123 + m3_t01
+        let m3_o2 = m3_t01233 + m3_t23
+        let st0 = m0_o0 + m1_o0 + m2_o0 + m3_o0
+        let st1 = m0_o1 + m1_o1 + m2_o1 + m3_o1
+        let st2 = m0_o2 + m1_o2 + m2_o2 + m3_o2
+        let st3 = m0_o3 + m1_o3 + m2_o3 + m3_o3
+        s0 = m0_o0 + st0
+        s1 = m0_o1 + st1
+        s2 = m0_o2 + st2
+        s3 = m0_o3 + st3
+        s4 = m1_o0 + st0
+        s5 = m1_o1 + st1
+        s6 = m1_o2 + st2
+        s7 = m1_o3 + st3
+        s8 = m2_o0 + st0
+        s9 = m2_o1 + st1
+        s10 = m2_o2 + st2
+        s11 = m2_o3 + st3
+        s12 = m3_o0 + st0
+        s13 = m3_o1 + st1
+        s14 = m3_o2 + st2
+        s15 = m3_o3 + st3
+        r += 1
+    }
+    [
+        s0 % P,
+        s1 % P,
+        s2 % P,
+        s3 % P,
+        s4 % P,
+        s5 % P,
+        s6 % P,
+        s7 % P,
+        s8 % P,
+        s9 % P,
+        s10 % P,
+        s11 % P,
+        s12 % P,
+        s13 % P,
+        s14 % P,
+        s15 % P,
+    ]
+}
