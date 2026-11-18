@@ -11,8 +11,8 @@ that turns verifying keys into Fe verifier contracts whose keys the Fe compiler 
 operations; then one Groth16 proof of 512 generations, checked by a verifier that `fe-zk-gen` generated.*
 
 Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
-Submission commit: (filled in at submission)
-Demo video: (link, optional)
+Submission: release tag [`v0.1.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.1.0) (the full commit SHA is in the submission form).
+Demo video: [youtu.be/u64MVwoeKjk](https://youtu.be/u64MVwoeKjk) (2:44, every number and output comes from a real run).
 
 ## Try it
 
