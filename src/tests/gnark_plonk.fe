@@ -1,0 +1,680 @@
+//! gnark PLONK verifier tests. Fixtures: gnark v0.12.0 keys and proofs (`vectors/gnark`,
+//! `scripts/regen-gnark-fixtures.sh`), transcribed into `gnark_plonk_fixtures.fe` by
+//! `scripts/gen-gnark-fe-fixtures.py`. Reference challenges and intermediate values come from a Go
+//! replay of gnark's `verify.go` (same library calls) in `vectors/gnark/main.go`; gnark's own Go
+//! verifier and its exported Solidity verifier accept the same proofs. Two circuits: `mul`
+//! (`x*y + 7 == z`, public x and z, no commitment) and `mulcommit` (the same plus one BSB22
+//! commitment from `api.Commit`). Gas: `fe test --show-logs` prints `GasUsed` events.
+use ingot::ec::{G1, G2}
+use ingot::field::{Bn254Fr, Field}
+use ingot::verifier::gnark_plonk::{
+    GnarkChallenges,
+    GnarkProof,
+    GnarkTrace,
+    GnarkVk,
+    gnark_challenges,
+    gnark_plonk_verify,
+    gnark_plonk_verify_words,
+    gnark_trace,
+    hash_to_fr,
+}
+use super::gnark_plonk_fixtures::*
+use std::evm::{Call, Evm}
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+fn g1(_ x: u256, _ y: u256) -> G1 {
+    G1::from_coords(x, y).unwrap()
+}
+
+// ---------------------------------------------------------------- keys
+
+fn gm_commitments() -> [G1; 8] {
+    [
+        g1(GM_QL_X, GM_QL_Y),
+        g1(GM_QR_X, GM_QR_Y),
+        g1(GM_QM_X, GM_QM_Y),
+        g1(GM_QO_X, GM_QO_Y),
+        g1(GM_QK_X, GM_QK_Y),
+        g1(GM_S1_X, GM_S1_Y),
+        g1(GM_S2_X, GM_S2_Y),
+        g1(GM_S3_X, GM_S3_Y),
+    ]
+}
+
+fn gc_commitments() -> [G1; 8] {
+    [
+        g1(GC_QL_X, GC_QL_Y),
+        g1(GC_QR_X, GC_QR_Y),
+        g1(GC_QM_X, GC_QM_Y),
+        g1(GC_QO_X, GC_QO_Y),
+        g1(GC_QK_X, GC_QK_Y),
+        g1(GC_S1_X, GC_S1_Y),
+        g1(GC_S2_X, GC_S2_Y),
+        g1(GC_S3_X, GC_S3_Y),
+    ]
+}
+
+fn gc_qcp() -> [G1; 1] {
+    [g1(GC_QCP0_X, GC_QCP0_Y)]
+}
+
+fn no_points() -> [G1; 0] {
+    []
+}
+
+fn no_words() -> [u256; 0] {
+    []
+}
+
+fn gm_x2() -> G2 {
+    G2::from_coords(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1).unwrap()
+}
+
+fn gc_x2() -> G2 {
+    G2::from_coords(GC_X2_X0, GC_X2_X1, GC_X2_Y0, GC_X2_Y1).unwrap()
+}
+
+fn gm_vk() -> GnarkVk<2, 0> {
+    GnarkVk<2, 0>::new(
+        GM_POWER,
+        fr(GM_W),
+        fr(GM_K),
+        gm_commitments(),
+        no_points(),
+        no_words(),
+        gm_x2(),
+    )
+        .unwrap()
+}
+
+fn gc_vk_from(_ c: [G1; 8], _ q: [G1; 1]) -> GnarkVk<2, 1> {
+    GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, gc_cci(), gc_x2()).unwrap()
+}
+
+fn gc_vk() -> GnarkVk<2, 1> {
+    gc_vk_from(gc_commitments(), gc_qcp())
+}
+
+fn gm_p() -> GnarkProof<0> {
+    let b: [[u256; 2]; 0] = []
+    GnarkProof<0>::from_words(gm_fixed(), no_words(), b).unwrap()
+}
+
+fn gc_p() -> GnarkProof<1> {
+    GnarkProof<1>::from_words(gc_fixed(), gc_qcp_at_zeta(), gc_bsb()).unwrap()
+}
+
+fn gm_pubs_fr() -> [Bn254Fr; 2] {
+    let p = gm_pubs()
+    [fr(p[0]), fr(p[1])]
+}
+
+fn gc_pubs_fr() -> [Bn254Fr; 2] {
+    let p = gc_pubs()
+    [fr(p[0]), fr(p[1])]
+}
+
+fn gc_p_from(_ fixed: [u256; 24], _ qe: [u256; 1], _ bsb: [[u256; 2]; 1]) -> GnarkProof<1> {
+    GnarkProof<1>::from_words(fixed, qe, bsb).unwrap()
+}
+
+fn gc_verify_words(
+    _ fixed: [u256; 24],
+    _ qe: [u256; 1],
+    _ bsb: [[u256; 2]; 1],
+    _ pubs: [u256; 2],
+) -> bool
+uses (call: Call)
+{
+    gnark_plonk_verify_words(gc_vk(), fixed, qe, bsb, pubs)
+}
+
+// Word index (x; y is the next word) of each point in the first 24 proof words:
+// L, R, O, H0, H1, H2, Z, W_zeta, W_zeta_omega.
+fn point_ix(_ i: usize) -> usize {
+    let t = [0, 2, 4, 6, 8, 10, 17, 20, 22]
+    t[i]
+}
+
+// Word index of each evaluation: l, r, o, s1, s2, Z(w zeta).
+fn eval_ix(_ i: usize) -> usize {
+    let t = [12, 13, 14, 15, 16, 19]
+    t[i]
+}
+
+// A valid on-curve point different from every fixture point: the generator.
+fn replace_point(_ w: [u256; 24], _ i: usize) -> [u256; 24] {
+    var t = w
+    t[point_ix(i)] = 1
+    t[point_ix(i) + 1] = 2
+    t
+}
+
+fn bump_eval(_ w: [u256; 24], _ i: usize) -> [u256; 24] {
+    var t = w
+    t[eval_ix(i)] = (t[eval_ix(i)] + 1) % R
+    t
+}
+
+// ---------------------------------------------------------------- accept
+
+#[test]
+fn gnark_fixtures_use_canonical_srs_generators() {
+    assert(
+        GM_G1_X == 1 && GM_G1_Y == 2 && GC_G1_X == 1 && GC_G1_Y == 2,
+    )
+    assert(
+        G2::from_coords(GM_G2_X0, GM_G2_X1, GM_G2_Y0, GM_G2_Y1).unwrap().eq(G2::generator()),
+    )
+    assert(
+        G2::from_coords(GC_G2_X0, GC_G2_X1, GC_G2_Y0, GC_G2_Y1).unwrap().eq(G2::generator()),
+    )
+    // size_inv in the fixture is 1/n
+    assert(
+        fr(GM_SIZE_INV).mul(Bn254Fr::reduce(1 << GM_POWER)).eq(Bn254Fr::one()),
+    )
+    assert(
+        fr(GC_SIZE_INV).mul(Bn254Fr::reduce(1 << GC_POWER)).eq(Bn254Fr::one()),
+    )
+}
+
+#[test]
+fn gnark_accepts_mul() uses (call: Call) {
+    assert(gnark_plonk_verify(gm_vk(), gm_p(), gm_pubs()))
+    let b: [[u256; 2]; 0] = []
+    assert(
+        gnark_plonk_verify_words(gm_vk(), gm_fixed(), no_words(), b, gm_pubs()),
+    )
+}
+
+#[test]
+fn gnark_accepts_mulcommit() uses (call: Call) {
+    assert(gnark_plonk_verify(gc_vk(), gc_p(), gc_pubs()))
+    assert(
+        gc_verify_words(gc_fixed(), gc_qcp_at_zeta(), gc_bsb(), gc_pubs()),
+    )
+}
+
+// ---------------------------------------------------------------- values vs the gnark Go replay
+
+#[test]
+fn challenges_match_gnark_mul() uses (call: Call) {
+    let c = gnark_challenges(gm_vk(), gm_pubs_fr(), gm_p())
+    assert(c.gamma.to_canonical() == GM_CH_GAMMA)
+    assert(c.beta.to_canonical() == GM_CH_BETA)
+    assert(c.alpha.to_canonical() == GM_CH_ALPHA)
+    assert(c.zeta.to_canonical() == GM_CH_ZETA)
+    assert(
+        c.gamma_raw == GM_CH_GAMMA_RAW && c.beta_raw == GM_CH_BETA_RAW,
+    )
+    assert(
+        c.alpha_raw == GM_CH_ALPHA_RAW && c.zeta_raw == GM_CH_ZETA_RAW,
+    )
+}
+
+#[test]
+fn challenges_match_gnark_mulcommit() uses (call: Call) {
+    let c = gnark_challenges(gc_vk(), gc_pubs_fr(), gc_p())
+    assert(c.gamma.to_canonical() == GC_CH_GAMMA)
+    assert(c.beta.to_canonical() == GC_CH_BETA)
+    assert(c.alpha.to_canonical() == GC_CH_ALPHA)
+    assert(c.zeta.to_canonical() == GC_CH_ZETA)
+    assert(
+        c.gamma_raw == GC_CH_GAMMA_RAW && c.beta_raw == GC_CH_BETA_RAW,
+    )
+    assert(
+        c.alpha_raw == GC_CH_ALPHA_RAW && c.zeta_raw == GC_CH_ZETA_RAW,
+    )
+}
+
+#[test]
+fn trace_matches_gnark_mul() uses (call: Call) {
+    let t = gnark_trace(gm_vk(), gm_p(), gm_pubs_fr())
+    assert(t.ok)
+    assert(t.pi.to_canonical() == GM_CH_PI)
+    assert(t.opening_lin.to_canonical() == GM_CH_OPENING_LIN)
+    assert(t.gamma_kzg.to_canonical() == GM_CH_GAMMA_KZG)
+    assert(t.folded_value.to_canonical() == GM_CH_FOLDED_VALUE)
+    assert(t.random.to_canonical() == GM_CH_RANDOM)
+    assert(t.lin.x() == GM_CH_LIN_X && t.lin.y() == GM_CH_LIN_Y)
+    assert(
+        t.folded_digest.x() == GM_CH_FOLDED_X && t.folded_digest.y() == GM_CH_FOLDED_Y,
+    )
+}
+
+#[test]
+fn trace_matches_gnark_mulcommit() uses (call: Call) {
+    let t = gnark_trace(gc_vk(), gc_p(), gc_pubs_fr())
+    assert(t.ok)
+    assert(t.pi.to_canonical() == GC_CH_PI)
+    assert(t.opening_lin.to_canonical() == GC_CH_OPENING_LIN)
+    assert(t.gamma_kzg.to_canonical() == GC_CH_GAMMA_KZG)
+    assert(t.folded_value.to_canonical() == GC_CH_FOLDED_VALUE)
+    assert(t.random.to_canonical() == GC_CH_RANDOM)
+    assert(t.lin.x() == GC_CH_LIN_X && t.lin.y() == GC_CH_LIN_Y)
+    assert(
+        t.folded_digest.x() == GC_CH_FOLDED_X && t.folded_digest.y() == GC_CH_FOLDED_Y,
+    )
+}
+
+#[test]
+fn bsb22_hash_to_field_matches_gnark() uses (call: Call) {
+    let b = gc_bsb()
+    assert(
+        hash_to_fr(g1(b[0][0], b[0][1])).to_canonical() == GC_CH_HASHED_COMMIT,
+    )
+}
+
+// ---------------------------------------------------------------- transcript binding (rule 5)
+
+#[test]
+fn gnark_transcript_binds_every_vk_commitment() uses (call: Call) {
+    let base = gnark_challenges(gc_vk(), gc_pubs_fr(), gc_p())
+    var i: usize = 0
+    while i < 8 {
+        var c = gc_commitments()
+        c[i] = G1::generator()
+        let ch = gnark_challenges(gc_vk_from(c, gc_qcp()), gc_pubs_fr(), gc_p())
+        assert(!ch.gamma.eq(base.gamma))
+        assert(!ch.beta.eq(base.beta))
+        assert(!ch.alpha.eq(base.alpha))
+        assert(!ch.zeta.eq(base.zeta))
+        i += 1
+    }
+    // the selector commitment of the BSB22 gate
+    let ch = gnark_challenges(
+        gc_vk_from(gc_commitments(), [G1::generator()]),
+        gc_pubs_fr(),
+        gc_p(),
+    )
+    assert(!ch.gamma.eq(base.gamma) && !ch.zeta.eq(base.zeta))
+}
+
+#[test]
+fn gnark_transcript_binds_every_public_input() uses (call: Call) {
+    let base = gnark_challenges(gc_vk(), gc_pubs_fr(), gc_p())
+    var i: usize = 0
+    while i < 2 {
+        var p = gc_pubs_fr()
+        p[i] = p[i].add(Bn254Fr::one())
+        let ch = gnark_challenges(gc_vk(), p, gc_p())
+        assert(!ch.gamma.eq(base.gamma))
+        assert(!ch.beta.eq(base.beta))
+        assert(!ch.alpha.eq(base.alpha))
+        assert(!ch.zeta.eq(base.zeta))
+        i += 1
+    }
+}
+
+#[test]
+fn gnark_transcript_binds_every_commitment() uses (call: Call) {
+    let base = gnark_challenges(gc_vk(), gc_pubs_fr(), gc_p())
+    // L, R, O feed gamma (and through the chain everything after it)
+    var i: usize = 0
+    while i < 3 {
+        let ch = gnark_challenges(
+            gc_vk(),
+            gc_pubs_fr(),
+            gc_p_from(replace_point(gc_fixed(), i), gc_qcp_at_zeta(), gc_bsb()),
+        )
+        assert(!ch.gamma.eq(base.gamma) && !ch.beta.eq(base.beta))
+        assert(!ch.alpha.eq(base.alpha) && !ch.zeta.eq(base.zeta))
+        i += 1
+    }
+    // Z feeds alpha (gamma and beta unchanged)
+    let cz = gnark_challenges(
+        gc_vk(),
+        gc_pubs_fr(),
+        gc_p_from(replace_point(gc_fixed(), 6), gc_qcp_at_zeta(), gc_bsb()),
+    )
+    assert(cz.gamma.eq(base.gamma) && cz.beta.eq(base.beta))
+    assert(!cz.alpha.eq(base.alpha) && !cz.zeta.eq(base.zeta))
+    // the BSB22 commitment feeds alpha too
+    let cb = gnark_challenges(
+        gc_vk(),
+        gc_pubs_fr(),
+        gc_p_from(gc_fixed(), gc_qcp_at_zeta(), [[1, 2]]),
+    )
+    assert(cb.gamma.eq(base.gamma) && cb.beta.eq(base.beta))
+    assert(!cb.alpha.eq(base.alpha) && !cb.zeta.eq(base.zeta))
+    // H0, H1, H2 feed zeta (alpha unchanged)
+    i = 3
+    while i < 6 {
+        let ch = gnark_challenges(
+            gc_vk(),
+            gc_pubs_fr(),
+            gc_p_from(replace_point(gc_fixed(), i), gc_qcp_at_zeta(), gc_bsb()),
+        )
+        assert(ch.alpha.eq(base.alpha))
+        assert(!ch.zeta.eq(base.zeta))
+        i += 1
+    }
+}
+
+#[test]
+fn gnark_folding_and_random_challenges_bind_everything() uses (call: Call) {
+    let base = gnark_trace(gc_vk(), gc_p(), gc_pubs_fr())
+    // every evaluation (l, r, o, s1, s2, zu) feeds gamma_kzg
+    var i: usize = 0
+    while i < 6 {
+        let t = gnark_trace(
+            gc_vk(),
+            gc_p_from(bump_eval(gc_fixed(), i), gc_qcp_at_zeta(), gc_bsb()),
+            gc_pubs_fr(),
+        )
+        assert(t.zeta.eq(base.zeta))
+        assert(!t.gamma_kzg.eq(base.gamma_kzg))
+        assert(!t.random.eq(base.random))
+        i += 1
+    }
+    // the opening of the BSB22 selector feeds gamma_kzg
+    let q = gc_qcp_at_zeta()
+    let tq = gnark_trace(
+        gc_vk(),
+        gc_p_from(gc_fixed(), [(q[0] + 1) % R], gc_bsb()),
+        gc_pubs_fr(),
+    )
+    assert(!tq.gamma_kzg.eq(base.gamma_kzg))
+    // W_zeta and W_zeta_omega feed only the final random combination
+    i = 7
+    while i < 9 {
+        let t = gnark_trace(
+            gc_vk(),
+            gc_p_from(replace_point(gc_fixed(), i), gc_qcp_at_zeta(), gc_bsb()),
+            gc_pubs_fr(),
+        )
+        assert(t.zeta.eq(base.zeta) && t.gamma_kzg.eq(base.gamma_kzg))
+        assert(!t.random.eq(base.random))
+        i += 1
+    }
+}
+
+// ---------------------------------------------------------------- reject
+
+#[test]
+fn gnark_rejects_tampered_commitment() uses (call: Call) {
+    var i: usize = 0
+    while i < 9 {
+        assert(
+            !gc_verify_words(
+                replace_point(gc_fixed(), i),
+                gc_qcp_at_zeta(),
+                gc_bsb(),
+                gc_pubs(),
+            ),
+        )
+        let b: [[u256; 2]; 0] = []
+        assert(
+            !gnark_plonk_verify_words(
+                gm_vk(),
+                replace_point(gm_fixed(), i),
+                no_words(),
+                b,
+                gm_pubs(),
+            ),
+        )
+        i += 1
+    }
+    assert(
+        !gc_verify_words(gc_fixed(), gc_qcp_at_zeta(), [[1, 2]], gc_pubs()),
+    )
+}
+
+#[test]
+fn gnark_rejects_tampered_key_commitment() uses (call: Call) {
+    var i: usize = 0
+    while i < 8 {
+        var c = gc_commitments()
+        c[i] = G1::generator()
+        assert(
+            !gnark_plonk_verify(gc_vk_from(c, gc_qcp()), gc_p(), gc_pubs()),
+        )
+        i += 1
+    }
+    assert(
+        !gnark_plonk_verify(
+            gc_vk_from(gc_commitments(), [G1::generator()]),
+            gc_p(),
+            gc_pubs(),
+        ),
+    )
+}
+
+#[test]
+fn gnark_rejects_tampered_evaluation() uses (call: Call) {
+    var i: usize = 0
+    while i < 6 {
+        assert(
+            !gc_verify_words(
+                bump_eval(gc_fixed(), i),
+                gc_qcp_at_zeta(),
+                gc_bsb(),
+                gc_pubs(),
+            ),
+        )
+        let b: [[u256; 2]; 0] = []
+        assert(
+            !gnark_plonk_verify_words(
+                gm_vk(),
+                bump_eval(gm_fixed(), i),
+                no_words(),
+                b,
+                gm_pubs(),
+            ),
+        )
+        i += 1
+    }
+    let q = gc_qcp_at_zeta()
+    assert(
+        !gc_verify_words(gc_fixed(), [(q[0] + 1) % R], gc_bsb(), gc_pubs()),
+    )
+}
+
+#[test]
+fn gnark_rejects_tampered_public_input() uses (call: Call) {
+    var i: usize = 0
+    while i < 2 {
+        var p = gc_pubs()
+        p[i] = p[i] + 1
+        assert(!gnark_plonk_verify(gc_vk(), gc_p(), p))
+        var q = gm_pubs()
+        q[i] = q[i] + 1
+        assert(!gnark_plonk_verify(gm_vk(), gm_p(), q))
+        i += 1
+    }
+}
+
+#[test]
+fn gnark_rejects_non_canonical_public_input() uses (call: Call) {
+    // pub + r is the same residue, so a verifier that reduces silently would accept it.
+    var i: usize = 0
+    while i < 2 {
+        var p = gc_pubs()
+        p[i] = p[i] + R
+        assert(!gnark_plonk_verify(gc_vk(), gc_p(), p))
+        var q = gm_pubs()
+        q[i] = q[i] + R
+        assert(!gnark_plonk_verify(gm_vk(), gm_p(), q))
+        i += 1
+    }
+}
+
+#[test]
+fn gnark_rejects_non_canonical_evaluation() {
+    var i: usize = 0
+    while i < 6 {
+        var w = gc_fixed()
+        w[eval_ix(i)] = w[eval_ix(i)] + R
+        assert(
+            GnarkProof<1>::from_words(w, gc_qcp_at_zeta(), gc_bsb()).is_none(),
+        )
+        i += 1
+    }
+    var w = gc_fixed()
+    w[12] = R
+    assert(
+        GnarkProof<1>::from_words(w, gc_qcp_at_zeta(), gc_bsb()).is_none(),
+    )
+    w[12] = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    assert(
+        GnarkProof<1>::from_words(w, gc_qcp_at_zeta(), gc_bsb()).is_none(),
+    )
+    let q = gc_qcp_at_zeta()
+    assert(
+        GnarkProof<1>::from_words(gc_fixed(), [q[0] + R], gc_bsb()).is_none(),
+    )
+}
+
+#[test]
+fn gnark_rejects_off_curve_and_non_canonical_points() uses (call: Call) {
+    var i: usize = 0
+    while i < 9 {
+        let ix = point_ix(i)
+        // y + 1: not on the curve
+        var w = gc_fixed()
+        w[ix + 1] = w[ix + 1] + 1
+        assert(
+            GnarkProof<1>::from_words(w, gc_qcp_at_zeta(), gc_bsb()).is_none(),
+        )
+        assert(!gc_verify_words(w, gc_qcp_at_zeta(), gc_bsb(), gc_pubs()))
+        // x + q, y + q: the same point with non-canonical coordinates
+        var v = gc_fixed()
+        v[ix] = v[ix] + Q
+        v[ix + 1] = v[ix + 1] + Q
+        assert(
+            GnarkProof<1>::from_words(v, gc_qcp_at_zeta(), gc_bsb()).is_none(),
+        )
+        // infinity: gnark encodes it with a flag bit that the Solidity layout cannot carry
+        var z = gc_fixed()
+        z[ix] = 0
+        z[ix + 1] = 0
+        assert(
+            GnarkProof<1>::from_words(z, gc_qcp_at_zeta(), gc_bsb()).is_none(),
+        )
+        i += 1
+    }
+    // the BSB22 commitment
+    let b = gc_bsb()
+    assert(
+        GnarkProof<1>::from_words(gc_fixed(), gc_qcp_at_zeta(), [[b[0][0], b[0][1] + 1]]).is_none(),
+    )
+    assert(
+        GnarkProof<1>::from_words(gc_fixed(), gc_qcp_at_zeta(), [[0, 0]]).is_none(),
+    )
+    assert(
+        GnarkProof<1>::from_words(gc_fixed(), gc_qcp_at_zeta(), [[b[0][0] + Q, b[0][1] + Q]])
+            .is_none(),
+    )
+}
+
+#[test]
+fn gnark_rejects_swapped_public_inputs() uses (call: Call) {
+    let p = gc_pubs()
+    assert(!gnark_plonk_verify(gc_vk(), gc_p(), [p[1], p[0]]))
+    let q = gm_pubs()
+    assert(!gnark_plonk_verify(gm_vk(), gm_p(), [q[1], q[0]]))
+}
+
+#[test]
+fn gnark_rejects_proof_of_other_circuit() uses (call: Call) {
+    // the mulcommit proof against the mul key (dropping the commitment) and the reverse
+    let b: [[u256; 2]; 0] = []
+    assert(
+        !gnark_plonk_verify_words(gm_vk(), gc_fixed(), no_words(), b, gc_pubs()),
+    )
+    assert(
+        !gc_verify_words(gm_fixed(), gc_qcp_at_zeta(), gc_bsb(), gm_pubs()),
+    )
+}
+
+// ---------------------------------------------------------------- vk validation
+
+#[test]
+fn gnark_vk_rejects_bad_parameters() {
+    let c = gc_commitments()
+    let x2 = gc_x2()
+    let q = gc_qcp()
+    let cci = gc_cci()
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, cci, x2).is_some(),
+    )
+    // wrong power: w is not a primitive 2^(power+1)-th root; zero and above 28
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER + 1, fr(GC_W), fr(GC_K), c, q, cci, x2).is_none(),
+    )
+    assert(
+        GnarkVk<2, 1>::new(0, fr(GC_W), fr(GC_K), c, q, cci, x2).is_none(),
+    )
+    assert(
+        GnarkVk<2, 1>::new(29, fr(GC_W), fr(GC_K), c, q, cci, x2).is_none(),
+    )
+    // w = 1 is not primitive
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, Bn254Fr::one(), fr(GC_K), c, q, cci, x2).is_none(),
+    )
+    // coset shift in the domain (1), zero, or -1 (u^(2n) = 1)
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(1), c, q, cci, x2).is_none(),
+    )
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(0), c, q, cci, x2).is_none(),
+    )
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), Bn254Fr::one().neg(), c, q, cci, x2).is_none(),
+    )
+    // degenerate [x]_2, infinity commitments
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, cci, G2::infinity()).is_none(),
+    )
+    var ci = gc_commitments()
+    ci[3] = G1::infinity()
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), ci, q, cci, x2).is_none(),
+    )
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, [G1::infinity()], cci, x2).is_none(),
+    )
+    // constraint index outside the domain, zero public inputs
+    assert(
+        GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, [1 << GC_POWER], x2).is_none(),
+    )
+    assert(
+        GnarkVk<0, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, cci, x2).is_none(),
+    )
+}
+
+#[test]
+fn gnark_vk_x2_must_be_a_checked_g2() {
+    // an off-curve [x]_2 never becomes a G2 (subgroup membership is covered by the ingot::ec tests)
+    assert(
+        G2::from_coords(GC_X2_X0, GC_X2_X1, GC_X2_Y0, GC_X2_Y1 + 1).is_none(),
+    )
+}
+
+// ---------------------------------------------------------------- gas
+
+#[test]
+fn gnark_plonk_gas_report() uses (evm: mut Evm, call: Call) {
+    // keys, proofs and public inputs are built first: key validation (G2 subgroup check) is a
+    // one-time deployment cost, not part of a verification
+    let k1 = gm_vk()
+    let p1 = gm_p()
+    let k2 = gc_vk()
+    let p2 = gc_p()
+    var g0 = evm.gas()
+    let a = gnark_plonk_verify(k1, p1, gm_pubs())
+    evm.emit(GasUsed { what: 1, gas: g0 - evm.gas() })
+    g0 = evm.gas()
+    let b = gnark_plonk_verify(k2, p2, gc_pubs())
+    evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
+    assert(a && b)
+}

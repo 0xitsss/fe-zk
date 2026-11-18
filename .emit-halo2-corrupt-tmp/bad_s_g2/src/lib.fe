@@ -1,0 +1,985 @@
+//! GENERATED FILE, do not edit. Tool: fe-zk-gen 0.1.0.
+//! vk digest (sha256 of canonical vk.json): 6eb34121a1280702ea74e5b4261e37f37ad6c2f3a82cb545477aed4d2b7700ed
+//! Circuit: k=5, 3 advice / 8 fixed / 1 instance columns, 1 lookup(s), 2 permutation set(s),
+//! 4 quotient chunks. halo2-KZG verifier for BN254 with the snark-verifier EvmTranscript.
+//! Algorithm and field order: vectors/halo2/SPEC.md. Shared code: halo2/common.fe.
+//!
+//! Safety rules: 1 (every proof scalar / instance `from_canonical`, every coordinate canonical),
+//! 2 (every proof point `read_g1`: on curve, no infinity), 3 (SRS and key points are compile-time
+//! constants checked by `static_assert`: canonical, on curve, G2 in the subgroup; no runtime gas),
+//! 4 (proof and instance lengths are array types),
+//! 5 (transcript absorbs the vk transcript_repr, the instances and every commitment and
+//! evaluation in reference order), 6 (precompile wrappers check success, length, result).
+use std::evm::Call
+use fe_zk::ec::{G1, G2, g1_is_valid, g1_mul, g2_is_valid}
+use fe_zk::field::{Bn254Fr, Field}
+use fe_zk::verifier::halo2::common::{
+Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1,
+}
+
+/// Number of 32-byte words of a proof for this circuit (fixed by the vk, rule 4).
+pub const COMMON_WORDS: usize = 53
+pub const NUM_INSTANCES: usize = 1
+pub const TRANSCRIPT_REPR: u256 = 0x104c4415faa6044941fce22fe2161c7adde75852cf1991718d6522b24bc654de
+pub const VK_DIGEST: u256 = 0x6eb34121a1280702ea74e5b4261e37f37ad6c2f3a82cb545477aed4d2b7700ed
+
+const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+// SRS and key constants, validated by fe-zk-gen and re-validated by the Fe compiler below.
+// G2 coordinates are (real, imaginary) parts: x0 + x1*u, y0 + y1*u.
+const SRS_G1_X: u256 = 0x0000000000000000000000000000000000000000000000000000000000000001
+const SRS_G1_Y: u256 = 0x0000000000000000000000000000000000000000000000000000000000000002
+const SRS_G2_X0: u256 = 0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed
+const SRS_G2_X1: u256 = 0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2
+const SRS_G2_Y0: u256 = 0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa
+const SRS_G2_Y1: u256 = 0x090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b
+const SRS_S_G2_X0: u256 = 0x0000000000000000000000000000000000000000000000000000000000000001
+const SRS_S_G2_X1: u256 = 0x13d3d7b3f758298362beb413e26db61a9452a03c0aa92d43fb737c9d886d4305
+const SRS_S_G2_Y0: u256 = 0x2226ee85badff945095d806014153841409329409e97a79264798283b26d86d7
+const SRS_S_G2_Y1: u256 = 0x03dc838a24dc8c3d95e8b1654e2f30379a6baebf1dde66b5fd0e9685f6060596
+const FX0_X: u256 = 0x1ce4f32b4b45e82e6870bec6fdeae00826ede94489f6bfc96b7b33bae150741c
+const FX0_Y: u256 = 0x0ed395236548b748501661b115ef5d5900efcf3a2b6f96ffc3e472065de1b6f9
+const FX1_X: u256 = 0x077215918bd42d53495dc89e784f3eb49a701317a2d5830137295b0df9f63789
+const FX1_Y: u256 = 0x1339c6d83c3f2bb25b1967c9240626cccd648eb06260762b7442305064f918ef
+const FX2_X: u256 = 0x025aaf3fff4255a54718c45bf5eb34f23bfa4fc4cd537130b5d643d6edd1eb92
+const FX2_Y: u256 = 0x08209f731e5a12451a87308fd5026a794716e36be15f5e1e9e255a832e70d6db
+const FX3_X: u256 = 0x182fbd5a3f5533f0950d9468f1e88f1bb146e32018f29c1205aa7255da2d9b53
+const FX3_Y: u256 = 0x24092252ea855540948204b346e5799fa8c8c331d8410347e383865cb07f9bea
+const FX4_X: u256 = 0x141cb2bfdb32503484c900716075f1d815f1fe9d6ecb62e98c40cc51c39b3d35
+const FX4_Y: u256 = 0x0d7f0116f17b342529f87901ed295025e33d59dc21aad6484df3604918fb69f1
+const FX5_X: u256 = 0x06e78206e091090f508963b7765a1b7f71279ab049bf4a04667004a153d0fd41
+const FX5_Y: u256 = 0x0dcd1e3a6241b176f87f3cc23133a299d66082a7d1b6d6561a298bda05e1bed8
+const FX6_X: u256 = 0x2ea3fd59864b8c5df0d14faa06636f8fad3f9a26a93a1e09fa2f58f1f37c6fa3
+const FX6_Y: u256 = 0x1764d55485b2400aa3f5cd1488c7e49a1a5c0cabad28209bdef6090353f32204
+const FX7_X: u256 = 0x0de055c859377282fafacf0a5b54e328a9ee404badd6465c5b238e83ce6c5027
+const FX7_Y: u256 = 0x166178f20096050c23fcccfb34e87d028f37839fe23b444eaf13f96bcf27a978
+const SG0_X: u256 = 0x00ab6226691e724b17b1cc05b86a14e5616c896db3f4141ee4add77b2b08183e
+const SG0_Y: u256 = 0x12bf03c99f4ea5864282c33e0d69104dfeccf19557e13939611c5fb5692b8bac
+const SG1_X: u256 = 0x2d7d47818652b4fbf924ac4fc7f3a369511384312b5253a50e82a313df6068d4
+const SG1_Y: u256 = 0x0dec97cafabac08fed159b13f122e3c9724c7f9e766fa41f2f528d5fd47a1d4e
+const SG2_X: u256 = 0x02d37bdd6f056715555aa4c5e9f7d66cc2c7c3ef9adccd93c8c250562fbf6da7
+const SG2_Y: u256 = 0x190080cc3d25e634c36424e0c0777f32d7aea47cff1aaa16a81547153e0a5f13
+const SG3_X: u256 = 0x067b9e67e7ce7f7831d3525af7afa7ec6cdd0acaa3088cb37bcc175043a87209
+const SG3_Y: u256 = 0x0e3f7e308dba6b54ca029ec7bd337c421d0959f9ca903b644aff82da6adbde92
+
+// Compile-time validation (Fe CTFE): a key with an invalid point does not compile. Costs no gas;
+// the G2 subgroup checks alone are ~750k gas each at runtime. Fixed and sigma commitments may
+// not be the point at infinity (halo2's EvmTranscript rejects it).
+static_assert(TRANSCRIPT_REPR < SCALAR_R)
+static_assert(g1_is_valid(SRS_G1_X, SRS_G1_Y))
+static_assert(!SRS_G1.is_infinity())
+static_assert(g2_is_valid(SRS_G2_X0, SRS_G2_X1, SRS_G2_Y0, SRS_G2_Y1))
+static_assert(!SRS_G2.is_infinity())
+static_assert(g2_is_valid(SRS_S_G2_X0, SRS_S_G2_X1, SRS_S_G2_Y0, SRS_S_G2_Y1))
+static_assert(!SRS_S_G2.is_infinity())
+static_assert(g1_is_valid(FX0_X, FX0_Y))
+static_assert(!VK_FX0.is_infinity())
+static_assert(g1_is_valid(FX1_X, FX1_Y))
+static_assert(!VK_FX1.is_infinity())
+static_assert(g1_is_valid(FX2_X, FX2_Y))
+static_assert(!VK_FX2.is_infinity())
+static_assert(g1_is_valid(FX3_X, FX3_Y))
+static_assert(!VK_FX3.is_infinity())
+static_assert(g1_is_valid(FX4_X, FX4_Y))
+static_assert(!VK_FX4.is_infinity())
+static_assert(g1_is_valid(FX5_X, FX5_Y))
+static_assert(!VK_FX5.is_infinity())
+static_assert(g1_is_valid(FX6_X, FX6_Y))
+static_assert(!VK_FX6.is_infinity())
+static_assert(g1_is_valid(FX7_X, FX7_Y))
+static_assert(!VK_FX7.is_infinity())
+static_assert(g1_is_valid(SG0_X, SG0_Y))
+static_assert(!VK_SG0.is_infinity())
+static_assert(g1_is_valid(SG1_X, SG1_Y))
+static_assert(!VK_SG1.is_infinity())
+static_assert(g1_is_valid(SG2_X, SG2_Y))
+static_assert(!VK_SG2.is_infinity())
+static_assert(g1_is_valid(SG3_X, SG3_Y))
+static_assert(!VK_SG3.is_infinity())
+
+// Typed points. `from_coords_or_infinity` yields infinity for an invalid point, so an unchecked
+// point cannot exist even if the assertions above were removed.
+const SRS_G1: G1 = G1::from_coords_or_infinity(SRS_G1_X, SRS_G1_Y)
+const SRS_G2: G2 = G2::from_coords_or_infinity(SRS_G2_X0, SRS_G2_X1, SRS_G2_Y0, SRS_G2_Y1)
+const SRS_S_G2: G2 = G2::from_coords_or_infinity(SRS_S_G2_X0, SRS_S_G2_X1, SRS_S_G2_Y0, SRS_S_G2_Y1)
+const VK_FX0: G1 = G1::from_coords_or_infinity(FX0_X, FX0_Y)
+const VK_FX1: G1 = G1::from_coords_or_infinity(FX1_X, FX1_Y)
+const VK_FX2: G1 = G1::from_coords_or_infinity(FX2_X, FX2_Y)
+const VK_FX3: G1 = G1::from_coords_or_infinity(FX3_X, FX3_Y)
+const VK_FX4: G1 = G1::from_coords_or_infinity(FX4_X, FX4_Y)
+const VK_FX5: G1 = G1::from_coords_or_infinity(FX5_X, FX5_Y)
+const VK_FX6: G1 = G1::from_coords_or_infinity(FX6_X, FX6_Y)
+const VK_FX7: G1 = G1::from_coords_or_infinity(FX7_X, FX7_Y)
+const VK_SG0: G1 = G1::from_coords_or_infinity(SG0_X, SG0_Y)
+const VK_SG1: G1 = G1::from_coords_or_infinity(SG1_X, SG1_Y)
+const VK_SG2: G1 = G1::from_coords_or_infinity(SG2_X, SG2_Y)
+const VK_SG3: G1 = G1::from_coords_or_infinity(SG3_X, SG3_Y)
+
+/// SRS and transcript constants (compile-time validated, no gas for validation).
+pub fn vk() -> Halo2Vk {
+Halo2Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)
+}
+
+/// Everything the opening step needs, after the evaluation at `x` has been derived.
+pub struct Phase1 {
+pub theta: Bn254Fr,
+pub beta: Bn254Fr,
+pub gamma: Bn254Fr,
+pub y: Bn254Fr,
+pub x: Bn254Fr,
+pub xn: Bn254Fr,
+pub expected_h: Bn254Fr,
+/// Prover commitments in proof order: adv0, adv1, adv2, lpi0, lpt0, zc0, zc1, lzc0, rnd, hq0, hq1, hq2, hq3.
+pub pts: [G1; 13],
+/// Evaluations in proof order: a0, a1, a2, a3, f0, f1, f2, f3, f4, f5, f6, f7, rand_eval, sg0, sg1, sg2, sg3, pz0, pzn0, pzl0, pz1, pzn1, lz0, lzn0, la0, lai0, ls0.
+pub ev: [Bn254Fr; 27],
+}
+
+/// Reads and validates the common part of the proof, derives theta, beta, gamma, y, x and the
+/// value `expected_h` of the quotient polynomial at `x` (SPEC sections 2-6). `None` = reject.
+pub fn phase1<const L: usize>(
+_ vk: Halo2Vk,
+_ proof: [u256; L],
+_ instances: [u256; 1],
+_ tr: mut Halo2Transcript,
+) -> Option<Phase1> uses (call: Call) {
+assert(L >= COMMON_WORDS)
+tr.absorb(vk.transcript_repr().to_canonical())
+let inst_0_0 = match Bn254Fr::from_canonical(instances[0]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(instances[0])
+let adv0 = match read_g1(proof[0], proof[1]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[0], proof[1])
+let adv1 = match read_g1(proof[2], proof[3]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[2], proof[3])
+let adv2 = match read_g1(proof[4], proof[5]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[4], proof[5])
+let theta = tr.squeeze()
+let lpi0 = match read_g1(proof[6], proof[7]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[6], proof[7])
+let lpt0 = match read_g1(proof[8], proof[9]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[8], proof[9])
+let beta = tr.squeeze()
+let gamma = tr.squeeze()
+let zc0 = match read_g1(proof[10], proof[11]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[10], proof[11])
+let zc1 = match read_g1(proof[12], proof[13]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[12], proof[13])
+let lzc0 = match read_g1(proof[14], proof[15]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[14], proof[15])
+let rnd = match read_g1(proof[16], proof[17]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[16], proof[17])
+let y = tr.squeeze()
+let hq0 = match read_g1(proof[18], proof[19]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[18], proof[19])
+let hq1 = match read_g1(proof[20], proof[21]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[20], proof[21])
+let hq2 = match read_g1(proof[22], proof[23]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[22], proof[23])
+let hq3 = match read_g1(proof[24], proof[25]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[24], proof[25])
+let x = tr.squeeze()
+let a0 = match Bn254Fr::from_canonical(proof[26]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[26])
+let a1 = match Bn254Fr::from_canonical(proof[27]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[27])
+let a2 = match Bn254Fr::from_canonical(proof[28]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[28])
+let a3 = match Bn254Fr::from_canonical(proof[29]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[29])
+let f0 = match Bn254Fr::from_canonical(proof[30]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[30])
+let f1 = match Bn254Fr::from_canonical(proof[31]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[31])
+let f2 = match Bn254Fr::from_canonical(proof[32]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[32])
+let f3 = match Bn254Fr::from_canonical(proof[33]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[33])
+let f4 = match Bn254Fr::from_canonical(proof[34]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[34])
+let f5 = match Bn254Fr::from_canonical(proof[35]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[35])
+let f6 = match Bn254Fr::from_canonical(proof[36]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[36])
+let f7 = match Bn254Fr::from_canonical(proof[37]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[37])
+let rand_eval = match Bn254Fr::from_canonical(proof[38]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[38])
+let sg0 = match Bn254Fr::from_canonical(proof[39]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[39])
+let sg1 = match Bn254Fr::from_canonical(proof[40]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[40])
+let sg2 = match Bn254Fr::from_canonical(proof[41]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[41])
+let sg3 = match Bn254Fr::from_canonical(proof[42]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[42])
+let pz0 = match Bn254Fr::from_canonical(proof[43]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[43])
+let pzn0 = match Bn254Fr::from_canonical(proof[44]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[44])
+let pzl0 = match Bn254Fr::from_canonical(proof[45]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[45])
+let pz1 = match Bn254Fr::from_canonical(proof[46]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[46])
+let pzn1 = match Bn254Fr::from_canonical(proof[47]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[47])
+let lz0 = match Bn254Fr::from_canonical(proof[48]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[48])
+let lzn0 = match Bn254Fr::from_canonical(proof[49]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[49])
+let la0 = match Bn254Fr::from_canonical(proof[50]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[50])
+let lai0 = match Bn254Fr::from_canonical(proof[51]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[51])
+let ls0 = match Bn254Fr::from_canonical(proof[52]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb(proof[52])
+// x^n and the Lagrange basis at x: L_i(x) = w^i (x^n - 1) n_inv / (x - w^i).
+let xn = x.pow(32)
+let xn_m1 = xn.sub(Bn254Fr::one())
+let inv_d = match batch_inv([x.sub(fr(0x0dd360411caed09700b52c71a6655715c4d558439e2d34f4307da9a4be13c42e)), x.sub(fr(0x1c008a642ea42d6a7ef4d1f28a8968bf3dbc8a795e32473df3761fbe2d4d9d92)), x.sub(fr(0x130b17119778465cfb3acaee30f81dee20710ead41671f568b11d9ab07b95a9b)), x.sub(fr(0x1910cf3d7f4cf2e06d3d2e6646e7ee7b2ead518c3fe97ec9a1ab0fadd65640b2)), x.sub(fr(0x02e40daf409556c02bfc85eb303402b774954d30aeb0337eb85a71e6373428de)), x.sub(fr(0x2724713603bfbd790aeaf3e7df25d8e7ef8f311334905b4d8c99980cf210979d)), x.sub(fr(0x0000000000000000000000000000000000000000000000000000000000000001)), xn_m1]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+let wn = xn_m1.mul(fr(0x2ee12bff4a2813286a8dc388cd754d9a3ef2490635eba50cb9c2e5e750800001))
+let l_m6 = fr(0x0dd360411caed09700b52c71a6655715c4d558439e2d34f4307da9a4be13c42e).mul(wn).mul(inv_d[0])
+let l_m5 = fr(0x1c008a642ea42d6a7ef4d1f28a8968bf3dbc8a795e32473df3761fbe2d4d9d92).mul(wn).mul(inv_d[1])
+let l_m4 = fr(0x130b17119778465cfb3acaee30f81dee20710ead41671f568b11d9ab07b95a9b).mul(wn).mul(inv_d[2])
+let l_m3 = fr(0x1910cf3d7f4cf2e06d3d2e6646e7ee7b2ead518c3fe97ec9a1ab0fadd65640b2).mul(wn).mul(inv_d[3])
+let l_m2 = fr(0x02e40daf409556c02bfc85eb303402b774954d30aeb0337eb85a71e6373428de).mul(wn).mul(inv_d[4])
+let l_m1 = fr(0x2724713603bfbd790aeaf3e7df25d8e7ef8f311334905b4d8c99980cf210979d).mul(wn).mul(inv_d[5])
+let l_0 = fr(0x0000000000000000000000000000000000000000000000000000000000000001).mul(wn).mul(inv_d[6])
+let l_last = l_m6
+let l_blind = l_m1.add(l_m2.add(l_m3.add(l_m4.add(l_m5))))
+let active = Bn254Fr::one().sub(l_last.add(l_blind))
+let ie0 = inst_0_0.mul(l_0)
+// Constraints, folded as h <- h*y + c in SPEC order: gates, permutation, lookups.
+var hacc = Bn254Fr::zero()
+// gates
+hacc = hacc.mul(y).add(f0.mul(a0).add(f1.mul(a1)).add(f2.mul(a2)).add(f3.mul(a0).mul(a1)).add(f4))
+hacc = hacc.mul(y).add(f5.mul(a2.add(a3.neg())))
+// permutation argument
+hacc = hacc.mul(y).add(l_0.mul(Bn254Fr::one().sub(pz0)))
+hacc = hacc.mul(y).add(pz1.square().sub(pz1).mul(l_last))
+hacc = hacc.mul(y).add(pz1.sub(pzl0).mul(l_0))
+let bx = beta.mul(x)
+hacc = hacc.mul(y).add(pzn0.mul(a0.add(beta.mul(sg0)).add(gamma)).mul(a1.add(beta.mul(sg1)).add(gamma)).mul(a2.add(beta.mul(sg2)).add(gamma)).sub(pz0.mul(a0.add(bx.mul(fr(0x0000000000000000000000000000000000000000000000000000000000000001))).add(gamma)).mul(a1.add(bx.mul(fr(0x09226b6e22c6f0ca64ec26aad4c86e715b5f898e5e963f25870e56bbe533e9a2))).add(gamma)).mul(a2.add(bx.mul(fr(0x13b360d4e82fe915fed16081038f98c211427b87a281bd733c277dbadf10372b))).add(gamma))).mul(active))
+hacc = hacc.mul(y).add(pzn1.mul(ie0.add(beta.mul(sg3)).add(gamma)).sub(pz1.mul(ie0.add(bx.mul(fr(0x18afdf23e9bd9302673fc1e076a492d4d65bd18ebc4d854ed189139bab313e52))).add(gamma))).mul(active))
+// lookup arguments
+let lk_in0 = Bn254Fr::zero().mul(theta).add(f6.mul(a0))
+let lk_tab0 = Bn254Fr::zero().mul(theta).add(f7)
+hacc = hacc.mul(y).add(l_0.mul(Bn254Fr::one().sub(lz0)))
+hacc = hacc.mul(y).add(l_last.mul(lz0.square().sub(lz0)))
+hacc = hacc.mul(y).add(lzn0.mul(la0.add(beta)).mul(ls0.add(gamma)).sub(lz0.mul(lk_in0.add(beta)).mul(lk_tab0.add(gamma))).mul(active))
+hacc = hacc.mul(y).add(l_0.mul(la0.sub(ls0)))
+hacc = hacc.mul(y).add(la0.sub(ls0).mul(la0.sub(lai0)).mul(active))
+let expected_h = hacc.mul(inv_d[7])
+Option::Some(Phase1 {
+theta, beta, gamma, y, x, xn, expected_h,
+pts: [adv0, adv1, adv2, lpi0, lpt0, zc0, zc1, lzc0, rnd, hq0, hq1, hq2, hq3],
+ev: [a0, a1, a2, a3, f0, f1, f2, f3, f4, f5, f6, f7, rand_eval, sg0, sg1, sg2, sg3, pz0, pzn0, pzl0, pz1, pzn1, lz0, lzn0, la0, lai0, ls0],
+})
+}
+
+/// SHPLONK proof words: common part + h1 (2) + h2 (2).
+pub const SHPLONK_PROOF_WORDS: usize = 57
+
+pub struct ShplonkOpen {
+pub y: Bn254Fr,
+pub v: Bn254Fr,
+pub u: Bn254Fr,
+pub h1: G1,
+pub h2: G1,
+}
+
+/// SPEC 9 transcript: y, v, h1, u, h2.
+pub fn shplonk_open<const L: usize>(
+_ proof: [u256; L],
+_ tr: mut Halo2Transcript,
+) -> Option<ShplonkOpen> {
+assert(L >= 57)
+let y = tr.squeeze()
+let v = tr.squeeze()
+let h1 = match read_g1(proof[53], proof[54]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[53], proof[54])
+let u = tr.squeeze()
+let h2 = match read_g1(proof[55], proof[56]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[55], proof[56])
+Option::Some(ShplonkOpen { y, v, u, h1, h2 })
+}
+
+/// SPEC 9 final check. Rotation sets of this circuit (points as rotations of `x`):
+///   S0 = {0, 1}: adv0, zc1, lzc0
+///   S1 = {0}: adv1, adv2, lpt0, fx0, fx1, fx2, fx3, fx4, fx6, fx5, fx7, sgc0, sgc1, sgc2, sgc3, hc, rnd
+///   S2 = {0, 1, -6}: zc0
+///   S3 = {0, -1}: lpi0
+pub fn shplonk_check(_ vk: Halo2Vk, _ p1: Phase1, _ o: ShplonkOpen) -> bool uses (call: Call) {
+let adv0 = p1.pts[0]
+let adv1 = p1.pts[1]
+let adv2 = p1.pts[2]
+let lpi0 = p1.pts[3]
+let lpt0 = p1.pts[4]
+let zc0 = p1.pts[5]
+let zc1 = p1.pts[6]
+let lzc0 = p1.pts[7]
+let rnd = p1.pts[8]
+let hq0 = p1.pts[9]
+let hq1 = p1.pts[10]
+let hq2 = p1.pts[11]
+let hq3 = p1.pts[12]
+let a0 = p1.ev[0]
+let a1 = p1.ev[1]
+let a2 = p1.ev[2]
+let a3 = p1.ev[3]
+let f0 = p1.ev[4]
+let f1 = p1.ev[5]
+let f2 = p1.ev[6]
+let f3 = p1.ev[7]
+let f4 = p1.ev[8]
+let f5 = p1.ev[9]
+let f6 = p1.ev[10]
+let f7 = p1.ev[11]
+let rand_eval = p1.ev[12]
+let sg0 = p1.ev[13]
+let sg1 = p1.ev[14]
+let sg2 = p1.ev[15]
+let sg3 = p1.ev[16]
+let pz0 = p1.ev[17]
+let pzn0 = p1.ev[18]
+let pzl0 = p1.ev[19]
+let pz1 = p1.ev[20]
+let pzn1 = p1.ev[21]
+let lz0 = p1.ev[22]
+let lzn0 = p1.ev[23]
+let la0 = p1.ev[24]
+let lai0 = p1.ev[25]
+let ls0 = p1.ev[26]
+let x = p1.x
+let expected_h = p1.expected_h
+let fx0 = VK_FX0
+let fx1 = VK_FX1
+let fx2 = VK_FX2
+let fx3 = VK_FX3
+let fx4 = VK_FX4
+let fx5 = VK_FX5
+let fx6 = VK_FX6
+let fx7 = VK_FX7
+let sgc0 = VK_SG0
+let sgc1 = VK_SG1
+let sgc2 = VK_SG2
+let sgc3 = VK_SG3
+let pt_0 = x
+let pt_1 = x.mul(fr(0x09c532c6306b93d29678200d47c0b2a99c18d51b838eeb1d3eed4c533bb512d0))
+let pt_m6 = x.mul(fr(0x0dd360411caed09700b52c71a6655715c4d558439e2d34f4307da9a4be13c42e))
+let pt_m1 = x.mul(fr(0x2724713603bfbd790aeaf3e7df25d8e7ef8f311334905b4d8c99980cf210979d))
+let xn = p1.xn
+let xn1 = xn
+let xn2 = xn1.mul(xn)
+let xn3 = xn2.mul(xn)
+let y = o.y
+let v = o.v
+let u = o.u
+let du_0 = u.sub(pt_0)
+let du_1 = u.sub(pt_1)
+let du_m6 = u.sub(pt_m6)
+let du_m1 = u.sub(pt_m1)
+let invs = match batch_inv([x, du_m6.mul(du_m1)]) {
+Option::Some(v) => v,
+Option::None => {
+return false
+},
+}
+let xinv = invs[0]
+let z0_diff_inv = invs[1]
+let xinv2 = xinv.mul(xinv)
+let y1 = y
+let y2 = y1.mul(y)
+let y3 = y2.mul(y)
+let y4 = y3.mul(y)
+let y5 = y4.mul(y)
+let y6 = y5.mul(y)
+let y7 = y6.mul(y)
+let y8 = y7.mul(y)
+let y9 = y8.mul(y)
+let y10 = y9.mul(y)
+let y11 = y10.mul(y)
+let y12 = y11.mul(y)
+let y13 = y12.mul(y)
+let y14 = y13.mul(y)
+let y15 = y14.mul(y)
+let y16 = y15.mul(y)
+let v1 = v
+let v2 = v1.mul(v)
+let v3 = v2.mul(v)
+let z0 = du_0.mul(du_1)
+var rsum = Bn254Fr::zero()
+let lg0_0 = du_1.mul(xinv).mul(fr(0x0db7670aca28b8ad7399cd0645855194a24fe9d10a7be83ff7d31c5b610e8e8e))
+let lg0_1 = du_0.mul(xinv).mul(fr(0x22ace7681708e77c44b678b03bfc06c885e3fe776f3d88514c0ed9388ef17173))
+let s_adv0 = Bn254Fr::one()
+rsum = rsum.add(s_adv0.mul(Bn254Fr::zero().add(a0.mul(lg0_0)).add(a3.mul(lg0_1))))
+let s_zc1 = y1
+rsum = rsum.add(s_zc1.mul(Bn254Fr::zero().add(pz1.mul(lg0_0)).add(pzn1.mul(lg0_1))))
+let s_lzc0 = y2
+rsum = rsum.add(s_lzc0.mul(Bn254Fr::zero().add(lz0.mul(lg0_0)).add(lzn0.mul(lg0_1))))
+let k1 = v1.mul(du_1.mul(du_m6.mul(du_m1))).mul(z0_diff_inv)
+let s_adv1 = k1
+rsum = rsum.add(s_adv1.mul(a1))
+let s_adv2 = k1.mul(y1)
+rsum = rsum.add(s_adv2.mul(a2))
+let s_lpt0 = k1.mul(y2)
+rsum = rsum.add(s_lpt0.mul(ls0))
+let s_fx0 = k1.mul(y3)
+rsum = rsum.add(s_fx0.mul(f0))
+let s_fx1 = k1.mul(y4)
+rsum = rsum.add(s_fx1.mul(f1))
+let s_fx2 = k1.mul(y5)
+rsum = rsum.add(s_fx2.mul(f2))
+let s_fx3 = k1.mul(y6)
+rsum = rsum.add(s_fx3.mul(f3))
+let s_fx4 = k1.mul(y7)
+rsum = rsum.add(s_fx4.mul(f4))
+let s_fx6 = k1.mul(y8)
+rsum = rsum.add(s_fx6.mul(f5))
+let s_fx5 = k1.mul(y9)
+rsum = rsum.add(s_fx5.mul(f6))
+let s_fx7 = k1.mul(y10)
+rsum = rsum.add(s_fx7.mul(f7))
+let s_sgc0 = k1.mul(y11)
+rsum = rsum.add(s_sgc0.mul(sg0))
+let s_sgc1 = k1.mul(y12)
+rsum = rsum.add(s_sgc1.mul(sg1))
+let s_sgc2 = k1.mul(y13)
+rsum = rsum.add(s_sgc2.mul(sg2))
+let s_sgc3 = k1.mul(y14)
+rsum = rsum.add(s_sgc3.mul(sg3))
+let s_hc = k1.mul(y15)
+rsum = rsum.add(s_hc.mul(expected_h))
+let s_rnd = k1.mul(y16)
+rsum = rsum.add(s_rnd.mul(rand_eval))
+let k2 = v2.mul(du_m1).mul(z0_diff_inv)
+let lg2_0 = du_1.mul(du_m6).mul(xinv2).mul(fr(0x140ad765d73d9e9d3fbd9032d5619ecb63b0dd0862988003f3ae0b16bc168bb0))
+let lg2_1 = du_0.mul(du_m6).mul(xinv2).mul(fr(0x0e29d4e638053c1d68f39514d93f0fdd87d79ed24019535503e7dc542ba3eb9a))
+let lg2_2 = du_0.mul(du_1).mul(xinv2).mul(fr(0x0e2fa226d1eec56f0f9f206ed2e0a9b43cab6c6dd7079d384c4c0e29084588b7))
+let s_zc0 = k2
+rsum = rsum.add(s_zc0.mul(Bn254Fr::zero().add(pz0.mul(lg2_0)).add(pzn0.mul(lg2_1)).add(pzl0.mul(lg2_2))))
+let k3 = v3.mul(du_1.mul(du_m6)).mul(z0_diff_inv)
+let lg3_0 = du_m1.mul(xinv).mul(fr(0x22ace7681708e77c44b678b03bfc06c885e3fe776f3d88514c0ed9388ef17174))
+let lg3_1 = du_0.mul(xinv).mul(fr(0x0db7670aca28b8ad7399cd0645855194a24fe9d10a7be83ff7d31c5b610e8e8d))
+let s_lpi0 = k3
+rsum = rsum.add(s_lpi0.mul(Bn254Fr::zero().add(la0.mul(lg3_0)).add(lai0.mul(lg3_1))))
+var acc = g1_mul(adv0, s_adv0)
+acc = mul_add(acc, zc1, s_zc1)
+acc = mul_add(acc, lzc0, s_lzc0)
+acc = mul_add(acc, adv1, s_adv1)
+acc = mul_add(acc, adv2, s_adv2)
+acc = mul_add(acc, lpt0, s_lpt0)
+acc = mul_add(acc, fx0, s_fx0)
+acc = mul_add(acc, fx1, s_fx1)
+acc = mul_add(acc, fx2, s_fx2)
+acc = mul_add(acc, fx3, s_fx3)
+acc = mul_add(acc, fx4, s_fx4)
+acc = mul_add(acc, fx6, s_fx6)
+acc = mul_add(acc, fx5, s_fx5)
+acc = mul_add(acc, fx7, s_fx7)
+acc = mul_add(acc, sgc0, s_sgc0)
+acc = mul_add(acc, sgc1, s_sgc1)
+acc = mul_add(acc, sgc2, s_sgc2)
+acc = mul_add(acc, sgc3, s_sgc3)
+acc = mul_add(acc, hq0, s_hc)
+acc = mul_add(acc, hq1, s_hc.mul(xn1))
+acc = mul_add(acc, hq2, s_hc.mul(xn2))
+acc = mul_add(acc, hq3, s_hc.mul(xn3))
+acc = mul_add(acc, rnd, s_rnd)
+acc = mul_add(acc, zc0, s_zc0)
+acc = mul_add(acc, lpi0, s_lpi0)
+acc = mul_add(acc, vk.g1(), rsum.neg())
+acc = mul_add(acc, o.h1, z0.neg())
+acc = mul_add(acc, o.h2, u)
+final_pairing(vk, o.h2, acc)
+}
+
+/// Verifies a SHPLONK proof (`SHPLONK_PROOF_WORDS` big-endian words) for `instances`.
+/// Returns false for every rejected input (non-canonical, off curve, wrong proof).
+pub fn verify_shplonk(
+_ vk: Halo2Vk,
+_ proof: [u256; 57],
+_ instances: [u256; 1],
+) -> bool uses (call: Call) {
+var tr = Halo2Transcript::new()
+let p1 = match phase1(vk, proof, instances, mut tr) {
+Option::Some(v) => v,
+Option::None => {
+return false
+},
+}
+let o = match shplonk_open(proof, mut tr) {
+Option::Some(v) => v,
+Option::None => {
+return false
+},
+}
+shplonk_check(vk, p1, o)
+}
+
+/// GWC proof words: common part + one witness point per distinct opening point (4).
+pub const GWC_PROOF_WORDS: usize = 61
+
+pub struct GwcOpen {
+pub v: Bn254Fr,
+pub u: Bn254Fr,
+pub w: [G1; 4],
+}
+
+/// SPEC 8 transcript: v, W_0..W_{m-1}, u.
+pub fn gwc_open<const L: usize>(_ proof: [u256; L], _ tr: mut Halo2Transcript) -> Option<GwcOpen> {
+assert(L >= 61)
+let v = tr.squeeze()
+let w0 = match read_g1(proof[53], proof[54]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[53], proof[54])
+let w1 = match read_g1(proof[55], proof[56]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[55], proof[56])
+let w2 = match read_g1(proof[57], proof[58]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[57], proof[58])
+let w3 = match read_g1(proof[59], proof[60]) {
+Option::Some(v) => v,
+Option::None => {
+return Option::None
+},
+}
+tr.absorb_point(proof[59], proof[60])
+let u = tr.squeeze()
+Option::Some(GwcOpen { v, u, w: [w0, w1, w2, w3] })
+}
+
+/// SPEC 8 final check. Point groups (rotation of `x`): G0 = 0 (22 queries), G1 = 1 (4 queries), G2 = -6 (1 queries), G3 = -1 (1 queries).
+pub fn gwc_check(_ vk: Halo2Vk, _ p1: Phase1, _ o: GwcOpen) -> bool uses (call: Call) {
+let adv0 = p1.pts[0]
+let adv1 = p1.pts[1]
+let adv2 = p1.pts[2]
+let lpi0 = p1.pts[3]
+let lpt0 = p1.pts[4]
+let zc0 = p1.pts[5]
+let zc1 = p1.pts[6]
+let lzc0 = p1.pts[7]
+let rnd = p1.pts[8]
+let hq0 = p1.pts[9]
+let hq1 = p1.pts[10]
+let hq2 = p1.pts[11]
+let hq3 = p1.pts[12]
+let a0 = p1.ev[0]
+let a1 = p1.ev[1]
+let a2 = p1.ev[2]
+let a3 = p1.ev[3]
+let f0 = p1.ev[4]
+let f1 = p1.ev[5]
+let f2 = p1.ev[6]
+let f3 = p1.ev[7]
+let f4 = p1.ev[8]
+let f5 = p1.ev[9]
+let f6 = p1.ev[10]
+let f7 = p1.ev[11]
+let rand_eval = p1.ev[12]
+let sg0 = p1.ev[13]
+let sg1 = p1.ev[14]
+let sg2 = p1.ev[15]
+let sg3 = p1.ev[16]
+let pz0 = p1.ev[17]
+let pzn0 = p1.ev[18]
+let pzl0 = p1.ev[19]
+let pz1 = p1.ev[20]
+let pzn1 = p1.ev[21]
+let lz0 = p1.ev[22]
+let lzn0 = p1.ev[23]
+let la0 = p1.ev[24]
+let lai0 = p1.ev[25]
+let ls0 = p1.ev[26]
+let x = p1.x
+let expected_h = p1.expected_h
+let fx0 = VK_FX0
+let fx1 = VK_FX1
+let fx2 = VK_FX2
+let fx3 = VK_FX3
+let fx4 = VK_FX4
+let fx5 = VK_FX5
+let fx6 = VK_FX6
+let fx7 = VK_FX7
+let sgc0 = VK_SG0
+let sgc1 = VK_SG1
+let sgc2 = VK_SG2
+let sgc3 = VK_SG3
+let pt_0 = x
+let pt_1 = x.mul(fr(0x09c532c6306b93d29678200d47c0b2a99c18d51b838eeb1d3eed4c533bb512d0))
+let pt_m6 = x.mul(fr(0x0dd360411caed09700b52c71a6655715c4d558439e2d34f4307da9a4be13c42e))
+let pt_m1 = x.mul(fr(0x2724713603bfbd790aeaf3e7df25d8e7ef8f311334905b4d8c99980cf210979d))
+let xn = p1.xn
+let xn1 = xn
+let xn2 = xn1.mul(xn)
+let xn3 = xn2.mul(xn)
+let v = o.v
+let u = o.u
+let vp1 = v
+let vp2 = vp1.mul(v)
+let vp3 = vp2.mul(v)
+let vp4 = vp3.mul(v)
+let vp5 = vp4.mul(v)
+let vp6 = vp5.mul(v)
+let vp7 = vp6.mul(v)
+let vp8 = vp7.mul(v)
+let vp9 = vp8.mul(v)
+let vp10 = vp9.mul(v)
+let vp11 = vp10.mul(v)
+let vp12 = vp11.mul(v)
+let vp13 = vp12.mul(v)
+let vp14 = vp13.mul(v)
+let vp15 = vp14.mul(v)
+let vp16 = vp15.mul(v)
+let vp17 = vp16.mul(v)
+let vp18 = vp17.mul(v)
+let vp19 = vp18.mul(v)
+let vp20 = vp19.mul(v)
+let vp21 = vp20.mul(v)
+let up1 = u
+let up2 = up1.mul(u)
+let up3 = up2.mul(u)
+let s_adv0 = Bn254Fr::one().add(up1)
+let s_adv1 = vp1
+let s_adv2 = vp2
+let s_zc0 = vp3.add(up1.mul(vp1)).add(up2)
+let s_zc1 = vp4.add(up1.mul(vp2))
+let s_lzc0 = vp5.add(up1.mul(vp3))
+let s_lpi0 = vp6.add(up3)
+let s_lpt0 = vp7
+let s_fx0 = vp8
+let s_fx1 = vp9
+let s_fx2 = vp10
+let s_fx3 = vp11
+let s_fx4 = vp12
+let s_fx6 = vp13
+let s_fx5 = vp14
+let s_fx7 = vp15
+let s_sgc0 = vp16
+let s_sgc1 = vp17
+let s_sgc2 = vp18
+let s_sgc3 = vp19
+let s_hc = vp20
+let s_rnd = vp21
+var eval_multi = Bn254Fr::zero()
+eval_multi = eval_multi.add(a0.add(vp1.mul(a1)).add(vp2.mul(a2)).add(vp3.mul(pz0)).add(vp4.mul(pz1)).add(vp5.mul(lz0)).add(vp6.mul(la0)).add(vp7.mul(ls0)).add(vp8.mul(f0)).add(vp9.mul(f1)).add(vp10.mul(f2)).add(vp11.mul(f3)).add(vp12.mul(f4)).add(vp13.mul(f5)).add(vp14.mul(f6)).add(vp15.mul(f7)).add(vp16.mul(sg0)).add(vp17.mul(sg1)).add(vp18.mul(sg2)).add(vp19.mul(sg3)).add(vp20.mul(expected_h)).add(vp21.mul(rand_eval)))
+eval_multi = eval_multi.add(up1.mul(a3.add(vp1.mul(pzn0)).add(vp2.mul(pzn1)).add(vp3.mul(lzn0))))
+eval_multi = eval_multi.add(up2.mul(pzl0))
+eval_multi = eval_multi.add(up3.mul(lai0))
+var right = g1_mul(adv0, s_adv0)
+right = mul_add(right, adv1, s_adv1)
+right = mul_add(right, adv2, s_adv2)
+right = mul_add(right, zc0, s_zc0)
+right = mul_add(right, zc1, s_zc1)
+right = mul_add(right, lzc0, s_lzc0)
+right = mul_add(right, lpi0, s_lpi0)
+right = mul_add(right, lpt0, s_lpt0)
+right = mul_add(right, fx0, s_fx0)
+right = mul_add(right, fx1, s_fx1)
+right = mul_add(right, fx2, s_fx2)
+right = mul_add(right, fx3, s_fx3)
+right = mul_add(right, fx4, s_fx4)
+right = mul_add(right, fx6, s_fx6)
+right = mul_add(right, fx5, s_fx5)
+right = mul_add(right, fx7, s_fx7)
+right = mul_add(right, sgc0, s_sgc0)
+right = mul_add(right, sgc1, s_sgc1)
+right = mul_add(right, sgc2, s_sgc2)
+right = mul_add(right, sgc3, s_sgc3)
+right = mul_add(right, hq0, s_hc)
+right = mul_add(right, hq1, s_hc.mul(xn1))
+right = mul_add(right, hq2, s_hc.mul(xn2))
+right = mul_add(right, hq3, s_hc.mul(xn3))
+right = mul_add(right, rnd, s_rnd)
+right = mul_add(right, vk.g1(), eval_multi.neg())
+right = mul_add(right, o.w[0], pt_0)
+right = mul_add(right, o.w[1], up1.mul(pt_1))
+right = mul_add(right, o.w[2], up2.mul(pt_m6))
+right = mul_add(right, o.w[3], up3.mul(pt_m1))
+var left = o.w[0]
+left = mul_add(left, o.w[1], up1)
+left = mul_add(left, o.w[2], up2)
+left = mul_add(left, o.w[3], up3)
+final_pairing(vk, left, right)
+}
+
+/// Verifies a GWC proof (`GWC_PROOF_WORDS` big-endian words) for `instances`.
+pub fn verify_gwc(
+_ vk: Halo2Vk,
+_ proof: [u256; 61],
+_ instances: [u256; 1],
+) -> bool uses (call: Call) {
+var tr = Halo2Transcript::new()
+let p1 = match phase1(vk, proof, instances, mut tr) {
+Option::Some(v) => v,
+Option::None => {
+return false
+},
+}
+let o = match gwc_open(proof, mut tr) {
+Option::Some(v) => v,
+Option::None => {
+return false
+},
+}
+gwc_check(vk, p1, o)
+}
+
+// ---- contract ----------------------------------------------------------------
+// Source key: standard_plonk_lookup. ABI: `proof` is the raw halo2 proof as 32-byte words, `instances` the
+// flattened instance columns. All checks live in the verify functions above and in fe_zk.
+pub msg FixtureVerifierMsg {
+    #[selector = sol("verifyShplonk(uint256[57],uint256[1])")]
+    VerifyShplonk { proof: [u256; 57], instances: [u256; 1] } -> bool,
+    #[selector = sol("verifyGwc(uint256[61],uint256[1])")]
+    VerifyGwc { proof: [u256; 61], instances: [u256; 1] } -> bool,
+    #[selector = sol("vkDigest()")]
+    VkDigest -> u256,
+}
+
+pub contract FixtureVerifier {
+    recv FixtureVerifierMsg {
+        VerifyShplonk { proof, instances } -> bool uses (call: Call) {
+            verify_shplonk(vk(), proof, instances)
+        }
+
+        VerifyGwc { proof, instances } -> bool uses (call: Call) {
+            verify_gwc(vk(), proof, instances)
+        }
+
+        VkDigest -> u256 {
+            VK_DIGEST
+        }
+    }
+}

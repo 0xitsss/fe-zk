@@ -50,6 +50,7 @@ pub use verifier::{
     groth16_verify_raw,
     Halo2Vk,
     KzgVk,
+    gnark_plonk_verify,
     PlonkProof,
     PlonkVk,
     kzg_batch_verify_gwc,
