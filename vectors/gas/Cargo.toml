@@ -1,0 +1,15 @@
+[package]
+name = "gas-run"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Deploys EVM creation bytecode in revm and measures execution gas and total tx gas of calls (shared by scripts/gas-table.sh)"
+
+[[bin]]
+name = "gas-run"
+path = "src/main.rs"
+
+[dependencies]
+revm = { version = "=33.1.0", default-features = false, features = ["std"] }
+
+[workspace]

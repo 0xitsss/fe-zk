@@ -1,0 +1,107 @@
+//! snarkjs PLONK verifier wrappers (multiplier2: 2 public inputs, membership: 3).
+use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
+use fe_zk::field::{Bn254Fr, Field}
+use fe_zk::verifier::plonk::{PlonkVk, plonk_verify_words}
+use std::evm::Call
+use ingot::fx_plonk::*
+
+// Key points are compile-time constants (CTFE-validated, as in the fe-zk-gen output): no on-curve or
+// subgroup check runs at call time.
+const M2_QM: G1 = G1::from_coords_or_infinity(M2_QM_X, M2_QM_Y)
+const M2_QL: G1 = G1::from_coords_or_infinity(M2_QL_X, M2_QL_Y)
+const M2_QR: G1 = G1::from_coords_or_infinity(M2_QR_X, M2_QR_Y)
+const M2_QO: G1 = G1::from_coords_or_infinity(M2_QO_X, M2_QO_Y)
+const M2_QC: G1 = G1::from_coords_or_infinity(M2_QC_X, M2_QC_Y)
+const M2_S1: G1 = G1::from_coords_or_infinity(M2_S1_X, M2_S1_Y)
+const M2_S2: G1 = G1::from_coords_or_infinity(M2_S2_X, M2_S2_Y)
+const M2_S3: G1 = G1::from_coords_or_infinity(M2_S3_X, M2_S3_Y)
+const M2_X2: G2 = G2::from_coords_or_infinity(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1)
+static_assert(g1_is_valid(M2_QM_X, M2_QM_Y))
+static_assert(g1_is_valid(M2_QL_X, M2_QL_Y))
+static_assert(g1_is_valid(M2_QR_X, M2_QR_Y))
+static_assert(g1_is_valid(M2_QO_X, M2_QO_Y))
+static_assert(g1_is_valid(M2_QC_X, M2_QC_Y))
+static_assert(g1_is_valid(M2_S1_X, M2_S1_Y))
+static_assert(g1_is_valid(M2_S2_X, M2_S2_Y))
+static_assert(g1_is_valid(M2_S3_X, M2_S3_Y))
+static_assert(g2_is_valid(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1))
+static_assert(!M2_X2.is_infinity())
+const MB_QM: G1 = G1::from_coords_or_infinity(MB_QM_X, MB_QM_Y)
+const MB_QL: G1 = G1::from_coords_or_infinity(MB_QL_X, MB_QL_Y)
+const MB_QR: G1 = G1::from_coords_or_infinity(MB_QR_X, MB_QR_Y)
+const MB_QO: G1 = G1::from_coords_or_infinity(MB_QO_X, MB_QO_Y)
+const MB_QC: G1 = G1::from_coords_or_infinity(MB_QC_X, MB_QC_Y)
+const MB_S1: G1 = G1::from_coords_or_infinity(MB_S1_X, MB_S1_Y)
+const MB_S2: G1 = G1::from_coords_or_infinity(MB_S2_X, MB_S2_Y)
+const MB_S3: G1 = G1::from_coords_or_infinity(MB_S3_X, MB_S3_Y)
+const MB_X2: G2 = G2::from_coords_or_infinity(MB_X2_X0, MB_X2_X1, MB_X2_Y0, MB_X2_Y1)
+static_assert(g1_is_valid(MB_QM_X, MB_QM_Y))
+static_assert(g1_is_valid(MB_QL_X, MB_QL_Y))
+static_assert(g1_is_valid(MB_QR_X, MB_QR_Y))
+static_assert(g1_is_valid(MB_QO_X, MB_QO_Y))
+static_assert(g1_is_valid(MB_QC_X, MB_QC_Y))
+static_assert(g1_is_valid(MB_S1_X, MB_S1_Y))
+static_assert(g1_is_valid(MB_S2_X, MB_S2_Y))
+static_assert(g1_is_valid(MB_S3_X, MB_S3_Y))
+static_assert(g2_is_valid(MB_X2_X0, MB_X2_X1, MB_X2_Y0, MB_X2_Y1))
+static_assert(!MB_X2.is_infinity())
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+fn m2_vk() -> PlonkVk<2> {
+    let c = [
+        M2_QM,
+        M2_QL,
+        M2_QR,
+        M2_QO,
+        M2_QC,
+        M2_S1,
+        M2_S2,
+        M2_S3,
+    ]
+    let x2 = M2_X2
+    PlonkVk<2>::new(M2_POWER, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).unwrap()
+}
+
+fn mb_vk() -> PlonkVk<3> {
+    let c = [
+        MB_QM,
+        MB_QL,
+        MB_QR,
+        MB_QO,
+        MB_QC,
+        MB_S1,
+        MB_S2,
+        MB_S3,
+    ]
+    let x2 = MB_X2
+    PlonkVk<3>::new(MB_POWER, fr(MB_W), fr(MB_K1), fr(MB_K2), c, x2).unwrap()
+}
+
+msg PlonkMultiplier2Msg {
+    #[selector = sol("verifyProof(uint256[24],uint256[2])")]
+    VerifyProof { proof: [u256; 24], pubs: [u256; 2] } -> bool,
+}
+
+pub contract PlonkMultiplier2 {
+    recv PlonkMultiplier2Msg {
+        VerifyProof { proof, pubs } -> bool uses (call: Call) {
+            plonk_verify_words(m2_vk(), proof, pubs)
+        }
+    }
+}
+
+msg PlonkMembershipMsg {
+    #[selector = sol("verifyProof(uint256[24],uint256[3])")]
+    VerifyProof { proof: [u256; 24], pubs: [u256; 3] } -> bool,
+}
+
+pub contract PlonkMembership {
+    recv PlonkMembershipMsg {
+        VerifyProof { proof, pubs } -> bool uses (call: Call) {
+            plonk_verify_words(mb_vk(), proof, pubs)
+        }
+    }
+}

@@ -1,0 +1,114 @@
+//! gnark PLONK verifier wrappers (mul: no BSB22 commitment, mulcommit: one). Calldata words are
+//! gnark's `MarshalSolidity()` proof split into the fixed 24 words, the commitment-selector
+//! openings and the BSB22 commitments, followed by the 2 public inputs.
+use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
+use fe_zk::field::{Bn254Fr, Field}
+use fe_zk::verifier::gnark_plonk::{GnarkVk, gnark_plonk_verify_words}
+use std::evm::Call
+use ingot::fx_gnark::*
+
+// Key points are compile-time constants (CTFE-validated, as in the fe-zk-gen output): no on-curve or
+// subgroup check runs at call time.
+const GM_QL: G1 = G1::from_coords_or_infinity(GM_QL_X, GM_QL_Y)
+const GM_QR: G1 = G1::from_coords_or_infinity(GM_QR_X, GM_QR_Y)
+const GM_QM: G1 = G1::from_coords_or_infinity(GM_QM_X, GM_QM_Y)
+const GM_QO: G1 = G1::from_coords_or_infinity(GM_QO_X, GM_QO_Y)
+const GM_QK: G1 = G1::from_coords_or_infinity(GM_QK_X, GM_QK_Y)
+const GM_S1: G1 = G1::from_coords_or_infinity(GM_S1_X, GM_S1_Y)
+const GM_S2: G1 = G1::from_coords_or_infinity(GM_S2_X, GM_S2_Y)
+const GM_S3: G1 = G1::from_coords_or_infinity(GM_S3_X, GM_S3_Y)
+const GM_X2: G2 = G2::from_coords_or_infinity(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1)
+static_assert(g1_is_valid(GM_QL_X, GM_QL_Y))
+static_assert(g1_is_valid(GM_QR_X, GM_QR_Y))
+static_assert(g1_is_valid(GM_QM_X, GM_QM_Y))
+static_assert(g1_is_valid(GM_QO_X, GM_QO_Y))
+static_assert(g1_is_valid(GM_QK_X, GM_QK_Y))
+static_assert(g1_is_valid(GM_S1_X, GM_S1_Y))
+static_assert(g1_is_valid(GM_S2_X, GM_S2_Y))
+static_assert(g1_is_valid(GM_S3_X, GM_S3_Y))
+static_assert(g2_is_valid(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1))
+static_assert(!GM_X2.is_infinity())
+const GC_QL: G1 = G1::from_coords_or_infinity(GC_QL_X, GC_QL_Y)
+const GC_QR: G1 = G1::from_coords_or_infinity(GC_QR_X, GC_QR_Y)
+const GC_QM: G1 = G1::from_coords_or_infinity(GC_QM_X, GC_QM_Y)
+const GC_QO: G1 = G1::from_coords_or_infinity(GC_QO_X, GC_QO_Y)
+const GC_QK: G1 = G1::from_coords_or_infinity(GC_QK_X, GC_QK_Y)
+const GC_S1: G1 = G1::from_coords_or_infinity(GC_S1_X, GC_S1_Y)
+const GC_S2: G1 = G1::from_coords_or_infinity(GC_S2_X, GC_S2_Y)
+const GC_S3: G1 = G1::from_coords_or_infinity(GC_S3_X, GC_S3_Y)
+const GC_QCP0: G1 = G1::from_coords_or_infinity(GC_QCP0_X, GC_QCP0_Y)
+const GC_X2: G2 = G2::from_coords_or_infinity(GC_X2_X0, GC_X2_X1, GC_X2_Y0, GC_X2_Y1)
+static_assert(g1_is_valid(GC_QL_X, GC_QL_Y))
+static_assert(g1_is_valid(GC_QR_X, GC_QR_Y))
+static_assert(g1_is_valid(GC_QM_X, GC_QM_Y))
+static_assert(g1_is_valid(GC_QO_X, GC_QO_Y))
+static_assert(g1_is_valid(GC_QK_X, GC_QK_Y))
+static_assert(g1_is_valid(GC_S1_X, GC_S1_Y))
+static_assert(g1_is_valid(GC_S2_X, GC_S2_Y))
+static_assert(g1_is_valid(GC_S3_X, GC_S3_Y))
+static_assert(g1_is_valid(GC_QCP0_X, GC_QCP0_Y))
+static_assert(g2_is_valid(GC_X2_X0, GC_X2_X1, GC_X2_Y0, GC_X2_Y1))
+static_assert(!GC_X2.is_infinity())
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+fn gm_vk() -> GnarkVk<2, 0> {
+    let c = [
+        GM_QL,
+        GM_QR,
+        GM_QM,
+        GM_QO,
+        GM_QK,
+        GM_S1,
+        GM_S2,
+        GM_S3,
+    ]
+    let no_points: [G1; 0] = []
+    let x2 = GM_X2
+    GnarkVk<2, 0>::new(GM_POWER, fr(GM_W), fr(GM_K), c, no_points, gm_cci(), x2).unwrap()
+}
+
+fn gc_vk() -> GnarkVk<2, 1> {
+    let c = [
+        GC_QL,
+        GC_QR,
+        GC_QM,
+        GC_QO,
+        GC_QK,
+        GC_S1,
+        GC_S2,
+        GC_S3,
+    ]
+    let q = [GC_QCP0]
+    let x2 = GC_X2
+    GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, gc_cci(), x2).unwrap()
+}
+
+msg GnarkMulMsg {
+    #[selector = sol("verify(uint256[24],uint256[2])")]
+    Verify { fixed: [u256; 24], pubs: [u256; 2] } -> bool,
+}
+
+pub contract GnarkMul {
+    recv GnarkMulMsg {
+        Verify { fixed, pubs } -> bool uses (call: Call) {
+            let qe: [u256; 0] = []
+            gnark_plonk_verify_words(gm_vk(), fixed, qe, gm_bsb(), pubs)
+        }
+    }
+}
+
+msg GnarkMulcommitMsg {
+    #[selector = sol("verify(uint256[24],uint256[1],uint256[2][1],uint256[2])")]
+    Verify { fixed: [u256; 24], qe: [u256; 1], bsb: [[u256; 2]; 1], pubs: [u256; 2] } -> bool,
+}
+
+pub contract GnarkMulcommit {
+    recv GnarkMulcommitMsg {
+        Verify { fixed, qe, bsb, pubs } -> bool uses (call: Call) {
+            gnark_plonk_verify_words(gc_vk(), fixed, qe, bsb, pubs)
+        }
+    }
+}
