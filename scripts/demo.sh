@@ -62,6 +62,7 @@ GN=vectors/gnark/mul/fixture.json
 echo "== 6. deployed code size (EIP-170 limit 24,576 bytes; fails if any contract is over)"
 scripts/code-size.sh examples/membership/verifier examples/membership \
     examples/plonk/membership_verifier examples/halo2/circuit_verifier \
-    examples/real_semaphore/verifier examples/gnark/mul_verifier examples/life/verifier examples/life
+    examples/real_semaphore/verifier examples/gnark/mul_verifier examples/life/verifier examples/life \
+    examples/quickstart/verifier examples/quickstart examples/fri_stark
 
 echo "demo OK"
