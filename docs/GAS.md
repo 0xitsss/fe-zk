@@ -12,7 +12,7 @@ same proof and the same words of calldata the reference verifier expects. Nothin
 - **exec**: gas spent by the top-level call frame (the contract's own execution including every precompile and sub-call; it excludes the 21,000 intrinsic cost and the calldata cost). Measured with an inspector on the frame, so it is exact even when the EIP-7623 floor decides the receipt.
 - **tx**: `gas_used` of the receipt: 21,000 + calldata (4 gas per zero byte, 16 per non-zero byte) + exec, raised to the EIP-7623 floor when that is larger. This is what a user pays for the call (before any refund; there are none here).
 - Every verifier is also run on a copy of the same calldata with one input word changed; the script asserts it is not accepted (revert or `false`) before it reports a number.
-- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `b4f13ce20169`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.1.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
+- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `b42cbc5a77aa`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.1.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
 - Solidity: `Version: 0.8.24+commit.e11b9ed9.Linux.g++`, `--optimize --optimize-runs 200`, default EVM version, the committed `Verifier.sol` of each fixture (snarkjs 0.7.6 `zkey export solidityverifier`, gnark v0.12.0 `ExportSolidity`, snark-verifier 0.2.7 for halo2). Exception: the snark-verifier (halo2) verifiers are compiled **without the optimizer**: with `--optimize` solc 0.8.24 fails with "Stack too deep", and with `--via-ir` the contract's own `mload(0x40) == 0x80` memory-layout check reverts. They pin `pragma solidity 0.8.19`; the script relaxes the pragma to `^0.8.19` in a scratch copy (no code change).
 - Deployed code size is the size of the runtime code stored on chain. EIP-170 limits it to 24,576 bytes.
 
@@ -26,8 +26,8 @@ same proof and the same words of calldata the reference verifier expects. Nothin
 | Groth16 (snarkjs) | life_512, N=2 | 199,593 | 195,613 | 1.02x | 225,777 | 221,797 | 1.02x |
 | PLONK (snarkjs) | multiplier2, N=2 | 290,023 | 259,248 | 1.12x | 323,619 | 292,844 | 1.11x |
 | PLONK (snarkjs) | membership, N=3 | 293,482 | 263,536 | 1.11x | 327,962 | 298,016 | 1.10x |
-| PLONK (gnark v0.12.0) | mul, N=2 | 328,857 | 261,868 | 1.26x | 362,465 | 296,048 | 1.22x |
-| PLONK (gnark v0.12.0) | mulcommit, N=2 | 375,106 | 283,267 | 1.32x | 410,250 | 318,995 | 1.29x |
+| PLONK (gnark v0.12.0) | mul, N=2 | 329,969 | 261,868 | 1.26x | 363,517 | 295,988 | 1.23x |
+| PLONK (gnark v0.12.0) | mulcommit, N=2 | 375,106 | 283,267 | 1.32x | 410,178 | 318,923 | 1.29x |
 | halo2-KZG SHPLONK (snark-verifier) | standard_plonk_lookup, N=1 | 391,913 | 322,590 | 1.21x | 442,193 | 372,806 | 1.19x |
 | halo2-KZG GWC (snark-verifier) | standard_plonk_lookup, N=1 | 422,910 | 349,015 | 1.21x | 475,238 | 401,279 | 1.18x |
 
@@ -74,8 +74,8 @@ One `step()` call: exec 657, tx 21,897. Deployed `Life` code: 15,296 bytes (the 
 | Groth16 (snarkjs), life_512, N=2 | 2,738 | 1,439 | 645,254 | 364,378 |
 | PLONK (snarkjs), multiplier2, N=2 | 7,990 | 5,400 | 1,780,002 | 1,220,830 |
 | PLONK (snarkjs), membership, N=3 | 8,371 | 6,050 | 1,862,310 | 1,361,363 |
-| PLONK (gnark v0.12.0), mul, N=2 | 9,436 | 7,215 | 2,092,493 | 1,613,130 |
-| PLONK (gnark v0.12.0), mulcommit, N=2 | 10,752 | 8,427 | 2,377,092 | 1,875,143 |
+| PLONK (gnark v0.12.0), mul, N=2 | 9,894 | 7,218 | 2,191,173 | 1,613,694 |
+| PLONK (gnark v0.12.0), mulcommit, N=2 | 10,752 | 8,427 | 2,377,128 | 1,875,167 |
 | halo2-KZG SHPLONK (snark-verifier), standard_plonk_lookup, N=1 | 23,014 | 12,549 | 5,011,078 | 2,764,484 |
 | halo2-KZG GWC (snark-verifier), standard_plonk_lookup, N=1 | 21,476 | 10,807 | 4,679,232 | 2,387,982 |
 | KZG, single opening | 1,647 | n/a | 409,437 | n/a |
