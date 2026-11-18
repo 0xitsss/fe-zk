@@ -61,10 +61,11 @@ vertical neighbours from a 16-bit rotation of the whole word. A bitwise adder ne
 neighbour count for all 256 cells at once, and B3/S23 becomes one boolean expression:
 `twos & ~big & (ones | board)`. A generation is about 60 word operations and no per-cell loop.
 
-Gas (revm, Osaka, execution gas without the 21 000 intrinsic): `step` ≈ 624; `run(board, 64)` = 34 187;
-`run(board, 100)` = 53 267. On-chain stepping costs about 530 gas per generation, so a Groth16
-proof of N generations (one pairing check with 4 pairs, roughly 200–250k gas) is cheaper only for
-N above roughly 450 generations, and the verifier's cost is constant in N.
+Gas (revm, Osaka, execution gas without the 21 000 intrinsic; `docs/GAS.md`): `step` = 657; `run(board, 64)` = 34 246;
+`run(board, 512)` = 271 686. On-chain stepping costs about 530 gas per generation, so a Groth16
+proof of N generations (one pairing check with 4 pairs, about 200k gas) is cheaper than one `run` call only for
+N above roughly 385 generations (about 10 against one `step()` transaction per generation), and the verifier's cost is
+constant in N.
 
 ## Curve layer (`src/ec/`)
 
@@ -153,9 +154,9 @@ compiler, on top of the generator's own arkworks validation.
 
 A circuit-independent core (`common.fe`: EvmTranscript, point/scalar reading with validation, batched inversion via
 modexp, final pairing) plus a straight-line per-circuit module emitted by `vectors/halo2/emit_fe.py` from `vk.json`
-(gates, lookups, permutation sets, SHPLONK rotation sets and GWC point groups unrolled). Gas: SHPLONK 385.7k,
-GWC 419.8k execution gas; the snark-verifier Solidity verifier costs 364.7k / 398.6k including the 21k intrinsic
-and calldata, so Fe is about 20% more expensive (wrapper overhead per precompile call). Limits: one circuit shape
+(gates, lookups, permutation sets, SHPLONK rotation sets and GWC point groups unrolled). Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 384.7k,
+GWC 416.2k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.19x (wrapper overhead per
+precompile call). The Fe numbers use the compile-time key path (`Halo2Vk::from_consts`). Limits: one circuit shape
 (single phase, one instance column, uncommitted instances); duplicate commitments are rejected by the generator.
 
 ## Groth16 and the generator
@@ -170,7 +171,9 @@ and calldata, so Fe is about 20% more expensive (wrapper overhead per precompile
   and calldata layout (B as `[[x_imag, x_real], [y_imag, y_real]]`), and forwards to `groth16_verify_raw`; all checks
   live in the library, so the generator cannot emit a verifier that skips one.
 - Failure policy: invalid input returns `false`; only a precompile violating its output contract reverts.
-- Gas per library `verify`: N=1 190 982, N=2 198 851, N=3 206 158; generated membership contract call 211 433.
+- Gas per library `verify`, measured in-test with `evm.gas()` around the call (a different measurement from the revm
+  table in `docs/GAS.md`, which runs the deployed generated contract: N=1 191 620, N=2 199 593, N=3 207 341, Solidity
+  1.01x to 1.03x lower): N=1 190 982, N=2 198 851, N=3 206 158; generated membership contract call 211 433.
 - Fe findings: a dependency that reaches `unsafe` needs `allow_unsafe = true` in the dependent's `[dependencies]`
   entry; absolute dependency paths are rejected ("invalid path"); `assert` and `Option` methods are not const.
 
@@ -188,7 +191,9 @@ decisions).
 
 `GnarkVk<NP, NC>` fixes the public-input count and the BSB22 commitment count in the type. The sha256 Fiat–Shamir
 chain (gamma, beta, alpha, zeta, each on the previous raw digest) runs on precompile 0x02 with exact-length checks.
-Gas (execution): `mul` 293.7k vs gnark Solidity 261.9k; `mulcommit` 337.1k vs 283.3k.
+Gas (`docs/GAS.md`, execution, revm): `mul` 329.8k vs gnark Solidity 261.9k (1.26x); `mulcommit` 375.1k vs 283.3k (1.32x).
+The gnark verifier is the furthest above Solidity; its transcript runs on the sha256 precompile, so it pays the
+per-call wrapper overhead (see "Precompile wrapper gas") on every challenge as well.
 
 ## Compile-time keys for every verifier family
 

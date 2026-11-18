@@ -12,7 +12,7 @@ static_assert(g2_is_valid(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1))
 static_assert(!TAU_G2.is_infinity())
 
 fn vk() -> KzgVk {
-    KzgVk::new(G1::generator(), G2::generator(), TAU_G2).unwrap()
+    KzgVk::from_consts(G1::generator(), G2::generator(), TAU_G2)
 }
 
 fn fr(_ v: u256) -> Bn254Fr {
