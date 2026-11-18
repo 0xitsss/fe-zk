@@ -4,3 +4,4 @@
 pub mod circuit;
 pub mod export;
 pub mod mini_verifier;
+pub mod ptau;

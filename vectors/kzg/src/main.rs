@@ -1,8 +1,10 @@
 //! Generates KZG opening fixtures for fe-zk with arkworks (ark-bn254 / ark-ec / ark-poly 0.5.0).
-//! TEST-ONLY and INSECURE: the SRS secret tau is a public constant. See ../README.md for the spec.
-use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
-use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
-use ark_ff::{BigInteger, One, PrimeField, Zero};
+//! The SRS is the PSE perpetual powers of tau (no known tau): commitments and proofs are MSMs over the
+//! ceremony powers [tau^i]G1, never computed from tau. See ../README.md for the spec.
+use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine};
+use ark_bn254::Fq;
+use ark_ec::{pairing::Pairing, scalar_mul::variable_base::VariableBaseMSM, AffineRepr, CurveGroup};
+use ark_ff::{BigInt, BigInteger, Field, One, PrimeField, Zero};
 use ark_poly::{
     univariate::{DenseOrSparsePolynomial, DensePolynomial},
     DenseUVPolynomial, Polynomial,
@@ -59,31 +61,75 @@ fn g2w(p: &G2Affine) -> [[u8; 32]; 4] {
     [word(p.x.c0), word(p.x.c1), word(p.y.c0), word(p.y.c1)]
 }
 
+/// PSE perpetual powers of tau (challenge 0080), power 5, sha256 pinned in scripts/regen-kzg.sh.
+/// Layout: see vectors/halo2/src/ptau.rs (snarkjs ptau: LE Montgomery coordinates).
 struct Srs {
-    g: G1Affine,
+    /// [tau^i]G1, i < powers.len()
+    powers: Vec<G1Affine>,
     h: G2Affine,
     tau_h: G2Affine,
-    tau: Fr,
+}
+fn rd32(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
 impl Srs {
-    // TEST-ONLY secret. Anyone can forge proofs for this SRS.
-    fn new() -> Srs {
-        let tau = Fr::from(0x1234_5678_9abc_def0_u64) * Fr::from(1_000_003u64) + Fr::from(7u64);
-        let g = G1Affine::generator();
-        let h = G2Affine::generator();
-        Srs { g, h, tau_h: (G2Projective::from(h) * tau).into_affine(), tau }
+    fn from_ptau(path: &str, max_g1: usize) -> Srs {
+        let b = std::fs::read(path).unwrap();
+        assert_eq!(&b[0..4], b"ptau");
+        let nsec = rd32(&b, 8) as usize;
+        let (mut off, mut secs) = (12usize, std::collections::HashMap::new());
+        for _ in 0..nsec {
+            let id = rd32(&b, off);
+            let sz = u64::from_le_bytes(b[off + 4..off + 12].try_into().unwrap()) as usize;
+            secs.insert(id, off + 12);
+            off += 12 + sz;
+        }
+        assert_eq!(off, b.len());
+        let power = rd32(&b, secs[&1] + 4 + 32);
+        assert_eq!(rd32(&b, secs[&1]), 32);
+        let r_inv = Fq::from(2u64).pow([256u64]).inverse().unwrap();
+        let fq = |o: usize| -> Fq {
+            let mut limbs = [0u64; 4];
+            for (i, l) in limbs.iter_mut().enumerate() {
+                *l = u64::from_le_bytes(b[o + 8 * i..o + 8 * i + 8].try_into().unwrap());
+            }
+            Fq::from_bigint(BigInt::new(limbs)).expect("non-canonical coordinate") * r_inv
+        };
+        let n = max_g1.min((1usize << (power + 1)) - 1);
+        let powers: Vec<G1Affine> = (0..n)
+            .map(|i| {
+                let o = secs[&2] + 64 * i;
+                let p = G1Affine::new_unchecked(fq(o), fq(o + 32));
+                assert!(p.is_on_curve() && p.is_in_correct_subgroup_assuming_on_curve());
+                p
+            })
+            .collect();
+        let g2 = |i: usize| -> G2Affine {
+            let o = secs[&3] + 128 * i;
+            let p = G2Affine::new_unchecked(
+                ark_bn254::Fq2::new(fq(o), fq(o + 32)),
+                ark_bn254::Fq2::new(fq(o + 64), fq(o + 96)),
+            );
+            assert!(p.is_on_curve() && p.is_in_correct_subgroup_assuming_on_curve());
+            p
+        };
+        let srs = Srs { powers, h: g2(0), tau_h: g2(1) };
+        assert_eq!(srs.powers[0], G1Affine::generator(), "tauG1[0] must be the generator");
+        assert_eq!(srs.h, G2Affine::generator(), "tauG2[0] must be the generator");
+        srs
     }
     /// Words of the verifying key bound into every transcript: g1 (2), g2 (4), tau_g2 (4).
     fn vk_words(&self) -> Vec<[u8; 32]> {
-        let mut v: Vec<[u8; 32]> = g1w(&self.g).to_vec();
+        let mut v: Vec<[u8; 32]> = g1w(&self.powers[0]).to_vec();
         v.extend(g2w(&self.h));
         v.extend(g2w(&self.tau_h));
         v
     }
-    /// [p(tau)] G. Possible because the toy SRS has a known tau; a real SRS gives the same
-    /// point as the MSM sum_i p_i [tau^i] G.
+    /// Commitment = MSM sum_i p_i [tau^i]G1 over the ceremony powers (tau is unknown).
     fn commit(&self, p: &Poly) -> G1Affine {
-        (G1Projective::from(self.g) * p.evaluate(&self.tau)).into_affine()
+        let c = &p.coeffs;
+        assert!(c.len() <= self.powers.len(), "polynomial degree exceeds the SRS");
+        G1Projective::msm(&self.powers[..c.len()], c).unwrap().into_affine()
     }
 }
 fn rand_poly(seed: u64, deg: usize) -> Poly {
@@ -114,10 +160,11 @@ fn cpoly(c: Fr) -> Poly {
     Poly::from_coefficients_vec(vec![c])
 }
 
-fn main() {
-    let srs = Srs::new();
+/// Builds the whole fixture document from a ptau file (deterministic: no randomness besides fixed polynomial seeds).
+fn build(ptau: &str) -> Value {
+    let srs = Srs::from_ptau(ptau, 16);
     let vk = json!({
-        "g1": g1j(&srs.g),
+        "g1": g1j(&srs.powers[0]),
         "g2": g2j(&srs.h),
         "tau_g2": g2j(&srs.tau_h),
     });
@@ -214,7 +261,7 @@ fn main() {
     // sanity: the single-opening pairing identity holds
     let lhs = Bn254::multi_pairing(
         [
-            (G1Projective::from(c) - G1Projective::from(srs.g) * y + G1Projective::from(pi) * z)
+            (G1Projective::from(c) - G1Projective::from(srs.powers[0]) * y + G1Projective::from(pi) * z)
                 .into_affine(),
             (-G1Projective::from(pi)).into_affine(),
         ],
@@ -223,9 +270,67 @@ fn main() {
     assert!(lhs.0.is_one());
 
     let out = json!({
-        "_comment": "TEST-ONLY insecure SRS (public tau). Generated by vectors/kzg (arkworks 0.5.0). See vectors/kzg/README.md.",
+        "_comment": "SRS: PSE perpetual powers of tau ppot_0080_05 (real ceremony, tau unknown); commitments are MSMs over its G1 powers. Generated by vectors/kzg (arkworks 0.5.0). See vectors/kzg/README.md.",
         "vk": vk, "single": single, "gwc": gwc, "shplonk": shp,
     });
-    let path = std::env::args().nth(1).expect("usage: kzg-fixtures <out.json>");
-    std::fs::write(path, serde_json::to_string_pretty(&out).unwrap() + "\n").unwrap();
+    out
+}
+
+fn main() {
+    let a: Vec<String> = std::env::args().collect();
+    assert!(a.len() == 3, "usage: kzg-fixtures <ppot_0080_05.ptau> <out.json>");
+    std::fs::write(&a[2], serde_json::to_string_pretty(&build(&a[1])).unwrap() + "\n").unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn ptau() -> String {
+        std::env::var("FE_ZK_PTAU").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../cache/ppot_0080_05.ptau").into())
+    }
+    #[test]
+    fn srs_is_consistent() {
+        let s = Srs::from_ptau(&ptau(), 32);
+        assert_eq!(s.powers.len(), 32);
+        assert_ne!(s.tau_h, s.h);
+        for i in 0..31 {
+            // e([tau^{i+1}]G, H) == e([tau^i]G, [tau]H): one common tau across the whole chain
+            assert_eq!(Bn254::pairing(s.powers[i + 1], s.h), Bn254::pairing(s.powers[i], s.tau_h), "power {i}");
+        }
+        assert_eq!(Bn254::pairing(s.powers[1], s.h), Bn254::pairing(s.powers[0], s.tau_h));
+    }
+    #[test]
+    fn commit_is_linear_and_opening_verifies() {
+        let s = Srs::from_ptau(&ptau(), 16);
+        let (f, g) = (rand_poly(5, 6), rand_poly(6, 7));
+        let sum = (G1Projective::from(s.commit(&f)) + s.commit(&g)).into_affine();
+        assert_eq!(s.commit(&(f.clone() + g)), sum);
+        let z = Fr::from(77u64);
+        let (y, pi) = open(&s, &f, z);
+        assert_eq!(y, f.evaluate(&z));
+        let c = s.commit(&f);
+        let ok = Bn254::multi_pairing(
+            [
+                (G1Projective::from(c) - G1Projective::from(s.powers[0]) * y + G1Projective::from(pi) * z).into_affine(),
+                (-G1Projective::from(pi)).into_affine(),
+            ],
+            [s.h, s.tau_h],
+        );
+        assert!(ok.0.is_one());
+        // a wrong claim must fail
+        let bad = Bn254::multi_pairing(
+            [
+                (G1Projective::from(c) - G1Projective::from(s.powers[0]) * (y + Fr::one()) + G1Projective::from(pi) * z).into_affine(),
+                (-G1Projective::from(pi)).into_affine(),
+            ],
+            [s.h, s.tau_h],
+        );
+        assert!(!bad.0.is_one());
+    }
+    #[test]
+    fn committed_fixture_is_current() {
+        let committed: Value =
+            serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/kzg.json")).unwrap()).unwrap();
+        assert_eq!(build(&ptau()), committed, "fixtures/kzg.json is stale: run scripts/regen-kzg.sh");
+    }
 }

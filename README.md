@@ -227,7 +227,8 @@ Other tools (only needed to regenerate vectors, not to run tests):
 
 Regenerate: `scripts/setup-tools.sh` (circom, npm packages), `scripts/regen-vectors.sh` (hash vectors),
 `scripts/regen-groth16-fixtures.sh`, `scripts/regen-plonk-fixtures.sh`, `scripts/regen-gnark-fixtures.sh` (Go),
-`scripts/regen-halo2.sh` (needs `solc`), `scripts/regen-kzg.sh`, `scripts/regen-plonky3-stark.sh`,
+`scripts/regen-halo2.sh` (needs `solc`; real PSE ptau SRS), `scripts/regen-kzg.sh` + `scripts/gen-kzg-fe-fixtures.py`,
+`scripts/regen-real-semaphore.sh` (real Semaphore v4 key and ceremony zkey), `scripts/regen-plonky3-stark.sh`,
 `scripts/life-prove.sh <pattern> <N>` (about 30 min and 1.2 GB of ptau for N = 512). Fixtures from circom/snarkjs are
 randomised, so a regeneration changes every value.
 
@@ -327,8 +328,15 @@ and the assumptions:
   in a slashing rule.
 - **Gas caps.** Precompile calls carry hard-coded gas caps set just above the current prices (EIP-1108, EIP-2565). A
   repricing makes the calls fail closed (revert or `false`), never open.
-- **Test-only keys and SRS.** Powers of tau and phase-2 entropy are public test values; the arkworks setup uses a
-  fixed RNG seed; the gnark and KZG SRS have known toxic waste. All keys under `vectors/` are insecure fixtures.
+- **Setup provenance (what is real and what is not).** Real ceremony material: the halo2-KZG fixtures and the KZG
+  fixtures use the PSE Perpetual Powers of Tau (`ppot_0080_05`, nobody knows tau; commitments are MSMs over the ceremony
+  points); the snarkjs PLONK fixtures are universal and use `ppot_0080_14`; and `vectors/groth16/real_semaphore_d10` is
+  the production Semaphore v4 key (public multi-party ceremony) with a proof we generated against its real zkey, run
+  through `fe-zk-gen` into `examples/real_semaphore/verifier` (Semaphore's own Solidity verifier accepts the same proof
+  in revm). Still test-only: **the Groth16 phase 2 of our own demo circuits** (`multiplier*`, `membership`, `life_*`)
+  is a single contribution with a public entropy string, so the delta toxic waste is known and those keys are insecure
+  even though phase 1 is the real ceremony; the arkworks Groth16 setup uses a fixed RNG seed; the gnark PLONK SRS comes
+  from gnark's unsafe test generator (known tau). Do not deploy any of the demo keys; deploy your own ceremony's key.
 - **Malleability.** Groth16 proofs are malleable (rule 8); the examples never use a proof or its hash as an id.
 - **Membership demo.** The tree is permissionless (anyone can insert) and has 1024 leaves; a deployment can bootstrap
   a root of an earlier tree (`bootstrap_root`) that the contract cannot verify. Proofs are not bound to `msg.sender`,
@@ -395,7 +403,14 @@ trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforc
   - revm 33.1.0: MIT (Rust gas runners and the Life CLI).
   - py_ecc 8.0.0: MIT (EC test vectors). ethers 5.8.0: MIT (transcript vectors). the c-kzg-4844 point-evaluation test vector (taken from the
     revm-precompile 31.0.0 tests).
-  - Perpetual Powers of Tau (PSE mirror) `ppot_0080_14.ptau`, checked by sha256 and never committed.
+  - Perpetual Powers of Tau (PSE mirror) `ppot_0080_05.ptau`, `ppot_0080_14.ptau` (and `_17`, `_20` for Life), checked
+    by sha256 and never committed. The snarkjs `.ptau` to halo2 `ParamsKZG` converter is original code
+    (`vectors/halo2/src/ptau.rs`).
+  - Semaphore v4 (semaphore-protocol/semaphore at commit `dbab5553`, MIT): published per-depth verification keys
+    (`packages/proof/src/verification-keys.json`), the Solidity verifier used for the cross-check (downloaded by
+    `scripts/regen-real-semaphore.sh`, not committed), and the ceremony zkey/wasm of `@zk-kit/artifacts` 4.13.0
+    (MIT; downloaded, not committed). Only the small verification key and our own proof/public signals are committed
+    (`vectors/groth16/real_semaphore_d10`, see `vectors/README.md`).
   - EIP-197, EIP-2537, EIP-4844 specifications and the Scott G2 subgroup test (ePrint 2021/1130) are cited in code.
 - **AI assistance:** the project was built with Claude (Opus 5.5 as coordinating agent, Sonnet subagents for components).
   Every component was verified against independent reference implementations and has tests; `docs/AI_LOG.md` lists
