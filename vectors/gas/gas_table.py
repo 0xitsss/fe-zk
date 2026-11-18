@@ -139,7 +139,7 @@ def halo2_fixture(kind):
 
 def fri_words():
     text = open(os.path.join(ROOT, "src", "tests", "fri_fixture_secure.fe")).read()
-    body = text.split("pub fn fib_proof()")[1].split("{", 1)[1]
+    body = text.split("pub fn fib_proof()")[1].split("= [", 1)[1].split("var m = unsafe", 1)[0]
     body = re.sub(r"//.*", "", body)
     toks = re.findall(r"0x[0-9a-fA-F]+|(?<![\w])\d+", body)
     words = [h32(t) for t in toks]

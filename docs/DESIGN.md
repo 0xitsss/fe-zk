@@ -244,3 +244,56 @@ assertions. PLONK key construction: 1.05M gas at runtime before, 673 gas now; ha
 336 393; one `run(board, 512)` 271 686; one proof verification 207 758; `advanceProven` 263 675. Break-even near 392
 generations. Limitations: the stored board is public (the demo shows succinctness, not privacy); N is fixed by the key;
 the ptau contribution and phase-2 entropy are public test values.
+
+## FRI/STARK verifier (`src/verifier/fri.fe`)
+
+Verifies a Plonky3 0.4.2 `uni-stark` proof of a Fibonacci AIR (KoalaBear, degree-4 extension, arity 2, Keccak Merkle
+trees and challenger). The verifier logic is one piece of code; a configuration is the constants of a small module
+emitted by `vectors/plonky3-stark/emit_fe.py` from the proof's own `config.json` (`fri/config_secure.fe`,
+`fri/config_demo.fe`): `FriParams { log_n, log_blowup, log_final, num_queries, commit_pow_bits, query_pow_bits }`.
+The proof is one flat `MemArray<u256>` whose layout (offsets are functions of the parameters) is documented at the top
+of `fri.fe`. Queries, fold rounds and Merkle levels are loops, so the code size does not depend on the configuration.
+`params_valid` bounds every shift and table index; `verify` rejects a proof whose length is not `proof_words(params)`.
+The secure module carries `static_assert(CONJECTURED_BITS >= 100)`.
+
+### Security parameters
+
+Plonky3 0.4.2 states `FriParameters::conjectured_soundness_bits = log_blowup * num_queries + query_proof_of_work_bits`
+(the ethSTARK conjecture: capacity-bound proximity gaps for Reed-Solomon codes). It says itself that proven soundness
+"isn't currently supported by this crate". We therefore also compute our own estimates (`Cfg::soundness` in
+`vectors/plonky3-stark/src/main.rs`, written to `config.json`): per-query error `(1 + rho)/2` (unique decoding) or
+`(1 + 1/(2m)) sqrt(rho)` (Johnson bound, `m = 10`), `rho = 2^-log_blowup`, plus the grinding bits, combined with the
+BCIKS'20 commit-phase error `(m + 1/2)^7 / (3 rho^1.5) * n^2 / |F|` with `|F| = 2^124`, `n` the largest committed
+domain. These are our reading of the literature, not an audit; the proven figures sit far below the conjectured one.
+
+Trade-off, Fibonacci AIR, 2^10 rows, `log_final = 3`, 20 PoW bits (execution gas of `verify` in the Fe test
+framework; proof words are calldata words, 32 bytes each; the code size, 18,009 bytes for the deployed contract, is the
+same for all configurations because only constants differ; deployed contract: 4,674,110 gas execution, 5,832,558 with
+calldata, `docs/GAS.md`):
+
+| `log_blowup` | queries | conjectured | proven (Johnson / unique) | proof words | Fe gas |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 80 | 100 | 54 / 53 | 8,481 | 15,681,656 |
+| 2 | 40 | 100 | 57 / 47 | 4,641 | 8,082,989 |
+| 3 | 27 | 101 | 59 / 42 | 3,402 | 5,625,016 |
+| **4** | **20** | **100** | **59 / 38** | **2,721** | **4,293,638** |
+| 5 | 17 | 105 | 61 / 36 | 2,478 | 3,748,713 |
+
+Other axes at `log_blowup = 4`, 20 queries: `log_final = 1` instead of 3: 4,671,837 gas (3,081 words); 2^8 rows:
+3,514,576 (1,977 words); 2^12 rows: 5,108,141 (3,545 words). Chosen: 2^10 rows, `log_blowup = 4`, 20 queries,
+20 PoW bits: 100 conjectured bits, about 59 (Johnson) / 38 (unique decoding) proven, 4.29 M gas, 87 kB of calldata.
+A higher blowup costs the prover (LDE of 2^14 points here, negligible) and buys fewer queries; the proven figure
+barely moves, so the proven security of every row is about 55-60 bits and only more queries would raise it. The demo
+configuration (4 queries, `log_blowup` 2, 3 PoW bits: 11 conjectured, about 6 proven bits) stays as a second test
+configuration and is not secure.
+
+### Fe findings from this work
+
+- A static array `[u256; N]` as a contract message field or local makes `fe build` time grow much faster than N
+  (probe contract: N = 300 4 s, 600 15 s, 1200 over 3 min, 2721 over 4 min); the first FRI contract built that way
+  took 2 min 15 s and was 106 kB. `MemArray<u256>` (runtime length, heap) compiles in under a second at N = 2721.
+  The contract therefore reads calldata with `CallData::word_at` into a `MemArray`, and uses the raw selector
+  `0x12852f9a` (`sol("...")` selectors need typed fields). Worth an upstream issue.
+- Many 2.7k-word array copies in one function overflow the test frame ("StackOverflow"); heap `MemArray`
+  copies do not. `var r = p` on a `MemArray` aliases (struct copy), tests use an explicit `clone_words`.
+- `mut` array parameters cannot be assigned through in 26.5.0 ("immutable assignment"), so tamper helpers copy.

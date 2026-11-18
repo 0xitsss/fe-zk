@@ -59,7 +59,7 @@ Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool 
 | PLONK | gnark v0.12.0 | [`gnark_plonk.fe`](src/verifier/gnark_plonk.fe) | none (typed constants) | `vectors/gnark` | `src/tests/gnark_plonk.fe` | 329,800 / 261,868 |
 | halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 391,913 / 322,590 (SHPLONK) |
 | KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,369 single opening, no reference |
-| FRI/STARK | Plonky3 `uni-stark` Fibonacci | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe` | 651,654, no reference exists |
+| FRI/STARK | Plonky3 `uni-stark` Fibonacci, 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe` | 4.67 M as a contract (4.29 M in `verify`), no reference exists |
 | Poseidon (BN254) | circomlibjs 0.1.7 | [`src/hash/`](src/hash) | none | `vectors/poseidon` | `src/tests/hash.fe` | 25,400 / 29,005 (t=3) |
 
 Below the table: `src/field/` (Field trait, five fields, `Ext4`), `src/ec/` (BN254 `G1`/`G2`, precompile wrappers,
@@ -312,12 +312,15 @@ and the assumptions:
   the PLONK family dozens. Deployed code is 1.28-1.99x the size of the Solidity versions (`docs/GAS.md`). Every generated
   verifier and example contract fits the EIP-170 limit of 24,576 bytes (guard: `scripts/code-size.sh`, run by
   `scripts/demo.sh`; ignored test `gen/fe-zk-gen/tests/code_size.rs`). `fe-zk-gen halo2` emits one contract per multiopen
-  scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 23.1 kB, GWC 21.6 kB, both together would be over. Only the
-  hand-written FRI verifier is still over the limit, so it is not deployable on mainnet as it is.
-- **FRI/STARK.** One proof shape: Plonky3 `uni-stark`, Fibonacci AIR, KoalaBear with a degree-4 extension, 16 rows,
-  Keccak commitments, arity 2. The fixture parameters (4 queries, `log_blowup` 2, 3 query-PoW bits, constants at
-  `src/verifier/fri.fe:35-41`) give about 11 bits of soundness: it demonstrates the verification algorithm and is not
-  a secure parameter set. Other AIRs need new fixtures and a generalised verifier.
+  scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 23.1 kB, GWC 21.6 kB, both together would be over. The FRI
+  contract (`examples/fri_stark`, about 18 kB) fits as well.
+- **FRI/STARK.** One AIR (Fibonacci), Plonky3 0.4.2 `uni-stark`, KoalaBear with a degree-4 extension, Keccak commitments,
+  arity 2. Query count, blowup, PoW bits and trace height are constants of a per-configuration module
+  (`src/verifier/fri/config_secure.fe`, emitted from the proof). The secure configuration (2^10 rows, `log_blowup` 4,
+  20 queries, 20 query-PoW bits) has 100 bits under Plonky3's conjecture (`log_blowup * queries + pow bits`); our estimate
+  of what is *proven* is about 59 bits (Johnson bound) or 38 (unique decoding), see `docs/DESIGN.md`. The 4-query
+  `config_demo` (about 11 bits) is only a second test configuration. Research-grade, not audited. Other AIRs need new
+  fixtures and a generalised verifier.
 - **halo2.** One circuit shape: single phase, one instance column, uncommitted instances, no challenges. The emitter
   rejects duplicate commitments. The generated module is circuit-specific.
 - **G2 points in proofs.** The subgroup check for a G2 point taken from a proof (`G2Proof`, e.g. Groth16 `B`) relies on
