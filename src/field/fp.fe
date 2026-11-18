@@ -66,15 +66,19 @@ impl<const P: u256> Field for Fp<P> {
         Fp { v: addmod(self.v, other.v, P) }
     }
 
+    #[arithmetic(unchecked)]
     fn sub(self, _ other: Self) -> Self {
+        // Invariant other.v < P, so P - other.v cannot underflow, and
         // other.v < P, so P - other.v is in (0, P]; addmod reduces P to 0.
         Fp { v: addmod(self.v, P - other.v, P) }
     }
 
+    #[arithmetic(unchecked)]
     fn neg(self) -> Self {
         if self.v == 0 {
             self
         } else {
+            // Invariant 0 < self.v < P: no underflow.
             Fp { v: P - self.v }
         }
     }
