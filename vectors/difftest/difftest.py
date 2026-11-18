@@ -430,8 +430,11 @@ class Prep:
         if os.path.isdir(d):
             shutil.rmtree(d)
         shutil.copytree(os.path.join(ROOT, "vectors", "gas-fe"), d)
+        # Keep only the gnark and halo2 wrappers; other wrappers may come and go in gas-fe.
         for fn in ["fri_wrap.fe", "kzg_wrap.fe", "plonk_wrap.fe", "poseidon_wrap.fe"]:
-            os.remove(os.path.join(d, "src", fn))
+            path = os.path.join(d, "src", fn)
+            if os.path.exists(path):
+                os.remove(path)
         tom = open(os.path.join(d, "fe.toml")).read().replace('path = "../.."', f'path = "{os.path.relpath(ROOT, d)}"')
         open(os.path.join(d, "fe.toml"), "w").write(tom)
         shutil.copy(os.path.join(ROOT, "src/tests/gnark_plonk_fixtures.fe"), os.path.join(d, "src/fx_gnark.fe"))
