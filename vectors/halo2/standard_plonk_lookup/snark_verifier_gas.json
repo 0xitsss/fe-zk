@@ -2,6 +2,6 @@
   "_doc": "gas reported by snark_verifier::loader::evm::deploy_and_call (revm) for the snark-verifier 0.2.7 generated Solidity verifier of this circuit (call only, incl. tx base cost as reported by revm)",
   "gas": {
     "shplonk": 364709,
-    "gwc": 398628
+    "gwc": 398580
   }
 }

@@ -274,8 +274,7 @@ opposite of the `[c0, c1]` order in `vk.json`). Check precompile success flag, r
   (numbers vary by a few hundred gas between regenerated proofs through calldata zero-byte count; these
   are the baseline the Fe verifiers will be compared against; pragma was relaxed from 0.8.19 to ^0.8.19 to
   compile with solc 0.8.24).
-  The SRS is a test-only INSECURE seeded SRS (the files in `/data/srs/*.srs` were inspected but not used: unknown
-  provenance, and k=15+ is overkill).
+  The SRS is the REAL PSE perpetual powers of tau (`ppot_0080_05`, converted by `src/ptau.rs`; see `vectors/README.md`).
 
 ## 13. Port notes for the Fe verifier / generator
 

@@ -2,13 +2,16 @@
 
 Reference fixtures for `src/verifier/kzg.fe`, produced by arkworks 0.5.0
 (`ark-bn254`, `ark-ec`, `ark-ff`, `ark-poly`) and `tiny-keccak` 2.0.2 (see `Cargo.lock`).
-Regenerate with `scripts/regen-kzg.sh` (writes `fixtures/kzg.json`; needs a Rust toolchain).
-The Fe tests in `src/tests/kzg.fe` embed the same constants.
+Regenerate with `scripts/regen-kzg.sh` (downloads the pinned ptau, writes `fixtures/kzg.json`; needs a Rust
+toolchain), then `scripts/gen-kzg-fe-fixtures.py`. The Fe tests in `src/tests/kzg.fe` embed the same constants.
 
-**TEST-ONLY, INSECURE.** The SRS secret `tau = 0x123456789abcdef0 * 1000003 + 7` is a public constant
-in `src/main.rs`. Anyone can forge openings for this SRS. Commitments are computed as `[f(tau)]G`,
-which equals the usual MSM `sum_i f_i [tau^i]G`. Production use needs a ceremony SRS; `KzgVk`
-accepts whatever `[tau]G2` the caller provides.
+**Real SRS.** The SRS is the PSE Perpetual Powers of Tau (challenge 0080, `ppot_0080_05.ptau`, 2^5 G1 powers;
+URL and sha256 in `scripts/regen-kzg.sh`, ceremony details in `vectors/README.md` -> "Real ceremony SRS"). Nobody
+knows `tau`. Commitments and opening proofs are MSMs `sum_i p_i [tau^i]G1` over the ceremony points (the
+quotient is committed the same way), never computed from `tau`. `vk.tau_g2` is the ceremony's `[tau]G2`.
+`cargo test --release` (here) checks the converted powers (one common tau along the chain, generator first),
+MSM linearity, an honest opening and a wrong claim, and that `fixtures/kzg.json` equals a fresh regeneration.
+`src/tests/kzg.fe` constants are rewritten from the JSON by `scripts/gen-kzg-fe-fixtures.py`.
 
 ## Notation
 

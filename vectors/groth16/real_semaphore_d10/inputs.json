@@ -1,0 +1,7 @@
+{
+  "note": "public part of the witness; the identity is a throw-away test identity",
+  "merkleTreeDepth": 10,
+  "groupSize": 5,
+  "message": "1",
+  "scope": "42"
+}
