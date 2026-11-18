@@ -231,6 +231,20 @@ Regenerate: `scripts/setup-tools.sh` (circom, npm packages), `scripts/regen-vect
 `scripts/life-prove.sh <pattern> <N>` (about 30 min and 1.2 GB of ptau for N = 512). Fixtures from circom/snarkjs are
 randomised, so a regeneration changes every value.
 
+## Use fe-zk in your Fe project
+
+A complete, tested example lives in [`examples/quickstart/`](examples/quickstart/README.md): a 50-line
+contract that calls a generated Groth16 verifier, hashes with `poseidon_2` and uses a helper written once
+against the `Field` trait.
+
+1. Add `fe_zk = { path = "../fe-zk", allow_unsafe = true }` to your `fe.toml` (Fe 26.5 also reads
+   `{ source = "<url>", rev = "<sha>" }` remote dependencies).
+2. Export your verifying key (snarkjs, arkworks, PLONK or halo2-KZG).
+3. `cargo run -p fe-zk-gen -- groth16 --snarkjs vk.json --proof proof.json --public public.json --out ../my-project/verifier --fe-zk-path ../../fe-zk` (or `plonk`, `halo2`).
+4. Depend on the generated ingot and call it with a static call.
+5. Use `Bn254Fr::from_canonical`, `poseidon_2`, `merkle_root`, `Transcript`; write generic code as `fn f<F: Field>(...)`.
+6. `fe fmt --check && fe test`.
+
 ## Demo
 
 Reproducible CLI examples; commands are in "Try it in 60 seconds" above.
