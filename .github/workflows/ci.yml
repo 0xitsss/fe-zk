@@ -37,6 +37,8 @@ jobs:
       - name: Differential test (quick)
         run: |
           curl -fsSL -o "$HOME/solc" https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux
+          # sha256 from https://binaries.soliditylang.org/linux-amd64/list.json (v0.8.24+commit.e11b9ed9)
+          echo "fb03a29a517452b9f12bcf459ef37d0a543765bb3bbc911e70a87d6a37c30d5f  $HOME/solc" | sha256sum -c -
           chmod +x "$HOME/solc"
           mkdir -p "$HOME/bin" && mv "$HOME/solc" "$HOME/bin/solc" && export PATH="$HOME/bin:$PATH"
           solc --version
