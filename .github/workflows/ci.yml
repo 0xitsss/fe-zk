@@ -24,17 +24,10 @@ jobs:
       - run: fe fmt --check
       - run: fe test
       # The root ingot is a library with no contract; contracts live in the example ingots.
-      - name: Game of Life example
-        working-directory: examples/life
-        run: |
-          fe fmt --check
-          fe test
-          fe build
-      - name: life-cli
-        working-directory: examples/life/cli
-        run: |
-          cargo test --release
-          cargo run --release -- --pattern glider --gens 64 --no-anim --check --bin ../out/Life.bin
+      # Game of Life: Fe tests, on-chain stepping checked against a per-cell reference in revm,
+      # and one Groth16 proof of 512 generations verified by the generated Fe verifier.
+      - name: Game of Life demo
+        run: scripts/life-demo.sh
       - name: fe-zk-gen
         working-directory: gen
         run: cargo test

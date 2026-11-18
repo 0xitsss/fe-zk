@@ -189,3 +189,29 @@ decisions).
 `GnarkVk<NP, NC>` fixes the public-input count and the BSB22 commitment count in the type. The sha256 Fiat–Shamir
 chain (gamma, beta, alpha, zeta, each on the previous raw digest) runs on precompile 0x02 with exact-length checks.
 Gas (execution): `mul` 293.7k vs gnark Solidity 261.9k; `mulcommit` 337.1k vs 283.3k.
+
+## Compile-time keys for every verifier family
+
+Emitted key points are `pub const` words checked by `static_assert(g1_is_valid(..))` / `static_assert(g2_is_valid(..))`;
+domains by `const fn` (`plonk_domain_is_valid`, `gnark_domain_is_valid`). Typed constants come from
+`from_coords_or_infinity`, keys from `from_consts`. If a constant is invalid, `from_consts` poisons the key (`[x]_2` or the
+SRS points become infinity) and every verify returns false, so no usable unchecked key exists even without the
+assertions. PLONK key construction: 1.05M gas at runtime before, 673 gas now; halo2 `vk()`: 1.51M before, 1.3k now.
+
+## zk Game of Life
+
+`examples/life/circuit/life.circom`: 7 constraints per cell (4-bit decomposition of the neighbour sum, then
+`p = b1 (1 - b2 - b3)`, `q = p b0`, `next = q + alive (p - q)`), 1792 per generation; public signals
+`[startCommit, endCommit]`, each `Poseidon(lo128, hi128)` of the packed board; the start board is private.
+
+| N | constraints | ptau | setup | prove | peak RSS |
+|---|---|---|---|---|---|
+| 64 | 115 424 | 2^17 | 105 s | 22 s | 2.0 GB |
+| 512 | 918 240 | 2^20 | 1066 s | 90 s | 8.8 GB |
+| 1024 | 1 835 744 | 2^21 | 1705 s | 144 s | 15.5 GB |
+
+`advanceProven(endLo, endHi, proof)` recomputes both commitments with `poseidon_2`, calls the generated
+`Life512Verifier` and stores the end board: 512 generations in one transaction. Gas (revm, execution): 512 `step()` calls
+336 393; one `run(board, 512)` 271 686; one proof verification 207 758; `advanceProven` 263 675. Break-even near 392
+generations. Limitations: the stored board is public (the demo shows succinctness, not privacy); N is fixed by the key;
+the ptau contribution and phase-2 entropy are public test values.
