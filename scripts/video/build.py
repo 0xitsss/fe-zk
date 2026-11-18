@@ -441,7 +441,7 @@ def main():
     Hh = ROOT / "vectors/halo2/standard_plonk_lookup"
     hdir = gdir / "halo2_verifier"
     rc, out_h = capture("gen_halo2", [GEN, "halo2", "--vk", str(Hh / "vk.json"), "--shplonk", str(Hh / "shplonk.json"),
-                                      "--gwc", str(Hh / "gwc.json"), "--name", "Halo2Circuit", "--out", str(hdir),
+                                      "--gwc", str(Hh / "gwc.json"), "--scheme", "both", "--name", "Halo2Circuit", "--out", str(hdir),
                                       "--fe-zk-path", os.path.relpath(ROOT, hdir)])
     assert rc == 0, out_h
     gl.append("$ fe-zk-gen halo2 --vk vectors/halo2/standard_plonk_lookup/vk.json --shplonk ... --gwc ...")
