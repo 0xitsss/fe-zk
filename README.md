@@ -262,27 +262,35 @@ Execution gas, same proof and same calldata, Fe verifier vs the Solidity verifie
 |---|---|---:|---:|---:|
 | Groth16 (snarkjs) | N = 1 | 191,620 | 188,926 | 1.01x |
 | Groth16 (snarkjs) | N = 3 (membership) | 207,341 | 202,220 | 1.03x |
-| PLONK (snarkjs) | N = 3 (membership) | 323,196 | 263,536 | 1.23x |
-| PLONK (gnark v0.12.0) | mul | 330,718 | 261,868 | 1.26x |
-| halo2-KZG SHPLONK (snark-verifier) | standard_plonk_lookup | 387,453 | 322,590 | 1.20x |
-| KZG single opening | test SRS | 129,753 | no reference | |
+| PLONK (snarkjs) | N = 3 (membership) | 293,471 | 263,536 | 1.11x |
+| PLONK (gnark v0.12.0) | mul | 329,800 | 261,868 | 1.26x |
+| halo2-KZG SHPLONK (snark-verifier) | standard_plonk_lookup | 384,734 | 322,590 | 1.19x |
+| KZG single opening | test SRS | 130,369 | no reference | |
 | FRI/STARK (Plonky3 Fibonacci) | 4 queries | 651,654 | no reference | |
 
-Poseidon (BN254) t = 3: 25,400 gas vs 29,005 for circomlibjs' hand-written EVM contract. Game of Life (output of `life-cli --prove`
-above): 512 `step()` calls cost 336,393 gas, one `run(board, 512)` 271,686, one proof verification 207,758; the
-break-even is about 392 generations. The `fe test` gas events and the `life-cli` numbers differ by a few percent
-from the `docs/GAS.md` runs (different build flags); `docs/GAS.md` states its method.
+Poseidon (BN254) t = 3: 25,400 gas vs 29,005 for circomlibjs' hand-written EVM contract. Every Fe row uses the
+compile-time key path (`from_consts` + `static_assert`, as the generated ingots do); `docs/GAS.md` also shows what a
+runtime-validated halo2 key costs (2.42M instead of 385k).
+
+Game of Life (output of `life-cli --prove` above): 512 `step()` calls cost 336,393 gas, one `run(board, 512)` 271,686,
+one `proveRun` call 207,758; the break-even is about 392 generations. These are a different measurement from the
+table: `life-cli` calls the `Life` contract, which forwards to the verifier (so `proveRun` includes the extra call),
+whereas `docs/GAS.md` calls the verifier directly (199,593 Fe, 195,613 Solidity; 336,384 for 512 `step()` calls;
+break-even about 385 generations with `run`). The gas events printed by `fe test --show-logs` are a third
+measurement (`evm.gas()` around the call, built by `fe test`) and differ by a few percent. `docs/GAS.md` states its method.
 
 ## Limitations
 
 What works: everything listed under Approach is implemented and tested against real reference proofs. What does not,
 and the assumptions:
 
-- **Gas.** Fe verifiers are 1-3 % above the Solidity ones for Groth16 and 20-32 % above for PLONK, gnark and
-  halo2. The cause we measured is per-call overhead: Fe's `Call.raw_staticcall` takes a heap `MemBuffer`, adding
-  about 190 gas of buffer allocation to each precompile call, and Fe loops are not unrolled (`docs/DESIGN.md`).
-  Deployed code is larger than the Solidity versions (`docs/GAS.md`); the halo2 verifiers are 22-24 kB, close to the
-  EIP-170 limit of 24,576 bytes.
+- **Gas.** Fe verifiers cost 1.01-1.03x the Solidity ones for Groth16, 1.11-1.12x for snarkjs PLONK, 1.19x for halo2
+  and 1.26-1.32x for gnark PLONK (`docs/GAS.md`, revm, same proofs). Both sides are dominated by the same precompiles;
+  the difference is per-call overhead: Fe's `Call.raw_staticcall` takes a heap `MemBuffer`, adding about 190 gas of
+  buffer allocation to each precompile call, and Fe loops are not unrolled (`docs/DESIGN.md`). Groth16 makes few calls,
+  the PLONK family dozens. Deployed code is 1.29-2.27x the size of the Solidity versions (`docs/GAS.md`); the halo2
+  SHPLONK wrapper is 25.8 kB, over the EIP-170 limit of 24,576 bytes (the GWC one is 24.5 kB, just under), and the
+  FRI verifier is over it as well, so those two are not deployable on mainnet as they are.
 - **FRI/STARK.** One proof shape: Plonky3 `uni-stark`, Fibonacci AIR, KoalaBear with a degree-4 extension, 16 rows,
   Keccak commitments, arity 2. The fixture parameters (4 queries, `log_blowup` 2, 3 query-PoW bits, constants at
   `src/verifier/fri.fe:35-41`) give about 11 bits of soundness: it demonstrates the verification algorithm and is not
