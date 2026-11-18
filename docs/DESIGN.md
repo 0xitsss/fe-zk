@@ -173,3 +173,19 @@ and calldata, so Fe is about 20% more expensive (wrapper overhead per precompile
 - Gas per library `verify`: N=1 190 982, N=2 198 851, N=3 206 158; generated membership contract call 211 433.
 - Fe findings: a dependency that reaches `unsafe` needs `allow_unsafe = true` in the dependent's `[dependencies]`
   entry; absolute dependency paths are rejected ("invalid path"); `assert` and `Option` methods are not const.
+
+### Precompile wrapper gas
+
+Wrappers use fixed-size uninitialised buffers and `pairing_check` writes G2 coordinates straight into the pairing
+input; every rule 6 check stays. Savings are 1–3% per verifier. The floor is the STATICCALL (100 warm + precompile
+price) plus about 190 gas of buffer allocation: std only exposes `Call.raw_staticcall`, which takes a heap
+`MemBuffer`; converting a static `FixedMemBuffer` with `into_buffer()` makes it escape to the heap. A public
+`raw_staticcall` taking a pointer and length (or a `FixedMemBuffer`) would save about 200 gas per precompile call —
+worth an upstream issue. The same wrapper measures 474–740 gas depending on surrounding code (inlining/arena
+decisions).
+
+## gnark PLONK (`src/verifier/gnark_plonk.fe`)
+
+`GnarkVk<NP, NC>` fixes the public-input count and the BSB22 commitment count in the type. The sha256 Fiat–Shamir
+chain (gamma, beta, alpha, zeta, each on the previous raw digest) runs on precompile 0x02 with exact-length checks.
+Gas (execution): `mul` 293.7k vs gnark Solidity 261.9k; `mulcommit` 337.1k vs 283.3k.
