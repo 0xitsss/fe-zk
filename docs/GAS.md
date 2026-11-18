@@ -12,7 +12,7 @@ same proof and the same words of calldata the reference verifier expects. Nothin
 - **exec**: gas spent by the top-level call frame (the contract's own execution including every precompile and sub-call; it excludes the 21,000 intrinsic cost and the calldata cost). Measured with an inspector on the frame, so it is exact even when the EIP-7623 floor decides the receipt.
 - **tx**: `gas_used` of the receipt: 21,000 + calldata (4 gas per zero byte, 16 per non-zero byte) + exec, raised to the EIP-7623 floor when that is larger. This is what a user pays for the call (before any refund; there are none here).
 - Every verifier is also run on a copy of the same calldata with one input word changed; the script asserts it is not accepted (revert or `false`) before it reports a number.
-- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `b4f13ce20169`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.1.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
+- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `a11b9513d38e`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.1.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
 - Solidity: `Version: 0.8.24+commit.e11b9ed9.Linux.g++`, `--optimize --optimize-runs 200`, default EVM version, the committed `Verifier.sol` of each fixture (snarkjs 0.7.6 `zkey export solidityverifier`, gnark v0.12.0 `ExportSolidity`, snark-verifier 0.2.7 for halo2). Exception: the snark-verifier (halo2) verifiers are compiled **without the optimizer**: with `--optimize` solc 0.8.24 fails with "Stack too deep", and with `--via-ir` the contract's own `mload(0x40) == 0x80` memory-layout check reverts. They pin `pragma solidity 0.8.19`; the script relaxes the pragma to `^0.8.19` in a scratch copy (no code change).
 - Deployed code size is the size of the runtime code stored on chain. EIP-170 limits it to 24,576 bytes.
 
@@ -40,7 +40,7 @@ Calldata sizes (bytes), Fe / Solidity: Groth16 (snarkjs) multiplier: 292/292; Gr
 | KZG | single opening | 129,753 | 153,541 | no Solidity reference |
 | KZG | GWC, 3 polynomials at 1 point | 147,893 | 174,753 | no Solidity reference |
 | KZG | SHPLONK, 3 polynomials at 2 points | 181,795 | 210,295 | no Solidity reference |
-| FRI/STARK | Plonky3 Fibonacci, KoalaBear, 4 queries (log2 trace 4) | 651,654 | 744,894 | no EVM reference verifier exists |
+| FRI/STARK | Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 4,674,110 | 5,832,558 | no EVM reference verifier exists |
 
 The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.4.2 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.
 
@@ -81,7 +81,7 @@ One `step()` call: exec 657, tx 21,897. Deployed `Life` code: 15,296 bytes (the 
 | KZG, single opening | 1,647 | n/a | 409,437 | n/a |
 | KZG, GWC, 3 polynomials at 1 point | 2,721 | n/a | 641,544 | n/a |
 | KZG, SHPLONK, 3 polynomials at 2 points | 3,405 | n/a | 789,262 | n/a |
-| FRI/STARK, Plonky3 Fibonacci, KoalaBear, 4 queries (log2 trace 4) | 25,387 (over EIP-170) | n/a | 5,530,097 | n/a |
+| FRI/STARK, Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 18,009 | n/a | 3,891,631 | n/a |
 
 Fe bytes include the verifying-key constants and, for the generated Groth16 contracts, nothing else but the call into the library; Solidity bytes are the compiler output of the reference verifier (key constants included).
 
@@ -93,7 +93,7 @@ Fe bytes include the verifying-key constants and, for the generated Groth16 cont
 - Poseidon: one generic implementation over the `Field` trait is unrolled into straight-line code at compile time; against hand-written bytecode it uses less execution gas but more code (see the size table).
 - The checks that Fe adds by construction (canonical inputs, curve membership of every proof point, pairing output exactly 1, fixed input count) are part of the numbers above. A reference verifier may check less: for example snarkjs' Groth16 verifier range-checks the public inputs and leaves point validation to the precompiles. The gas gap is therefore not purely overhead.
 - Where Fe is more expensive for a structural reason: `std` only exposes `Call.raw_staticcall` on a heap `MemBuffer`, so each precompile call pays for a buffer. A `raw_staticcall` taking a pointer and length would remove most of that per-call allocation (`docs/DESIGN.md`).
-- Code size: Fe runtime code is 1.28x to 1.99x the size of the Solidity verifier. Over the EIP-170 limit of 24,576 bytes (not deployable on mainnet as is; revm limits were lifted for this table): FRI/STARK. Contracts at or near the limit leave no room for application logic and would have to be split or shrunk before a real deployment.
+- Code size: Fe runtime code is 1.28x to 1.99x the size of the Solidity verifier. Over the EIP-170 limit of 24,576 bytes (not deployable on mainnet as is; revm limits were lifted for this table): none. Contracts at or near the limit leave no room for application logic and would have to be split or shrunk before a real deployment.
 - Life: on-chain cost grows linearly with N, the proof verification does not. With one `step()` transaction per generation (21,897 tx gas each) the Fe-verified proof is cheaper from about N = 10; with a single `run(board, N)` call (about 530 gas per generation plus 21,706 fixed, fitted on the two measured N) it is cheaper from about N = 385, with the Fe verifier (225,777 tx gas). Proof generation (off chain, minutes) is not included.
 - Limits of this comparison: one fixture per row (gas varies by a few hundred with calldata zero bytes), a synthetic EOA caller (no `msg.value`, no access list), revm spec OSAKA rather than a live chain, and the Fe wrappers' ABI decoding of static arrays is part of Fe's number (the Solidity verifiers decode with `calldataload` directly).
 

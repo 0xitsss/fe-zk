@@ -138,8 +138,8 @@ def halo2_fixture(kind):
 
 
 def fri_words():
-    text = open(os.path.join(ROOT, "src", "tests", "fri_fixture.fe")).read()
-    body = text.split("pub fn fib_proof()")[1]
+    text = open(os.path.join(ROOT, "src", "tests", "fri_fixture_secure.fe")).read()
+    body = text.split("pub fn fib_proof()")[1].split("= [", 1)[1].split("var m = unsafe", 1)[0]
     body = re.sub(r"//.*", "", body)
     toks = re.findall(r"0x[0-9a-fA-F]+|(?<![\w])\d+", body)
     words = [h32(t) for t in toks]
@@ -250,10 +250,11 @@ def main():
 
     # ---- FRI (Fe only)
     words, pub = fri_words()
-    assert len(words) == 217, len(words)
+    assert len(words) == int(re.search(r"FIB_PROOF_WORDS: usize = (\d+)", open(os.path.join(ROOT, "src", "tests", "fri_fixture_secure.fe")).read()).group(1)), len(words)
     fw = words + pub
-    f = measure(ctx, fe("FriFib"), "verify(uint256[217],uint256[3])", "".join(fw), "".join(tamper(fw, len(fw) - 1)))
-    fe_only.append(("FRI/STARK", "Plonky3 Fibonacci, KoalaBear, 4 queries (log2 trace 4)", f, "no EVM reference verifier exists"))
+    fri_bin = os.path.join(a.work, "fri", "FriFibVerifier.bin")
+    f = measure(ctx, fri_bin, f"verify(uint256[{len(words)}],uint256[3])", "".join(fw), "".join(tamper(fw, len(fw) - 1)))
+    fe_only.append(("FRI/STARK", "Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits)", f, "no EVM reference verifier exists"))
 
     # ---- Poseidon: Fe vs circomlibjs gencontract (optional)
     pos = []

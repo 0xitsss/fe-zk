@@ -1,0 +1,50 @@
+//! Deployable FRI/STARK verifier contract: checks a Plonky3 `p3-uni-stark` proof of the
+//! Fibonacci AIR (`fib(0, 1, ..) = x` after 2^10 rows, public values `(a, b, x)`) for the secure
+//! configuration `fe_zk::verifier::fri::config_secure` (KoalaBear, degree-4 extension, FRI arity 2,
+//! `log_blowup = 4`, 20 queries, 20 bits of query proof of work: 100 conjectured bits).
+//!
+//! The call is `verify(uint256[2721],uint256[3])`: the proof as flat words in the layout documented
+//! in `verifier/fri.fe`, then the 3 public values, plain ABI encoding (static arrays, no offsets).
+//! The arguments are read straight from calldata into a `MemArray<u256>` with a loop. A typed
+//! `[u256; 2721]` message field or local is avoided on purpose: with Fe 26.5.0 the compile time of a
+//! contract with a large static array grows much faster than its length (N = 300: 4 s, N = 600: 15 s,
+//! N = 2721: over 4 minutes and about 100 kB of code; `docs/DESIGN.md`, "FRI/STARK verifier"). The length
+//! is fixed (safety rule 4): calldata of any other size returns `false`; canonicity, transcript,
+//! Merkle paths, proof of work, folding, final polynomial and the AIR check at the out-of-domain point
+//! all run inside `verify`. The contract is pure: it reads no storage. Runtime code size is checked by
+//! `scripts/code-size.sh`.
+use core::abi::ByteSource
+use core::num::IntDowncast
+use core::ptr::MemArray
+use std::evm::CallData
+use fe_zk::verifier::fri::config_secure::{PROOF_WORDS, verify}
+
+msg FriMsg {
+    // selector of verify(uint256[2721],uint256[3]) (solc --hashes): a typed signature would need typed fields
+    #[selector = 0x12852f9a]
+    Verify -> bool,
+}
+
+pub contract FriFibVerifier {
+    recv FriMsg {
+        Verify {} -> bool {
+            let cd = CallData::with_base(4)
+            if cd.size() != (((PROOF_WORDS + 3) * 32) as u256).downcast_truncate() {
+                return false
+            }
+            var proof = unsafe {
+                MemArray<u256>::new_uninit(PROOF_WORDS)
+            }
+            var i: usize = 0
+            while i < PROOF_WORDS {
+                proof[i] = cd.word_at((i * 32) as u256)
+                i += 1
+            }
+            let base = (PROOF_WORDS * 32) as u256
+            verify(
+                proof,
+                [cd.word_at(base), cd.word_at(base + 32), cd.word_at(base + 64)],
+            )
+        }
+    }
+}

@@ -31,7 +31,6 @@ echo "== 2. fixtures for the Fe wrapper ingot (vectors/gas-fe)"
 GF=vectors/gas-fe
 cp src/tests/plonk_fixtures.fe "$GF/src/fx_plonk.fe"
 cp src/tests/gnark_plonk_fixtures.fe "$GF/src/fx_gnark.fe"
-sed 's/ingot::/fe_zk::/' src/tests/fri_fixture.fe > "$GF/src/fx_fri.fe"
 python3 -I - <<'PY'
 import json, re
 d = json.load(open("vectors/kzg/fixtures/kzg.json"))
@@ -61,10 +60,11 @@ for fx in multiplier multiplier2 membership life_64 life_512; do
 done
 
 echo "== 4. fe build -O $FE_OPT (wrappers, generated verifiers, Life)"
-rm -rf "$GAS_WORK/fe" "$GAS_WORK/g16" "$GAS_WORK/life"
+rm -rf "$GAS_WORK/fe" "$GAS_WORK/g16" "$GAS_WORK/life" "$GAS_WORK/fri"
 pids=()
 "$FE" build "$GF" -O "$FE_OPT" --out-dir "$GAS_WORK/fe" >/dev/null & pids+=($!)
 "$FE" build examples/life -O "$FE_OPT" --out-dir "$GAS_WORK/life" >/dev/null & pids+=($!)
+"$FE" build examples/fri_stark -O "$FE_OPT" --out-dir "$GAS_WORK/fri" >/dev/null & pids+=($!)
 for fx in multiplier multiplier2 membership life_64 life_512; do
   "$FE" build "$GF/generated/$fx" -O "$FE_OPT" --out-dir "$GAS_WORK/g16/$fx" >/dev/null & pids+=($!)
 done

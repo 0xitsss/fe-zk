@@ -1,0 +1,422 @@
+//! Configuration-independent FRI/STARK test suite: every function takes the configuration, a
+//! valid Plonky3 proof for it and the expected Fiat-Shamir values printed by Plonky3, and is run
+//! once per configuration from `fri.fe` (demo) and `fri_secure.fe` (secure). Tampered positions
+//! are computed from the proof layout (`ingot::verifier::fri::off_*`, `q_*`), so they cover the
+//! first, a middle and the last element of every part of the proof.
+use core::ptr::MemArray
+use ingot::field::{Field, KoalaBear}
+use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::{
+    Challenges,
+    FriParams,
+    check_air,
+    check_query,
+    num_folds,
+    off_commit_pow,
+    off_final_poly,
+    off_fri_commits,
+    off_quotient_chunk,
+    off_query_pow,
+    off_trace_local,
+    off_trace_next,
+    params_valid,
+    proof_is_canonical,
+    proof_words,
+    q_fold_paths,
+    q_fold_sibling,
+    q_quotient_path,
+    q_quotient_row,
+    q_trace_path,
+    q_trace_row,
+    query_base,
+    query_words,
+    replay_transcript,
+    verify,
+}
+
+const P: u256 = 0x7f000001
+
+fn kb(_ v: u256) -> KoalaBear {
+    KoalaBear::from_canonical(v).unwrap()
+}
+
+fn ext(_ c: [u256; 4]) -> KoalaBearExt4 {
+    KoalaBearExt4::new(kb(c[0]), kb(c[1]), kb(c[2]), kb(c[3]))
+}
+
+fn same(_ e: KoalaBearExt4, _ c: [u256; 4]) -> bool {
+    e.eq(ext(c))
+}
+
+fn ne(_ a: KoalaBearExt4, _ b: KoalaBearExt4) -> bool {
+    !a.eq(b)
+}
+
+/// A real copy of the words (`var r = p` would alias the same memory).
+fn clone_words(_ p: MemArray<u256>) -> MemArray<u256> {
+    var r = unsafe {
+        MemArray<u256>::new_uninit(p.len())
+    }
+    var i: usize = 0
+    while i < p.len() {
+        r[i] = p[i]
+        i += 1
+    }
+    r
+}
+
+/// Tamper modes of `rejects_all` and `challenges_after`.
+const FLIP: u256 = 0
+const BUMP: u256 = 1
+const ADD_P: u256 = 2
+const PUT: u256 = 3
+
+fn tampered(_ old: u256, _ mode: u256, _ v: u256) -> u256 {
+    if mode == FLIP {
+        old ^ 1
+    } else if mode == BUMP {
+        (old + 1) % P
+    } else if mode == ADD_P { old + P } else { v }
+}
+
+/// For every word index in `idx`: `verify` rejects `p` with that word tampered (`FLIP` the low
+/// bit of a hash, `BUMP` a field element plus one, `ADD_P` a non-canonical encoding, `PUT` set to
+/// `v`). One copy of the proof is made and the word restored after each check.
+fn rejects_all<const N: usize>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+    _ idx: [u256; N],
+    _ mode: u256,
+    _ v: u256,
+) -> bool {
+    var r = clone_words(p)
+    var ok = true
+    var k: usize = 0
+    while k < N {
+        let i = idx[k] as usize
+        let old = r[i]
+        r[i] = tampered(old, mode, v)
+        ok = ok && !verify(c, r, public)
+        r[i] = old
+        k += 1
+    }
+    ok
+}
+
+/// Challenges replayed from `p` with word `i` tampered.
+fn challenges_after(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+    _ i: u256,
+    _ mode: u256,
+) -> Challenges {
+    var r = clone_words(p)
+    r[i as usize] = tampered(r[i as usize], mode, 0)
+    replay_transcript(c, r, public)
+}
+
+pub fn layout_is_consistent(_ c: FriParams, _ p: MemArray<u256>) {
+    assert(params_valid(c))
+    assert((p.len() as u256) == proof_words(c))
+    // the last query record ends exactly at the end of the proof
+    assert(query_base(c, c.num_queries) == proof_words(c))
+    assert(query_base(c, 1) - query_base(c, 0) == query_words(c))
+}
+
+pub fn accepts(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    assert(proof_is_canonical(c, p, public))
+    let ch = replay_transcript(c, p, public)
+    assert(ch.pow_ok)
+    assert(check_air(c, p, public, ch))
+    var q: u256 = 0
+    while q < c.num_queries {
+        assert(check_query(c, p, ch, q))
+        q += 1
+    }
+    assert(verify(c, p, public))
+}
+
+pub fn transcript_matches<const F: usize, const Q: usize>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+    _ alpha: [u256; 4],
+    _ zeta: [u256; 4],
+    _ fri_alpha: [u256; 4],
+    _ betas: [[u256; 4]; F],
+    _ indices: [u256; Q],
+) {
+    assert((F as u256) == num_folds(c))
+    assert((Q as u256) == c.num_queries)
+    let ch = replay_transcript(c, p, public)
+    assert(ch.pow_ok)
+    assert(same(ch.alpha, alpha))
+    assert(same(ch.zeta, zeta))
+    assert(same(ch.fri_alpha, fri_alpha))
+    var i: usize = 0
+    while i < F {
+        assert(same(ch.betas[i], betas[i]))
+        i += 1
+    }
+    i = 0
+    while i < Q {
+        assert(ch.indices[i] == indices[i])
+        i += 1
+    }
+}
+
+pub fn rejects_tampered_merkle_siblings(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    let last = c.num_queries - 1
+    let lh = c.log_n + c.log_blowup
+    let fp = q_fold_paths(c)
+    let n_fp = query_words(c) - fp
+    // trace and quotient input paths: first, middle and last sibling, first, middle and last query
+    assert(
+        rejects_all(
+            c,
+            p,
+            public,
+            [
+                query_base(c, 1) + q_trace_path() + 3,
+                query_base(c, last) + q_trace_path(),
+                query_base(c, 0) + q_trace_path() + lh - 1,
+                query_base(c, 2) + q_quotient_path(c),
+                query_base(c, 1) + q_quotient_path(c) + lh - 1,
+                // commit-phase openings: first, a middle and the last sibling of the concatenated paths
+                query_base(c, 0) + fp,
+                query_base(c, last) + fp + n_fp / 2,
+                query_base(c, last) + fp + n_fp - 1,
+            ],
+            FLIP,
+            0,
+        ),
+    )
+    // the input is untouched
+    assert(verify(c, p, public))
+}
+
+pub fn rejects_tampered_opened_values(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    let f = num_folds(c)
+    assert(
+        rejects_all(
+            c,
+            p,
+            public,
+            [
+                // rows opened from the trace and quotient commitments
+                query_base(c, 0) + q_trace_row() + 1,
+                query_base(c, 0) + q_quotient_row(c) + 2,
+                // commit-phase sibling values: first and last fold
+                query_base(c, 1) + q_fold_sibling(c) + 4,
+                query_base(c, c.num_queries - 1) + q_fold_sibling(c) + 4 * (f - 1) + 3,
+                // claimed evaluations at zeta (FRI and the AIR check both catch them)
+                off_trace_local(),
+                off_trace_next() + 7,
+                off_quotient_chunk(),
+                off_quotient_chunk() + 15,
+            ],
+            BUMP,
+            0,
+        ),
+    )
+}
+
+pub fn rejects_tampered_final_poly(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    // first and last coefficient word
+    assert(
+        rejects_all(
+            c,
+            p,
+            public,
+            [off_final_poly(c), off_query_pow(c) - 1],
+            BUMP,
+            0,
+        ),
+    )
+}
+
+pub fn rejects_wrong_public_values(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    // a wrong output, start value or second value must be rejected
+    assert(!verify(c, p, [public[0], public[1], (public[2] + 1) % P]))
+    assert(!verify(c, p, [public[0], (public[1] + 1) % P, public[2]]))
+    assert(!verify(c, p, [(public[0] + 1) % P, public[1], public[2]]))
+    // swapped inputs
+    assert(!verify(c, p, [public[1], public[0], public[2]]))
+}
+
+pub fn rejects_changed_commitments(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    assert(
+        rejects_all(
+            c,
+            p,
+            public,
+            [0, 1, off_fri_commits() + 1, off_fri_commits() + num_folds(c) - 1],
+            FLIP,
+            0,
+        ),
+    )
+}
+
+pub fn rejects_bad_proof_of_work_witness(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    assert(rejects_all(c, p, public, [off_query_pow(c)], BUMP, 0))
+}
+
+/// Witnesses of a zero-bit commit-phase pow are pinned to zero (one encoding per proof).
+pub fn rejects_nonzero_commit_pow_witness(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+) {
+    assert(c.commit_pow_bits == 0)
+    assert(rejects_all(c, p, public, [off_commit_pow(c)], PUT, 1))
+}
+
+pub fn rejects_non_canonical_elements(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    // `add_p`: the same field element plus p; PUT: p itself, p + 5, 2^32 - 1
+    assert(
+        rejects_all(
+            c,
+            p,
+            public,
+            [
+                query_base(c, 2) + q_trace_row(),
+                query_base(c, 0) + q_fold_sibling(c) + 1,
+                query_base(c, c.num_queries - 1) + q_quotient_row(c) + 3,
+                off_query_pow(c),
+                off_trace_local(),
+                off_quotient_chunk() + 3,
+                off_final_poly(c) + 1,
+            ],
+            ADD_P,
+            0,
+        ),
+    )
+    assert(rejects_all(c, p, public, [off_trace_local()], PUT, P))
+    assert(
+        rejects_all(c, p, public, [off_final_poly(c) + 2], PUT, 0xffffffff),
+    )
+    // public values: a + p is the same field element but a different encoding
+    assert(!verify(c, p, [public[0] + P, public[1], public[2]]))
+    assert(!verify(c, p, [public[0], public[1] + P, public[2]]))
+    assert(!verify(c, p, [public[0], public[1], public[2] + P]))
+}
+
+/// A proof is only valid for the configuration it was made for.
+pub fn rejects_wrong_configuration(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    var c2 = c
+    c2.num_queries = c.num_queries + 1
+    assert(params_valid(c2))
+    assert(!verify(c2, p, public))
+    c2 = c
+    c2.log_blowup = c.log_blowup + 1
+    assert(!verify(c2, p, public))
+    c2 = c
+    c2.query_pow_bits = 0
+    assert(proof_words(c2) == proof_words(c))
+    assert(!verify(c2, p, public))
+    // out-of-range parameters are rejected up front
+    c2 = c
+    c2.num_queries = 0
+    assert(!params_valid(c2))
+    assert(!verify(c2, p, public))
+    c2 = c
+    c2.log_final = c.log_n
+    assert(!params_valid(c2))
+    c2 = c
+    c2.log_blowup = 0
+    assert(!params_valid(c2))
+    c2 = c
+    c2.query_pow_bits = 31
+    assert(!params_valid(c2))
+}
+
+/// Rule 5, part 1: public values and the trace commitment come before alpha and zeta.
+pub fn transcript_binds_public_values_and_trace_commitment(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+) {
+    let base = replay_transcript(c, p, public)
+    var i: usize = 0
+    while i < 3 {
+        var pv = public
+        pv[i] = (pv[i] + 1) % P
+        let cc = replay_transcript(c, p, pv)
+        assert(ne(cc.alpha, base.alpha))
+        assert(ne(cc.zeta, base.zeta))
+        assert(ne(cc.fri_alpha, base.fri_alpha))
+        i += 1
+    }
+    var cc = challenges_after(c, p, public, 0, FLIP)
+    assert(ne(cc.alpha, base.alpha))
+    assert(ne(cc.zeta, base.zeta))
+    // quotient commitment: alpha unchanged (sampled before it), zeta changes
+    cc = challenges_after(c, p, public, 1, FLIP)
+    assert(!ne(cc.alpha, base.alpha))
+    assert(ne(cc.zeta, base.zeta))
+}
+
+/// Rule 5, part 2: each claimed evaluation (all 8 extension elements of trace_local, trace_next
+/// and the quotient chunk: 32 words, every one tried) changes the FRI batching challenge.
+pub fn transcript_binds_claimed_evaluations(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+) {
+    let base = replay_transcript(c, p, public)
+    var w: u256 = 0
+    while w < 32 {
+        let cc = challenges_after(c, p, public, off_trace_local() + w, BUMP)
+        assert(!ne(cc.zeta, base.zeta))
+        assert(ne(cc.fri_alpha, base.fri_alpha))
+        w += 1
+    }
+}
+
+/// Rule 5, part 3: each commit-phase commitment changes its own beta and the last beta.
+pub fn transcript_binds_fri_commitments(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+    let base = replay_transcript(c, p, public)
+    let f = num_folds(c)
+    var j: u256 = 0
+    while j < f {
+        let cc = challenges_after(c, p, public, off_fri_commits() + j, FLIP)
+        assert(!ne(cc.fri_alpha, base.fri_alpha))
+        assert(ne(cc.betas[j as usize], base.betas[j as usize]))
+        assert(
+            ne(cc.betas[(f - 1) as usize], base.betas[(f - 1) as usize]),
+        )
+        j += 1
+    }
+}
+
+/// Rule 5, part 4: every word of the final polynomial and the query witness change the query
+/// indices (or fail the proof-of-work check) and leave the fold challenges alone.
+pub fn transcript_binds_final_poly_and_query_pow(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: [u256; 3],
+) {
+    let base = replay_transcript(c, p, public)
+    let f = num_folds(c)
+    var i: u256 = off_final_poly(c)
+    while i <= off_query_pow(c) {
+        let cc = challenges_after(c, p, public, i, BUMP)
+        assert(
+            !ne(cc.betas[(f - 1) as usize], base.betas[(f - 1) as usize]),
+        )
+        assert(indices_differ(c, cc.indices, base.indices) || !cc.pow_ok)
+        i += 1
+    }
+}
+
+fn indices_differ(_ c: FriParams, _ a: [u256; 128], _ b: [u256; 128]) -> bool {
+    var d = false
+    var i: usize = 0
+    while (i as u256) < c.num_queries {
+        if a[i] != b[i] { d = true }
+        i += 1
+    }
+    d
+}

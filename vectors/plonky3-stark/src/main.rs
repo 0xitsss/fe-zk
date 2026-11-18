@@ -31,12 +31,80 @@ use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark::{prove, verify, StarkConfig};
 use serde_json::{json, Value};
 
-const LOG_TRACE_ROWS: usize = 4;
-const LOG_BLOWUP: usize = 2;
-const LOG_FINAL_POLY_LEN: usize = 1;
-const NUM_QUERIES: usize = 4;
-const COMMIT_POW_BITS: usize = 0;
-const QUERY_POW_BITS: usize = 3;
+/// Proof configuration. Defaults are the small demo fixture (`fib/`); `--log-trace`, `--log-blowup`,
+/// `--log-final`, `--queries`, `--commit-pow`, `--query-pow` override them (see `README.md`).
+#[derive(Clone, Copy)]
+struct Cfg {
+    log_trace_rows: usize,
+    log_blowup: usize,
+    log_final_poly_len: usize,
+    num_queries: usize,
+    commit_pow_bits: usize,
+    query_pow_bits: usize,
+}
+
+/// Grinding bits of the scripted challenger session (independent of the proof configuration).
+const CHALLENGER_SCRIPT_POW_BITS: usize = 3;
+
+impl Cfg {
+    fn parse() -> (PathBuf, Cfg) {
+        let mut c = Cfg {
+            log_trace_rows: 4,
+            log_blowup: 2,
+            log_final_poly_len: 1,
+            num_queries: 4,
+            commit_pow_bits: 0,
+            query_pow_bits: 3,
+        };
+        let mut out = PathBuf::from("fib");
+        let mut args = std::env::args().skip(1);
+        while let Some(a) = args.next() {
+            let mut num = || -> usize { args.next().expect("value").parse().expect("number") };
+            match a.as_str() {
+                "--log-trace" => c.log_trace_rows = num(),
+                "--log-blowup" => c.log_blowup = num(),
+                "--log-final" => c.log_final_poly_len = num(),
+                "--queries" => c.num_queries = num(),
+                "--commit-pow" => c.commit_pow_bits = num(),
+                "--query-pow" => c.query_pow_bits = num(),
+                other => out = PathBuf::from(other),
+            }
+        }
+        (out, c)
+    }
+
+    /// Plonky3's `FriParameters::conjectured_soundness_bits` (ethSTARK conjecture).
+    fn conjectured_bits(&self) -> usize {
+        self.log_blowup * self.num_queries + self.query_pow_bits
+    }
+
+    /// Soundness estimates in bits (floating point), see `docs/DESIGN.md`. The `proven_*` figures
+    /// take the query-phase error of the decoding regime plus the grinding bits and combine it with
+    /// the commit-phase / field error (extension field of size about 2^124).
+    fn soundness(&self) -> Value {
+        let rho = 0.5f64.powi(self.log_blowup as i32);
+        let q = self.num_queries as f64;
+        let pow = (self.query_pow_bits + self.commit_pow_bits) as f64;
+        // unique decoding: per-query error (1 + rho) / 2
+        let uniq_q = -((1.0 + rho) / 2.0).log2() * q + pow;
+        // Johnson bound with multiplicity m: per-query error (1 + 1/(2m)) sqrt(rho)
+        let m = 10.0f64;
+        let john_q = -((1.0 + 1.0 / (2.0 * m)) * rho.sqrt()).log2() * q + pow;
+        // BCIKS'20 round-by-round FRI error: (m + 1/2)^7 / (3 rho^1.5) * n^2 / |F|, n = LDE size
+        let log_n = (self.log_trace_rows + self.log_blowup) as f64;
+        let log_f = 4.0 * 31.0; // |F| ~ (2^31)^4
+        let eps_commit =
+            (m + 0.5).log2() * 7.0 - (3.0f64).log2() - 1.5 * rho.log2() + 2.0 * log_n - log_f;
+        let comb = |bits: f64| -((-bits).exp2() + eps_commit.exp2()).log2();
+        json!({
+            "conjectured_bits": self.conjectured_bits(),
+            "conjectured_formula": "log_blowup * num_queries + query_proof_of_work_bits (p3_fri FriParameters::conjectured_soundness_bits)",
+            "proven_unique_decoding_bits": comb(uniq_q),
+            "proven_johnson_m10_bits": comb(john_q),
+            "log2_eps_commit_phase": eps_commit,
+        })
+    }
+}
 
 pub struct FibonacciAir {}
 
@@ -110,18 +178,18 @@ type Dft = Radix2DitParallel<Val>;
 type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
 
-fn make_config() -> MyConfig {
+fn make_config(c: &Cfg) -> MyConfig {
     let byte_hash = ByteHash {};
     let field_hash = FieldHash::new(byte_hash);
     let compress = MyCompress::new(byte_hash);
     let val_mmcs = ValMmcs::new(field_hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = FriParameters {
-        log_blowup: LOG_BLOWUP,
-        log_final_poly_len: LOG_FINAL_POLY_LEN,
-        num_queries: NUM_QUERIES,
-        commit_proof_of_work_bits: COMMIT_POW_BITS,
-        query_proof_of_work_bits: QUERY_POW_BITS,
+        log_blowup: c.log_blowup,
+        log_final_poly_len: c.log_final_poly_len,
+        num_queries: c.num_queries,
+        commit_proof_of_work_bits: c.commit_pow_bits,
+        query_proof_of_work_bits: c.query_pow_bits,
         mmcs: challenge_mmcs,
     };
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri_params);
@@ -192,8 +260,8 @@ fn challenger_vectors() -> Value {
         ops.push(json!({"op": "sample_ext"}));
         out.push(ext(&e));
     }
-    let w = c.grind(QUERY_POW_BITS);
-    ops.push(json!({"op": "grind_check", "bits": QUERY_POW_BITS, "witness": w.as_canonical_u64()}));
+    let w = c.grind(CHALLENGER_SCRIPT_POW_BITS);
+    ops.push(json!({"op": "grind_check", "bits": CHALLENGER_SCRIPT_POW_BITS, "witness": w.as_canonical_u64()}));
     let e: Challenge = c.sample_algebra_element();
     ops.push(json!({"op": "sample_ext"}));
     out.push(ext(&e));
@@ -233,6 +301,7 @@ fn ext_vectors() -> Value {
 /// Replay the verifier's Fiat-Shamir transcript with the real Plonky3 challenger and report
 /// every derived challenge (independent expected values for the Fe transcript test).
 fn transcript_dump(
+    cfg: &Cfg,
     config: &MyConfig,
     proof: &p3_uni_stark::Proof<MyConfig>,
     pis: &[Val],
@@ -256,28 +325,28 @@ fn transcript_dump(
     let mut betas = vec![];
     for (comm, w) in op.commit_phase_commits.iter().zip(&op.commit_pow_witnesses) {
         c.observe(comm.clone());
-        assert!(c.check_witness(COMMIT_POW_BITS, *w));
+        assert!(c.check_witness(cfg.commit_pow_bits, *w));
         let b: Challenge = c.sample_algebra_element();
         betas.push(ext(&b));
     }
     c.observe_algebra_slice(&op.final_poly);
-    let pow_ok = c.check_witness(QUERY_POW_BITS, op.query_pow_witness);
-    let log_h = op.commit_phase_commits.len() + LOG_BLOWUP + LOG_FINAL_POLY_LEN;
-    let indices: Vec<usize> = (0..NUM_QUERIES).map(|_| c.sample_bits(log_h)).collect();
+    let pow_ok = c.check_witness(cfg.query_pow_bits, op.query_pow_witness);
+    let log_h = op.commit_phase_commits.len() + cfg.log_blowup + cfg.log_final_poly_len;
+    let indices: Vec<usize> = (0..cfg.num_queries).map(|_| c.sample_bits(log_h)).collect();
     json!({"alpha": ext(&alpha), "zeta": ext(&zeta), "fri_alpha": ext(&fri_alpha),
            "betas": betas, "pow_ok": pow_ok, "indices": indices})
 }
 
 fn main() {
-    let out_dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "fib".into()));
+    let (out_dir, cfg) = Cfg::parse();
     fs::create_dir_all(&out_dir).unwrap();
 
-    let n = 1usize << LOG_TRACE_ROWS;
+    let n = 1usize << cfg.log_trace_rows;
     let trace = generate_trace(0, 1, n);
     let x = trace.get(n - 1, 1).unwrap();
     let pis = vec![Val::ZERO, Val::ONE, x];
 
-    let config = make_config();
+    let config = make_config(&cfg);
     let proof = prove(&config, &FibonacciAir {}, trace, &pis);
     verify(&config, &FibonacciAir {}, &proof, &pis).expect("plonky3 rejects its own proof");
 
@@ -291,12 +360,13 @@ fn main() {
         "challenge_field": "BinomialExtensionField<KoalaBear,4>, x^4 = 3",
         "hash": "Keccak256Hash over SerializingHasher (little-endian u32 bytes); compress = keccak256(left || right)",
         "challenger": "SerializingChallenger32<KoalaBear, HashChallenger<u8, Keccak256Hash, 32>>, initial state empty",
-        "log_trace_rows": LOG_TRACE_ROWS,
-        "log_blowup": LOG_BLOWUP,
-        "log_final_poly_len": LOG_FINAL_POLY_LEN,
-        "num_queries": NUM_QUERIES,
-        "commit_proof_of_work_bits": COMMIT_POW_BITS,
-        "query_proof_of_work_bits": QUERY_POW_BITS,
+        "log_trace_rows": cfg.log_trace_rows,
+        "log_blowup": cfg.log_blowup,
+        "log_final_poly_len": cfg.log_final_poly_len,
+        "num_queries": cfg.num_queries,
+        "commit_proof_of_work_bits": cfg.commit_pow_bits,
+        "query_proof_of_work_bits": cfg.query_pow_bits,
+        "soundness": cfg.soundness(),
         "public_values": pis.iter().map(|v| v.as_canonical_u64()).collect::<Vec<_>>(),
         "degree_bits": proof.degree_bits,
         "num_quotient_chunks": proof.opened_values.quotient_chunks.len(),
@@ -306,7 +376,7 @@ fn main() {
     fs::write(out_dir.join("proof.json"), serde_json::to_string_pretty(&proof_json).unwrap()).unwrap();
     fs::write(out_dir.join("config.json"), serde_json::to_string_pretty(&config_json).unwrap()).unwrap();
     let vectors = json!({"ext": ext_vectors(), "challenger": challenger_vectors(),
-        "transcript": transcript_dump(&config, &proof, &pis)});
+        "transcript": transcript_dump(&cfg, &config, &proof, &pis)});
     fs::write(out_dir.join("vectors.json"), serde_json::to_string_pretty(&vectors).unwrap()).unwrap();
     eprintln!("wrote {} (proof valid in Plonky3)", out_dir.display());
 }
