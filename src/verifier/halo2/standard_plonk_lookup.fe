@@ -1,27 +1,19 @@
-//! GENERATED FILE, do not edit. Tool: fe-zk emit_fe.py 0.1.0.
+//! GENERATED FILE, do not edit. Tool: fe-zk-gen 0.1.0.
 //! vk digest (sha256 of canonical vk.json): 6eb34121a1280702ea74e5b4261e37f37ad6c2f3a82cb545477aed4d2b7700ed
 //! Circuit: k=5, 3 advice / 8 fixed / 1 instance columns, 1 lookup(s), 2 permutation set(s),
 //! 4 quotient chunks. halo2-KZG verifier for BN254 with the snark-verifier EvmTranscript.
 //! Algorithm and field order: vectors/halo2/SPEC.md. Shared code: halo2/common.fe.
 //!
 //! Safety rules: 1 (every proof scalar / instance `from_canonical`, every coordinate canonical),
-//! 2 (every proof point `read_g1`: on curve, no infinity), 3 (SRS G2 points built by
-//! `G2::from_coords`: on curve + subgroup), 4 (proof and instance lengths are array types),
+//! 2 (every proof point `read_g1`: on curve, no infinity), 3 (SRS and key points are compile-time
+//! constants checked by `static_assert`: canonical, on curve, G2 in the subgroup; no runtime gas),
+//! 4 (proof and instance lengths are array types),
 //! 5 (transcript absorbs the vk transcript_repr, the instances and every commitment and
 //! evaluation in reference order), 6 (precompile wrappers check success, length, result).
 use std::evm::Call
-use ingot::ec::{G1, G2, g1_mul}
+use ingot::ec::{G1, G2, g1_is_valid, g1_mul, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
-use super::common::{
-    Halo2Transcript,
-    Halo2Vk,
-    batch_inv,
-    final_pairing,
-    fr,
-    g1_const,
-    mul_add,
-    read_g1,
-}
+use super::common::{Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1}
 
 /// Number of 32-byte words of a proof for this circuit (fixed by the vk, rule 4).
 pub const COMMON_WORDS: usize = 53
@@ -29,27 +21,100 @@ pub const NUM_INSTANCES: usize = 1
 pub const TRANSCRIPT_REPR: u256 = 0x104c4415faa6044941fce22fe2161c7adde75852cf1991718d6522b24bc654de
 pub const VK_DIGEST: u256 = 0x6eb34121a1280702ea74e5b4261e37f37ad6c2f3a82cb545477aed4d2b7700ed
 
-/// SRS and transcript constants. G2 points are validated (curve + subgroup) here.
+const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+// SRS and key constants, validated by fe-zk-gen and re-validated by the Fe compiler below.
+// G2 coordinates are (real, imaginary) parts: x0 + x1*u, y0 + y1*u.
+const SRS_G1_X: u256 = 0x0000000000000000000000000000000000000000000000000000000000000001
+const SRS_G1_Y: u256 = 0x0000000000000000000000000000000000000000000000000000000000000002
+const SRS_G2_X0: u256 = 0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed
+const SRS_G2_X1: u256 = 0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2
+const SRS_G2_Y0: u256 = 0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa
+const SRS_G2_Y1: u256 = 0x090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b
+const SRS_S_G2_X0: u256 = 0x2f713849f6d522eb252782d4282db323a975cafe6c4a02c1824c39b312e2faf0
+const SRS_S_G2_X1: u256 = 0x13d3d7b3f758298362beb413e26db61a9452a03c0aa92d43fb737c9d886d4305
+const SRS_S_G2_Y0: u256 = 0x2226ee85badff945095d806014153841409329409e97a79264798283b26d86d7
+const SRS_S_G2_Y1: u256 = 0x03dc838a24dc8c3d95e8b1654e2f30379a6baebf1dde66b5fd0e9685f6060596
+const FX0_X: u256 = 0x1ce4f32b4b45e82e6870bec6fdeae00826ede94489f6bfc96b7b33bae150741c
+const FX0_Y: u256 = 0x0ed395236548b748501661b115ef5d5900efcf3a2b6f96ffc3e472065de1b6f9
+const FX1_X: u256 = 0x077215918bd42d53495dc89e784f3eb49a701317a2d5830137295b0df9f63789
+const FX1_Y: u256 = 0x1339c6d83c3f2bb25b1967c9240626cccd648eb06260762b7442305064f918ef
+const FX2_X: u256 = 0x025aaf3fff4255a54718c45bf5eb34f23bfa4fc4cd537130b5d643d6edd1eb92
+const FX2_Y: u256 = 0x08209f731e5a12451a87308fd5026a794716e36be15f5e1e9e255a832e70d6db
+const FX3_X: u256 = 0x182fbd5a3f5533f0950d9468f1e88f1bb146e32018f29c1205aa7255da2d9b53
+const FX3_Y: u256 = 0x24092252ea855540948204b346e5799fa8c8c331d8410347e383865cb07f9bea
+const FX4_X: u256 = 0x141cb2bfdb32503484c900716075f1d815f1fe9d6ecb62e98c40cc51c39b3d35
+const FX4_Y: u256 = 0x0d7f0116f17b342529f87901ed295025e33d59dc21aad6484df3604918fb69f1
+const FX5_X: u256 = 0x06e78206e091090f508963b7765a1b7f71279ab049bf4a04667004a153d0fd41
+const FX5_Y: u256 = 0x0dcd1e3a6241b176f87f3cc23133a299d66082a7d1b6d6561a298bda05e1bed8
+const FX6_X: u256 = 0x2ea3fd59864b8c5df0d14faa06636f8fad3f9a26a93a1e09fa2f58f1f37c6fa3
+const FX6_Y: u256 = 0x1764d55485b2400aa3f5cd1488c7e49a1a5c0cabad28209bdef6090353f32204
+const FX7_X: u256 = 0x0de055c859377282fafacf0a5b54e328a9ee404badd6465c5b238e83ce6c5027
+const FX7_Y: u256 = 0x166178f20096050c23fcccfb34e87d028f37839fe23b444eaf13f96bcf27a978
+const SG0_X: u256 = 0x00ab6226691e724b17b1cc05b86a14e5616c896db3f4141ee4add77b2b08183e
+const SG0_Y: u256 = 0x12bf03c99f4ea5864282c33e0d69104dfeccf19557e13939611c5fb5692b8bac
+const SG1_X: u256 = 0x2d7d47818652b4fbf924ac4fc7f3a369511384312b5253a50e82a313df6068d4
+const SG1_Y: u256 = 0x0dec97cafabac08fed159b13f122e3c9724c7f9e766fa41f2f528d5fd47a1d4e
+const SG2_X: u256 = 0x02d37bdd6f056715555aa4c5e9f7d66cc2c7c3ef9adccd93c8c250562fbf6da7
+const SG2_Y: u256 = 0x190080cc3d25e634c36424e0c0777f32d7aea47cff1aaa16a81547153e0a5f13
+const SG3_X: u256 = 0x067b9e67e7ce7f7831d3525af7afa7ec6cdd0acaa3088cb37bcc175043a87209
+const SG3_Y: u256 = 0x0e3f7e308dba6b54ca029ec7bd337c421d0959f9ca903b644aff82da6adbde92
+
+// Compile-time validation (Fe CTFE): a key with an invalid point does not compile. Costs no gas;
+// the G2 subgroup checks alone are ~750k gas each at runtime. Fixed and sigma commitments may
+// not be the point at infinity (halo2's EvmTranscript rejects it).
+static_assert(TRANSCRIPT_REPR < SCALAR_R)
+static_assert(g1_is_valid(SRS_G1_X, SRS_G1_Y))
+static_assert(!SRS_G1.is_infinity())
+static_assert(g2_is_valid(SRS_G2_X0, SRS_G2_X1, SRS_G2_Y0, SRS_G2_Y1))
+static_assert(!SRS_G2.is_infinity())
+static_assert(g2_is_valid(SRS_S_G2_X0, SRS_S_G2_X1, SRS_S_G2_Y0, SRS_S_G2_Y1))
+static_assert(!SRS_S_G2.is_infinity())
+static_assert(g1_is_valid(FX0_X, FX0_Y))
+static_assert(!VK_FX0.is_infinity())
+static_assert(g1_is_valid(FX1_X, FX1_Y))
+static_assert(!VK_FX1.is_infinity())
+static_assert(g1_is_valid(FX2_X, FX2_Y))
+static_assert(!VK_FX2.is_infinity())
+static_assert(g1_is_valid(FX3_X, FX3_Y))
+static_assert(!VK_FX3.is_infinity())
+static_assert(g1_is_valid(FX4_X, FX4_Y))
+static_assert(!VK_FX4.is_infinity())
+static_assert(g1_is_valid(FX5_X, FX5_Y))
+static_assert(!VK_FX5.is_infinity())
+static_assert(g1_is_valid(FX6_X, FX6_Y))
+static_assert(!VK_FX6.is_infinity())
+static_assert(g1_is_valid(FX7_X, FX7_Y))
+static_assert(!VK_FX7.is_infinity())
+static_assert(g1_is_valid(SG0_X, SG0_Y))
+static_assert(!VK_SG0.is_infinity())
+static_assert(g1_is_valid(SG1_X, SG1_Y))
+static_assert(!VK_SG1.is_infinity())
+static_assert(g1_is_valid(SG2_X, SG2_Y))
+static_assert(!VK_SG2.is_infinity())
+static_assert(g1_is_valid(SG3_X, SG3_Y))
+static_assert(!VK_SG3.is_infinity())
+
+// Typed points. `from_coords_or_infinity` yields infinity for an invalid point, so an unchecked
+// point cannot exist even if the assertions above were removed.
+const SRS_G1: G1 = G1::from_coords_or_infinity(SRS_G1_X, SRS_G1_Y)
+const SRS_G2: G2 = G2::from_coords_or_infinity(SRS_G2_X0, SRS_G2_X1, SRS_G2_Y0, SRS_G2_Y1)
+const SRS_S_G2: G2 = G2::from_coords_or_infinity(SRS_S_G2_X0, SRS_S_G2_X1, SRS_S_G2_Y0, SRS_S_G2_Y1)
+const VK_FX0: G1 = G1::from_coords_or_infinity(FX0_X, FX0_Y)
+const VK_FX1: G1 = G1::from_coords_or_infinity(FX1_X, FX1_Y)
+const VK_FX2: G1 = G1::from_coords_or_infinity(FX2_X, FX2_Y)
+const VK_FX3: G1 = G1::from_coords_or_infinity(FX3_X, FX3_Y)
+const VK_FX4: G1 = G1::from_coords_or_infinity(FX4_X, FX4_Y)
+const VK_FX5: G1 = G1::from_coords_or_infinity(FX5_X, FX5_Y)
+const VK_FX6: G1 = G1::from_coords_or_infinity(FX6_X, FX6_Y)
+const VK_FX7: G1 = G1::from_coords_or_infinity(FX7_X, FX7_Y)
+const VK_SG0: G1 = G1::from_coords_or_infinity(SG0_X, SG0_Y)
+const VK_SG1: G1 = G1::from_coords_or_infinity(SG1_X, SG1_Y)
+const VK_SG2: G1 = G1::from_coords_or_infinity(SG2_X, SG2_Y)
+const VK_SG3: G1 = G1::from_coords_or_infinity(SG3_X, SG3_Y)
+
+/// SRS and transcript constants (compile-time validated, no gas for validation).
 pub fn vk() -> Halo2Vk {
-    let g2 = G2::from_coords(
-        0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed,
-        0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2,
-        0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa,
-        0x090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b,
-    )
-        .unwrap()
-    let s_g2 = G2::from_coords(
-        0x2f713849f6d522eb252782d4282db323a975cafe6c4a02c1824c39b312e2faf0,
-        0x13d3d7b3f758298362beb413e26db61a9452a03c0aa92d43fb737c9d886d4305,
-        0x2226ee85badff945095d806014153841409329409e97a79264798283b26d86d7,
-        0x03dc838a24dc8c3d95e8b1654e2f30379a6baebf1dde66b5fd0e9685f6060596,
-    )
-        .unwrap()
-    let g1 = g1_const(
-        0x0000000000000000000000000000000000000000000000000000000000000001,
-        0x0000000000000000000000000000000000000000000000000000000000000002,
-    )
-    Halo2Vk::new(fr(TRANSCRIPT_REPR), g1, g2, s_g2).unwrap()
+    Halo2Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)
 }
 
 /// Everything the opening step needs, after the evaluation at `x` has been derived.
@@ -674,54 +739,18 @@ uses (call: Call)
     let ls0 = p1.ev[26]
     let x = p1.x
     let expected_h = p1.expected_h
-    let fx0 = g1_const(
-        0x1ce4f32b4b45e82e6870bec6fdeae00826ede94489f6bfc96b7b33bae150741c,
-        0x0ed395236548b748501661b115ef5d5900efcf3a2b6f96ffc3e472065de1b6f9,
-    )
-    let fx1 = g1_const(
-        0x077215918bd42d53495dc89e784f3eb49a701317a2d5830137295b0df9f63789,
-        0x1339c6d83c3f2bb25b1967c9240626cccd648eb06260762b7442305064f918ef,
-    )
-    let fx2 = g1_const(
-        0x025aaf3fff4255a54718c45bf5eb34f23bfa4fc4cd537130b5d643d6edd1eb92,
-        0x08209f731e5a12451a87308fd5026a794716e36be15f5e1e9e255a832e70d6db,
-    )
-    let fx3 = g1_const(
-        0x182fbd5a3f5533f0950d9468f1e88f1bb146e32018f29c1205aa7255da2d9b53,
-        0x24092252ea855540948204b346e5799fa8c8c331d8410347e383865cb07f9bea,
-    )
-    let fx4 = g1_const(
-        0x141cb2bfdb32503484c900716075f1d815f1fe9d6ecb62e98c40cc51c39b3d35,
-        0x0d7f0116f17b342529f87901ed295025e33d59dc21aad6484df3604918fb69f1,
-    )
-    let fx5 = g1_const(
-        0x06e78206e091090f508963b7765a1b7f71279ab049bf4a04667004a153d0fd41,
-        0x0dcd1e3a6241b176f87f3cc23133a299d66082a7d1b6d6561a298bda05e1bed8,
-    )
-    let fx6 = g1_const(
-        0x2ea3fd59864b8c5df0d14faa06636f8fad3f9a26a93a1e09fa2f58f1f37c6fa3,
-        0x1764d55485b2400aa3f5cd1488c7e49a1a5c0cabad28209bdef6090353f32204,
-    )
-    let fx7 = g1_const(
-        0x0de055c859377282fafacf0a5b54e328a9ee404badd6465c5b238e83ce6c5027,
-        0x166178f20096050c23fcccfb34e87d028f37839fe23b444eaf13f96bcf27a978,
-    )
-    let sgc0 = g1_const(
-        0x00ab6226691e724b17b1cc05b86a14e5616c896db3f4141ee4add77b2b08183e,
-        0x12bf03c99f4ea5864282c33e0d69104dfeccf19557e13939611c5fb5692b8bac,
-    )
-    let sgc1 = g1_const(
-        0x2d7d47818652b4fbf924ac4fc7f3a369511384312b5253a50e82a313df6068d4,
-        0x0dec97cafabac08fed159b13f122e3c9724c7f9e766fa41f2f528d5fd47a1d4e,
-    )
-    let sgc2 = g1_const(
-        0x02d37bdd6f056715555aa4c5e9f7d66cc2c7c3ef9adccd93c8c250562fbf6da7,
-        0x190080cc3d25e634c36424e0c0777f32d7aea47cff1aaa16a81547153e0a5f13,
-    )
-    let sgc3 = g1_const(
-        0x067b9e67e7ce7f7831d3525af7afa7ec6cdd0acaa3088cb37bcc175043a87209,
-        0x0e3f7e308dba6b54ca029ec7bd337c421d0959f9ca903b644aff82da6adbde92,
-    )
+    let fx0 = VK_FX0
+    let fx1 = VK_FX1
+    let fx2 = VK_FX2
+    let fx3 = VK_FX3
+    let fx4 = VK_FX4
+    let fx5 = VK_FX5
+    let fx6 = VK_FX6
+    let fx7 = VK_FX7
+    let sgc0 = VK_SG0
+    let sgc1 = VK_SG1
+    let sgc2 = VK_SG2
+    let sgc3 = VK_SG3
     let pt_0 = x
     let pt_1 = x.mul(
             fr(
@@ -1031,54 +1060,18 @@ uses (call: Call)
     let ls0 = p1.ev[26]
     let x = p1.x
     let expected_h = p1.expected_h
-    let fx0 = g1_const(
-        0x1ce4f32b4b45e82e6870bec6fdeae00826ede94489f6bfc96b7b33bae150741c,
-        0x0ed395236548b748501661b115ef5d5900efcf3a2b6f96ffc3e472065de1b6f9,
-    )
-    let fx1 = g1_const(
-        0x077215918bd42d53495dc89e784f3eb49a701317a2d5830137295b0df9f63789,
-        0x1339c6d83c3f2bb25b1967c9240626cccd648eb06260762b7442305064f918ef,
-    )
-    let fx2 = g1_const(
-        0x025aaf3fff4255a54718c45bf5eb34f23bfa4fc4cd537130b5d643d6edd1eb92,
-        0x08209f731e5a12451a87308fd5026a794716e36be15f5e1e9e255a832e70d6db,
-    )
-    let fx3 = g1_const(
-        0x182fbd5a3f5533f0950d9468f1e88f1bb146e32018f29c1205aa7255da2d9b53,
-        0x24092252ea855540948204b346e5799fa8c8c331d8410347e383865cb07f9bea,
-    )
-    let fx4 = g1_const(
-        0x141cb2bfdb32503484c900716075f1d815f1fe9d6ecb62e98c40cc51c39b3d35,
-        0x0d7f0116f17b342529f87901ed295025e33d59dc21aad6484df3604918fb69f1,
-    )
-    let fx5 = g1_const(
-        0x06e78206e091090f508963b7765a1b7f71279ab049bf4a04667004a153d0fd41,
-        0x0dcd1e3a6241b176f87f3cc23133a299d66082a7d1b6d6561a298bda05e1bed8,
-    )
-    let fx6 = g1_const(
-        0x2ea3fd59864b8c5df0d14faa06636f8fad3f9a26a93a1e09fa2f58f1f37c6fa3,
-        0x1764d55485b2400aa3f5cd1488c7e49a1a5c0cabad28209bdef6090353f32204,
-    )
-    let fx7 = g1_const(
-        0x0de055c859377282fafacf0a5b54e328a9ee404badd6465c5b238e83ce6c5027,
-        0x166178f20096050c23fcccfb34e87d028f37839fe23b444eaf13f96bcf27a978,
-    )
-    let sgc0 = g1_const(
-        0x00ab6226691e724b17b1cc05b86a14e5616c896db3f4141ee4add77b2b08183e,
-        0x12bf03c99f4ea5864282c33e0d69104dfeccf19557e13939611c5fb5692b8bac,
-    )
-    let sgc1 = g1_const(
-        0x2d7d47818652b4fbf924ac4fc7f3a369511384312b5253a50e82a313df6068d4,
-        0x0dec97cafabac08fed159b13f122e3c9724c7f9e766fa41f2f528d5fd47a1d4e,
-    )
-    let sgc2 = g1_const(
-        0x02d37bdd6f056715555aa4c5e9f7d66cc2c7c3ef9adccd93c8c250562fbf6da7,
-        0x190080cc3d25e634c36424e0c0777f32d7aea47cff1aaa16a81547153e0a5f13,
-    )
-    let sgc3 = g1_const(
-        0x067b9e67e7ce7f7831d3525af7afa7ec6cdd0acaa3088cb37bcc175043a87209,
-        0x0e3f7e308dba6b54ca029ec7bd337c421d0959f9ca903b644aff82da6adbde92,
-    )
+    let fx0 = VK_FX0
+    let fx1 = VK_FX1
+    let fx2 = VK_FX2
+    let fx3 = VK_FX3
+    let fx4 = VK_FX4
+    let fx5 = VK_FX5
+    let fx6 = VK_FX6
+    let fx7 = VK_FX7
+    let sgc0 = VK_SG0
+    let sgc1 = VK_SG1
+    let sgc2 = VK_SG2
+    let sgc3 = VK_SG3
     let pt_0 = x
     let pt_1 = x.mul(
             fr(

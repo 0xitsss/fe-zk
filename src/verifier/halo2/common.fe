@@ -2,7 +2,7 @@
 //!
 //! Everything circuit specific (gate and lookup expressions, permutation layout, query list,
 //! SHPLONK rotation sets, GWC point groups) lives in a module emitted by
-//! `vectors/halo2/emit_fe.py` from a `vk.json`; this file holds the pieces every emitted
+//! `fe-zk-gen halo2` from a `vk.json`; this file holds the pieces every emitted
 //! verifier shares: the snark-verifier `EvmTranscript`, input decoding, batched field inversion
 //! through the modexp precompile and the final pairing. Algorithm: `vectors/halo2/SPEC.md`.
 //!
@@ -30,6 +30,24 @@ impl Halo2Vk {
         }
         Option::Some(Halo2Vk { transcript_repr, g1, g2, s_g2 })
     }
+
+    /// Key from compile-time constants: build the points with `G1::from_coords_or_infinity` /
+    /// `G2::from_coords_or_infinity` and pair each with `static_assert(g1_is_valid(..))` /
+    /// `static_assert(g2_is_valid(..))`, so no gas is spent on the G2 subgroup checks. A
+    /// degenerate key (any SRS point at infinity) is poisoned to all-infinity and
+    /// `final_pairing` rejects it.
+    pub fn from_consts(_ transcript_repr: Bn254Fr, _ g1: G1, _ g2: G2, _ s_g2: G2) -> Halo2Vk {
+        if g1.is_infinity() || g2.is_infinity() || s_g2.is_infinity() {
+            return Halo2Vk {
+                transcript_repr,
+                g1: G1::infinity(),
+                g2: G2::infinity(),
+                s_g2: G2::infinity(),
+            }
+        }
+        Halo2Vk { transcript_repr, g1, g2, s_g2 }
+    }
+
     pub fn transcript_repr(self) -> Bn254Fr {
         self.transcript_repr
     }
@@ -159,6 +177,9 @@ uses (call: Call)
 pub fn final_pairing(_ vk: Halo2Vk, _ left: G1, _ right: G1) -> bool
 uses (call: Call)
 {
+    if vk.g1.is_infinity() || vk.g2.is_infinity() || vk.s_g2.is_infinity() {
+        return false
+    }
     pairing_check([left, right], [vk.s_g2, vk.g2.neg()])
 }
 

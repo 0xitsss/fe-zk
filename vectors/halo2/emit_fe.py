@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 
-TOOL = "fe-zk emit_fe.py 0.1.0"
+TOOL = "fe-zk-gen 0.1.0"
 R = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 
@@ -188,15 +188,16 @@ class Gen:
         self.emit("//! Algorithm and field order: vectors/halo2/SPEC.md. Shared code: halo2/common.fe.")
         self.emit("//!")
         self.emit("//! Safety rules: 1 (every proof scalar / instance `from_canonical`, every coordinate canonical),")
-        self.emit("//! 2 (every proof point `read_g1`: on curve, no infinity), 3 (SRS G2 points built by")
-        self.emit("//! `G2::from_coords`: on curve + subgroup), 4 (proof and instance lengths are array types),")
+        self.emit("//! 2 (every proof point `read_g1`: on curve, no infinity), 3 (SRS and key points are compile-time")
+        self.emit("//! constants checked by `static_assert`: canonical, on curve, G2 in the subgroup; no runtime gas),")
+        self.emit("//! 4 (proof and instance lengths are array types),")
         self.emit("//! 5 (transcript absorbs the vk transcript_repr, the instances and every commitment and")
         self.emit("//! evaluation in reference order), 6 (precompile wrappers check success, length, result).")
         self.emit("use std::evm::Call")
-        self.emit("use ingot::ec::{G1, G2, g1_mul}")
+        self.emit("use ingot::ec::{G1, G2, g1_is_valid, g1_mul, g2_is_valid}")
         self.emit("use ingot::field::{Bn254Fr, Field}")
         self.emit("use super::common::{")
-        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, g1_const, mul_add, read_g1,")
+        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1,")
         self.emit("}")
         self.emit()
         self.emit("/// Number of 32-byte words of a proof for this circuit (fixed by the vk, rule 4).")
@@ -205,15 +206,53 @@ class Gen:
         self.emit("pub const TRANSCRIPT_REPR: u256 = %s" % h(hx(vk["transcript_repr"])))
         self.emit("pub const VK_DIGEST: u256 = 0x%s" % digest)
         self.emit()
-        self.emit("/// SRS and transcript constants. G2 points are validated (curve + subgroup) here.")
-        self.emit("pub fn vk() -> Halo2Vk {")
+        self.emit("const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617")
+        self.emit("// SRS and key constants, validated by fe-zk-gen and re-validated by the Fe compiler below.")
+        self.emit("// G2 coordinates are (real, imaginary) parts: x0 + x1*u, y0 + y1*u.")
         kz = vk["kzg"]
-        self.emit("let g2 = G2::from_coords(%s, %s, %s, %s).unwrap()" % tuple(
-            h(hx(v)) for v in kz["g2"]["x"] + kz["g2"]["y"]))
-        self.emit("let s_g2 = G2::from_coords(%s, %s, %s, %s).unwrap()" % tuple(
-            h(hx(v)) for v in kz["s_g2"]["x"] + kz["s_g2"]["y"]))
-        self.emit("let g1 = g1_const(%s, %s)" % (h(hx(kz["g1"]["x"])), h(hx(kz["g1"]["y"]))))
-        self.emit("Halo2Vk::new(fr(TRANSCRIPT_REPR), g1, g2, s_g2).unwrap()")
+        self.emit("const SRS_G1_X: u256 = %s" % h(hx(kz["g1"]["x"])))
+        self.emit("const SRS_G1_Y: u256 = %s" % h(hx(kz["g1"]["y"])))
+        for nm, key in (("SRS_G2", "g2"), ("SRS_S_G2", "s_g2")):
+            for part, v in zip(("X0", "X1", "Y0", "Y1"), kz[key]["x"] + kz[key]["y"]):
+                self.emit("const %s_%s: u256 = %s" % (nm, part, h(hx(v))))
+        used_f = sorted({q["column"] for q in vk["fixed_queries"]})
+        for c in used_f:
+            f = vk["fixed_commitments"][c]
+            self.emit("const FX%d_X: u256 = %s" % (c, h(hx(f["x"]))))
+            self.emit("const FX%d_Y: u256 = %s" % (c, h(hx(f["y"]))))
+        for p, c in enumerate(vk["permutation"]["commitments"]):
+            self.emit("const SG%d_X: u256 = %s" % (p, h(hx(c["x"]))))
+            self.emit("const SG%d_Y: u256 = %s" % (p, h(hx(c["y"]))))
+        self.emit()
+        self.emit("// Compile-time validation (Fe CTFE): a key with an invalid point does not compile. Costs no gas;")
+        self.emit("// the G2 subgroup checks alone are ~750k gas each at runtime. Fixed and sigma commitments may")
+        self.emit("// not be the point at infinity (halo2's EvmTranscript rejects it).")
+        self.emit("static_assert(TRANSCRIPT_REPR < SCALAR_R)")
+        self.emit("static_assert(g1_is_valid(SRS_G1_X, SRS_G1_Y))")
+        self.emit("static_assert(!SRS_G1.is_infinity())")
+        for nm in ("SRS_G2", "SRS_S_G2"):
+            self.emit("static_assert(g2_is_valid(%s_X0, %s_X1, %s_Y0, %s_Y1))" % ((nm,) * 4))
+            self.emit("static_assert(!%s.is_infinity())" % nm)
+        for c in used_f:
+            self.emit("static_assert(g1_is_valid(FX%d_X, FX%d_Y))" % (c, c))
+            self.emit("static_assert(!VK_FX%d.is_infinity())" % c)
+        for p in range(len(vk["permutation"]["commitments"])):
+            self.emit("static_assert(g1_is_valid(SG%d_X, SG%d_Y))" % (p, p))
+            self.emit("static_assert(!VK_SG%d.is_infinity())" % p)
+        self.emit()
+        self.emit("// Typed points. `from_coords_or_infinity` yields infinity for an invalid point, so an unchecked")
+        self.emit("// point cannot exist even if the assertions above were removed.")
+        self.emit("const SRS_G1: G1 = G1::from_coords_or_infinity(SRS_G1_X, SRS_G1_Y)")
+        for nm in ("SRS_G2", "SRS_S_G2"):
+            self.emit("const %s: G2 = G2::from_coords_or_infinity(%s_X0, %s_X1, %s_Y0, %s_Y1)" % ((nm,) * 5))
+        for c in used_f:
+            self.emit("const VK_FX%d: G1 = G1::from_coords_or_infinity(FX%d_X, FX%d_Y)" % (c, c, c))
+        for p in range(len(vk["permutation"]["commitments"])):
+            self.emit("const VK_SG%d: G1 = G1::from_coords_or_infinity(SG%d_X, SG%d_Y)" % (p, p, p))
+        self.emit()
+        self.emit("/// SRS and transcript constants (compile-time validated, no gas for validation).")
+        self.emit("pub fn vk() -> Halo2Vk {")
+        self.emit("Halo2Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)")
         self.emit("}")
         self.emit()
 
@@ -408,10 +447,9 @@ class Gen:
         self.emit("let expected_h = p1.expected_h")
         used_f = sorted({q["column"] for q in self.vk["fixed_queries"]})
         for c in used_f:
-            f = self.vk["fixed_commitments"][c]
-            self.emit("let fx%d = g1_const(%s, %s)" % (c, h(hx(f["x"])), h(hx(f["y"]))))
-        for p, c in enumerate(self.vk["permutation"]["commitments"]):
-            self.emit("let sgc%d = g1_const(%s, %s)" % (p, h(hx(c["x"])), h(hx(c["y"]))))
+            self.emit("let fx%d = VK_FX%d" % (c, c))
+        for p in range(len(self.vk["permutation"]["commitments"])):
+            self.emit("let sgc%d = VK_SG%d" % (p, p))
         for r in rots:
             if r == 0:
                 self.emit("let pt_0 = x")
