@@ -281,7 +281,9 @@ gas, 64 separate step() calls: 42048 execution, 1400880 with tx overhead
 gas, one run(board, 64) call:  34246 execution, 55614 with tx overhead
 
 fixture vectors/groth16/life_512  proven generations 512
-rejected: tampered proof true, wrong end board true, wrong start board true
+tampered proof:    REJECTED
+wrong end board:   REJECTED
+wrong start board: REJECTED
 
 gas (revm, Osaka)                                 execution      with tx
 512 separate step() calls                            336393     11205525

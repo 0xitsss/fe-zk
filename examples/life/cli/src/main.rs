@@ -234,16 +234,17 @@ fn prove_mode(a: &Args) -> Result<(), String> {
     let wrong_end = chain.try_call(zk::encode_advance_proven(f.end ^ U256::from(1u8), &f.proof))?.is_none();
     chain.call(zk::encode_set_committed(f.start ^ U256::from(1u8)))?;
     let wrong_start = chain.try_call(zk::encode_advance_proven(f.end, &f.proof))?.is_none();
-    println!(
-        "rejected: tampered proof {tampered}, wrong end board {wrong_end}, wrong start board {wrong_start}"
-    );
+    let verdict = |rejected: bool| if rejected { "REJECTED" } else { "ACCEPTED (bug!)" };
+    println!("tampered proof:    {}", verdict(tampered));
+    println!("wrong end board:   {}", verdict(wrong_end));
+    println!("wrong start board: {}", verdict(wrong_start));
     if !(tampered && wrong_end && wrong_start) {
         return Err("an invalid proof was accepted".into());
     }
 
     println!();
-    println!("{:<46} {:>12} {:>12}", "gas (revm, Osaka)", "execution", "with tx");
-    let row = |name: String, e: u64, t: u64| println!("{name:<46} {e:>12} {t:>12}");
+    println!("{:<50} {:>12} {:>12}", "gas (revm, Osaka)", "execution", "with tx");
+    let row = |name: String, e: u64, t: u64| println!("{name:<50} {e:>12} {t:>12}");
     row(format!("{n} separate step() calls"), steps_exec, steps_tx);
     row(format!("one run(board, {n}) call"), run_call.exec_gas, run_call.tx_gas);
     row("one proveRun (verify proof of the same run)".into(), prove_run.exec_gas, prove_run.tx_gas);
