@@ -28,6 +28,8 @@ cd examples/life/cli && cargo run --release -- --pattern glider --gens 200 --del
 The Life CLI needs `fe build` run once in `examples/life` and `examples/life/verifier` (`scripts/life-demo.sh` does
 it for you).
 
+To verify proofs from **your own** circuit in your own Fe project, start with [docs/USAGE.md](docs/USAGE.md).
+
 ## What to look at
 
 - **The Fe highlight: compile-time key validation.** The generator emits `static_assert(g2_is_valid(..))`; the G2
@@ -234,17 +236,15 @@ randomised, so a regeneration changes every value.
 
 ## Use fe-zk in your Fe project
 
-A complete, tested example lives in [`examples/quickstart/`](examples/quickstart/README.md): a 50-line
-contract that calls a generated Groth16 verifier, hashes with `poseidon_2` and uses a helper written once
-against the `Field` trait.
+**[docs/USAGE.md](docs/USAGE.md) is the step-by-step guide**: install, the `fe.toml` dependency, one tested recipe per
+proof system (circom + snarkjs Groth16, arkworks, snarkjs PLONK, gnark, halo2-KZG, KZG / EIP-4844, FRI/STARK), the
+library API with compiling snippets, deployment with `cast`, an integration safety checklist and troubleshooting.
+A complete, tested example is [`examples/quickstart/`](examples/quickstart/README.md): a 50-line contract that calls a
+generated Groth16 verifier, hashes with `poseidon_2` and uses a helper written once against the `Field` trait.
 
-1. Add `fe_zk = { path = "../fe-zk", allow_unsafe = true }` to your `fe.toml` (Fe 26.5 also reads
-   `{ source = "<url>", rev = "<sha>" }` remote dependencies).
-2. Export your verifying key (snarkjs, arkworks, PLONK or halo2-KZG).
-3. `cargo run -p fe-zk-gen -- groth16 --snarkjs vk.json --proof proof.json --public public.json --out ../my-project/verifier --fe-zk-path ../../fe-zk` (or `plonk`, `halo2`).
-4. Depend on the generated ingot and call it with a static call.
-5. Use `Bn254Fr::from_canonical`, `poseidon_2`, `merkle_root`, `Transcript`; write generic code as `fn f<F: Field>(...)`.
-6. `fe fmt --check && fe test`.
+In short: add `fe_zk = { path = "../fe-zk", allow_unsafe = true }` to your `fe.toml`, run
+`fe-zk-gen groth16 --snarkjs vk.json --proof proof.json --public public.json --out ../../my-project/verifier --fe-zk-path ../../fe-zk`
+from `fe-zk/gen` (or `plonk`, `gnark`, `halo2`), depend on the generated ingot and call it with a static call.
 
 ## Demo
 

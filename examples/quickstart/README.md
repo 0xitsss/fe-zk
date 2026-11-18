@@ -1,5 +1,8 @@
 # quickstart: use fe-zk in your own Fe project
 
+> The full guide, with one recipe per proof system, deployment and a safety checklist, is
+> [docs/USAGE.md](../../docs/USAGE.md). This page is the shortest path.
+
 A 50-line contract (`src/lib.fe`) that uses a generated Groth16 verifier, `poseidon_2` and a
 `Field`-generic helper. Tests: `fe test` in this directory (4 tests).
 
@@ -17,7 +20,7 @@ A 50-line contract (`src/lib.fe`) that uses a generated Groth16 verifier, `posei
    ```
    cd fe-zk/gen
    cargo run -p fe-zk-gen -- groth16 --snarkjs vk.json --proof proof.json --public public.json \
-       --name MyCircuit --out ../my-project/verifier --fe-zk-path ../../fe-zk
+       --name MyCircuit --out ../../my-project/verifier --fe-zk-path ../../fe-zk
    ```
    Also `fe-zk-gen plonk ...` and `fe-zk-gen halo2 ...`. The generator validates the key (curve,
    subgroup, non-degenerate) and refuses to emit otherwise; the emitted ingot carries the key
