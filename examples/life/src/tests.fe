@@ -1,5 +1,6 @@
 // Contract-level tests and gas measurement. Boards come from ref/life.py (see vectors.json).
 use super::{Life, LifeMsg}
+use life512_verifier::Life512Verifier
 use std::evm::{Address, Evm}
 
 #[event]
@@ -16,7 +17,8 @@ const RND_64: u256 = 0x1c002dc00481d903e8042000c000c000000400088000800480
 const RND_256: u256 = 0x6000600800140012000c0000000000000000
 
 fn deploy() -> Address uses (evm: mut Evm) {
-    evm.create2<Life>(value: Wei::zero(), args: (), salt: 0)
+    let verifier = evm.create2<Life512Verifier>(value: Wei::zero(), args: (), salt: 0)
+    evm.create2<Life>(value: Wei::zero(), args: (verifier,), salt: 1)
 }
 
 fn call_step(_ p: Address, _ b: u256) -> (u256, u256) uses (evm: mut Evm) {
@@ -125,4 +127,180 @@ fn stateful_advance() uses (evm: mut Evm) {
             message: LifeMsg::Board {},
         )
     assert(b64 == RND_64)
+}
+
+// ---- zk path: Groth16 proof of 512 generations (vectors/groth16/life_512, snarkjs 0.7.6) ----
+// boards.json: start / end of the R-pentomino after 512 generations (per-cell ref/life.py).
+// Halves are (lo, hi) = (board mod 2^128, board / 2^128).
+const ZK_GENS: u256 = 512
+const ZK_START_LO: u256 = 0x3000000000000000000000000000000
+const ZK_START_HI: u256 = 0x1000180
+const ZK_END_LO: u256 = 0x1000100010000000000000000000
+const ZK_END_HI: u256 = 0
+const ZK_START: u256 = 0x0000000000000000000000000100018003000000000000000000000000000000
+const ZK_END: u256 = 0x0000000000000000000000000000000000001000100010000000000000000000
+// public.json = [startCommit, endCommit] = circomlibjs Poseidon([lo, hi])
+const ZK_START_COMMIT: u256 = 3586375432157102388052973885702192931119074918335201384662145294765259589737
+const ZK_END_COMMIT: u256 = 6858666197903710029092389334498189534548431007285033353700979175232178664393
+const ZA0: u256 = 7028296240459384378229441886242181857489641529426958243141482748608027004656
+const ZA1: u256 = 21611252021361349516173765528090405216700800686097431242118971900275669096062
+// calldata (EVM) order: [[x_imag, x_real], [y_imag, y_real]]
+const ZBXI: u256 = 11523053363332618773256839224560825433570381436063517493246747449816542400681
+const ZBXR: u256 = 6244125406633754949778710473892909101719060025417436647932329631798262908265
+const ZBYI: u256 = 3356724757893915601702380205914087051414415814058339459279009227927846862999
+const ZBYR: u256 = 13017397519667934378797178260344527685142662179891771709910832434044124342526
+const ZC0: u256 = 11829385406286661104596049142877642767053922997840443691221078171762719549523
+const ZC1: u256 = 11210865409308515111969671495753370574946702449341677960540278201582244696284
+
+fn zb() -> [[u256; 2]; 2] {
+    [[ZBXI, ZBXR], [ZBYI, ZBYR]]
+}
+
+fn set_committed(_ p: Address, _ lo: u256, _ hi: u256) uses (evm: mut Evm) {
+    evm.call(
+        addr: p,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: LifeMsg::SetCommitted { lo: lo, hi: hi },
+    )
+}
+
+fn stored(_ p: Address) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: p,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: LifeMsg::Board {},
+    )
+}
+
+fn advance_proven(_ p: Address, _ lo: u256, _ hi: u256, _ a0: u256) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: p,
+        gas: 100000000,
+        value: Wei::zero(),
+        message: LifeMsg::AdvanceProven {
+            end_lo: lo,
+            end_hi: hi,
+            a: [a0, ZA1],
+            b: zb(),
+            c: [ZC0, ZC1],
+        },
+    )
+        .success()
+}
+
+#[test]
+fn zk_circuit_end_board_equals_contract_run() uses (evm: mut Evm) {
+    // the board the circuit proves is exactly what the on-chain bit-parallel run() computes
+    let p = deploy()
+    let (r, gas) = call_run(p, ZK_START, ZK_GENS)
+    assert(r == ZK_END)
+    evm.emit(GasUsed { what: 512, gas: gas })
+}
+
+#[test]
+fn zk_commitment_matches_circomlib_poseidon() uses (evm: mut Evm) {
+    let p = deploy()
+    set_committed(p, ZK_START_LO, ZK_START_HI)
+    assert(stored(p) == ZK_START)
+    let c: u256 = evm
+        .call(
+            addr: p,
+            gas: 10000000,
+            value: Wei::zero(),
+            message: LifeMsg::Commitment {},
+        )
+    assert(c == ZK_START_COMMIT)
+}
+
+#[test]
+fn zk_advance_proven_accepts_valid_proof() uses (evm: mut Evm) {
+    let p = deploy()
+    set_committed(p, ZK_START_LO, ZK_START_HI)
+    let g0 = evm.gas()
+    assert(advance_proven(p, ZK_END_LO, ZK_END_HI, ZA0))
+    evm.emit(GasUsed { what: 2001, gas: g0 - evm.gas() })
+    assert(stored(p) == ZK_END)
+}
+
+#[test]
+fn zk_prove_run_valid_and_invalid() uses (evm: mut Evm) {
+    let p = deploy()
+    let g0 = evm.gas()
+    let ok: bool = evm
+        .call(
+            addr: p,
+            gas: 100000000,
+            value: Wei::zero(),
+            message: LifeMsg::ProveRun {
+                start_commit: ZK_START_COMMIT,
+                end_commit: ZK_END_COMMIT,
+                a: [ZA0, ZA1],
+                b: zb(),
+                c: [ZC0, ZC1],
+            },
+        )
+    evm.emit(GasUsed { what: 2002, gas: g0 - evm.gas() })
+    assert(ok)
+    // swapped commitments: the verifier answers false
+    let bad: bool = evm
+        .call(
+            addr: p,
+            gas: 100000000,
+            value: Wei::zero(),
+            message: LifeMsg::ProveRun {
+                start_commit: ZK_END_COMMIT,
+                end_commit: ZK_START_COMMIT,
+                a: [ZA0, ZA1],
+                b: zb(),
+                c: [ZC0, ZC1],
+            },
+        )
+    assert(!bad)
+}
+
+#[test]
+fn zk_wrong_start_board_rejected() uses (evm: mut Evm) {
+    let p = deploy()
+    // one cell off: its commitment differs, so the proof does not match
+    set_committed(p, ZK_START_LO + 1, ZK_START_HI)
+    assert(!advance_proven(p, ZK_END_LO, ZK_END_HI, ZA0))
+    assert(stored(p) == ZK_START + 1)
+}
+
+#[test]
+fn zk_wrong_end_board_rejected() uses (evm: mut Evm) {
+    let p = deploy()
+    set_committed(p, ZK_START_LO, ZK_START_HI)
+    assert(!advance_proven(p, ZK_END_LO ^ 1, ZK_END_HI, ZA0))
+    assert(!advance_proven(p, ZK_END_LO, ZK_END_HI + 1, ZA0))
+    // half that is not a 128-bit value is rejected before hashing
+    assert(
+        !advance_proven(p, ZK_END_LO, 0x100000000000000000000000000000000, ZA0),
+    )
+    assert(stored(p) == ZK_START)
+}
+
+#[test]
+fn zk_tampered_proof_rejected() uses (evm: mut Evm) {
+    let p = deploy()
+    set_committed(p, ZK_START_LO, ZK_START_HI)
+    assert(!advance_proven(p, ZK_END_LO, ZK_END_HI, ZA0 + 1))
+    assert(stored(p) == ZK_START)
+}
+
+#[test]
+fn zk_replay_on_advanced_board_rejected() uses (evm: mut Evm) {
+    let p = deploy()
+    set_committed(p, ZK_START_LO, ZK_START_HI)
+    assert(advance_proven(p, ZK_END_LO, ZK_END_HI, ZA0))
+    // the stored board is now the end board: its commitment is not the proof's startCommit
+    assert(!advance_proven(p, ZK_END_LO, ZK_END_HI, ZA0))
+    assert(stored(p) == ZK_END)
+    // and the same proof does not apply to an unrelated stored board either
+    set_committed(p, RND & 0xffffffffffffffffffffffffffffffff, RND >> 128)
+    assert(!advance_proven(p, ZK_END_LO, ZK_END_HI, ZA0))
 }

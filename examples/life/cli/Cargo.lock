@@ -1660,6 +1660,7 @@ name = "life-cli"
 version = "0.1.0"
 dependencies = [
  "revm",
+ "serde_json",
 ]
 
 [[package]]

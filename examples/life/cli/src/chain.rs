@@ -54,7 +54,7 @@ pub fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
 }
 
 impl Chain {
-    pub fn deploy(init_hex: &str) -> Result<Chain, String> {
+    pub fn deploy(init_hex: &str, ctor_args: &[u8]) -> Result<Chain, String> {
         let caller = Address::ZERO;
         let mut db = InMemoryDB::default();
         db.insert_account_info(
@@ -75,7 +75,11 @@ impl Chain {
             .gas_limit(1_000_000_000)
             .gas_price(0)
             .kind(TxKind::Create)
-            .data(Bytes::from(parse_hex(init_hex)?))
+            .data(Bytes::from({
+                let mut d = parse_hex(init_hex)?;
+                d.extend_from_slice(ctor_args);
+                d
+            }))
             .nonce(0)
             .build()
             .map_err(|e| format!("{e:?}"))?;
@@ -90,6 +94,39 @@ impl Chain {
                 address,
             }),
             other => Err(format!("deploy failed: {other:?}")),
+        }
+    }
+
+    /// Deploys another contract into the same EVM and makes it the call target; returns the
+    /// previous target (e.g. the verifier, whose address the new contract needs at init).
+    pub fn create(&mut self, init_hex: &str, ctor_args: &[u8]) -> Result<Address, String> {
+        let mut data = parse_hex(init_hex)?;
+        data.extend_from_slice(ctor_args);
+        let tx = TxEnv::builder()
+            .caller(self.caller)
+            .gas_limit(1_000_000_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .data(Bytes::from(data))
+            .nonce(self.nonce)
+            .build()
+            .map_err(|e| format!("{e:?}"))?;
+        self.nonce += 1;
+        match self.evm.transact_commit(tx).map_err(|e| e.to_string())? {
+            ExecutionResult::Success {
+                output: Output::Create(_, Some(address)),
+                ..
+            } => Ok(std::mem::replace(&mut self.address, address)),
+            other => Err(format!("deploy failed: {other:?}")),
+        }
+    }
+
+    /// Like `call` but a revert or halt is `Ok(None)` instead of an error.
+    pub fn try_call(&mut self, calldata: Vec<u8>) -> Result<Option<CallOut>, String> {
+        match self.call(calldata) {
+            Ok(o) => Ok(Some(o)),
+            Err(e) if e.contains("Revert") || e.contains("Halt") => Ok(None),
+            Err(e) => Err(e),
         }
     }
 

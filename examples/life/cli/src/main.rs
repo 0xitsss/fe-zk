@@ -1,11 +1,12 @@
 //! life-cli: play Game of Life by executing the compiled Fe `Life` contract.
 //!
 //! Every generation is one `step(board)` call into the contract (in revm). `--check` compares
-//! each generation with a per-cell Rust reference. A later `--prove` mode (Groth16 proof of N
-//! generations verified by a generated Fe verifier) plugs in next to `Mode::Play`; see the TODO.
+//! each generation with a per-cell Rust reference. `--prove` deploys the generated Fe Groth16
+//! verifier plus `Life`, advances the stored board by one proof and prints the gas comparison.
 mod abi;
 mod board;
 mod chain;
+mod zk;
 
 use std::{io::Write, process::ExitCode, thread, time::Duration};
 
@@ -17,10 +18,16 @@ struct Args {
     no_anim: bool,
     check: bool,
     bin: String,
+    prove: bool,
+    prove_live: bool,
+    fixture: String,
+    verifier_bin: String,
 }
 
 const USAGE: &str = "usage: life-cli --pattern glider|blinker|rpentomino|random --gens N \
-[--delay ms] [--seed S] [--no-anim] [--check] [--bin path/to/Life.bin]";
+[--delay ms] [--seed S] [--no-anim] [--check] [--bin path/to/Life.bin]\n\
+       life-cli --prove [--fixture DIR] [--bin Life.bin] [--verifier-bin Life512Verifier.bin]\n\
+       life-cli --prove-live [--pattern P] [--seed S]   (runs scripts/life-prove.sh, takes minutes)";
 
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
@@ -31,6 +38,10 @@ fn parse_args() -> Result<Args, String> {
         no_anim: false,
         check: false,
         bin: concat!(env!("CARGO_MANIFEST_DIR"), "/../out/Life.bin").into(),
+        prove: false,
+        prove_live: false,
+        fixture: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../vectors/groth16/life_512").into(),
+        verifier_bin: concat!(env!("CARGO_MANIFEST_DIR"), "/../verifier/out/Life512Verifier.bin").into(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -43,7 +54,13 @@ fn parse_args() -> Result<Args, String> {
             "--bin" => a.bin = val("--bin")?,
             "--no-anim" => a.no_anim = true,
             "--check" => a.check = true,
-            // TODO(zk): "--prove" => prove N generations off chain and verify the Groth16 proof.
+            "--prove" => a.prove = true,
+            "--prove-live" => {
+                a.prove = true;
+                a.prove_live = true;
+            }
+            "--fixture" => a.fixture = val("--fixture")?,
+            "--verifier-bin" => a.verifier_bin = val("--verifier-bin")?,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
@@ -53,9 +70,12 @@ fn parse_args() -> Result<Args, String> {
 
 fn run() -> Result<(), String> {
     let a = parse_args()?;
+    if a.prove {
+        return prove_mode(&a);
+    }
     let start = board::pattern(&a.pattern, a.seed).ok_or(format!("unknown pattern {}", a.pattern))?;
     let init = std::fs::read_to_string(&a.bin).map_err(|e| format!("{}: {e} (run `fe build` in examples/life)", a.bin))?;
-    let mut chain = chain::Chain::deploy(&init)?;
+    let mut chain = chain::Chain::deploy(&init, &[0u8; 32])?; // verifier address: unused by the pure messages
 
     let mut b = start;
     let mut total_exec = 0u64;
@@ -107,7 +127,7 @@ fn run() -> Result<(), String> {
     println!("pattern {}  generations {}", a.pattern, a.gens);
     println!("gas, {} separate step() calls: {} execution, {} with tx overhead", a.gens, total_exec, total_tx);
     println!("gas, one run(board, {}) call:  {} execution, {} with tx overhead", a.gens, run_call.exec_gas, run_call.tx_gas);
-    // TODO(zk): print gas of one Groth16 proof verification next to the numbers above.
+    println!("zk path: life-cli --prove (Groth16 proof of 512 generations, one verification)");
     Ok(())
 }
 
@@ -119,4 +139,109 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn read_bin(path: &str, what: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("{path}: {e} (run `fe build` for the {what})"))
+}
+
+fn show(label: &str, b: revm::primitives::U256) {
+    println!("{label}  alive {}", board::alive(b));
+    print!("{}", board::render(b, false));
+}
+
+/// Deploys verifier + Life, then compares: N separate step() calls, one run(board, N), and one
+/// Groth16 proof of the same N generations (`advanceProven`).
+fn prove_mode(a: &Args) -> Result<(), String> {
+    use revm::primitives::U256;
+    let mut fixture_dir = std::path::PathBuf::from(&a.fixture);
+    if a.prove_live {
+        // Proves N = 512 generations of the chosen pattern with snarkjs into a scratch dir. The
+        // emitted verifier is bound to the committed verifying key; a proof from a different
+        // setup run is rejected by it (the script uses fixed entropy, so keys normally match).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let out = std::env::temp_dir().join("life-prove-live");
+        let status = std::process::Command::new(root.join("scripts/life-prove.sh"))
+            .args([a.pattern.as_str(), "512", &a.seed.to_string()])
+            .env("OUT", &out)
+            .env("NO_NEG", "1")
+            .status()
+            .map_err(|e| format!("scripts/life-prove.sh: {e}"))?;
+        if !status.success() {
+            return Err("scripts/life-prove.sh failed".into());
+        }
+        fixture_dir = out;
+    }
+    let f = zk::load(&fixture_dir)?;
+    let verifier_init = read_bin(&a.verifier_bin, "generated verifier in examples/life/verifier")?;
+    let life_init = read_bin(&a.bin, "Life contract in examples/life")?;
+    let mut chain = chain::Chain::deploy(&verifier_init, &[])?;
+    let mut ctor = [0u8; 32];
+    ctor[12..].copy_from_slice(chain.address.as_slice());
+    chain.create(&life_init, &ctor)?;
+
+    let n_out = chain.call(abi::selector("provenGenerations()").to_vec())?;
+    let n = abi::decode_word(&n_out.ret)?.to::<u64>();
+    println!("fixture {}  proven generations {n}", fixture_dir.display());
+    show("start board", f.start);
+
+    // 1. the same n generations on chain
+    let (mut b, mut steps_exec, mut steps_tx) = (f.start, 0u64, 0u64);
+    for _ in 0..n {
+        let (next, call) = chain.step(b)?;
+        b = next;
+        steps_exec += call.exec_gas;
+        steps_tx += call.tx_gas;
+    }
+    let (run_b, run_call) = chain.run(f.start, n)?;
+    if b != f.end || run_b != f.end {
+        return Err("on-chain end board differs from the circuit's end board".into());
+    }
+    // per-cell reference, independent of both
+    let mut r = f.start;
+    for _ in 0..n {
+        r = board::ref_step_packed(r);
+    }
+    if r != f.end {
+        return Err("per-cell reference differs from the fixture end board".into());
+    }
+
+    // 2. one proof: store the start board, then advance by n generations
+    chain.call(zk::encode_set_committed(f.start))?;
+    let prove_run = chain.call(zk::encode_prove_run(&f))?;
+    let adv = chain.call(zk::encode_advance_proven(f.end, &f.proof))?;
+    let stored: U256 = abi::decode_word(&chain.call(abi::selector("board()").to_vec())?.ret)?;
+    if stored != f.end {
+        return Err("advanceProven did not store the end board".into());
+    }
+    show(&format!("end board after {n} generations (one proof)"), stored);
+
+    // 3. rejections
+    let mut bad = f.proof;
+    bad[0] += U256::from(1u8);
+    chain.call(zk::encode_set_committed(f.start))?;
+    let tampered = chain.try_call(zk::encode_advance_proven(f.end, &bad))?.is_none();
+    let wrong_end = chain.try_call(zk::encode_advance_proven(f.end ^ U256::from(1u8), &f.proof))?.is_none();
+    chain.call(zk::encode_set_committed(f.start ^ U256::from(1u8)))?;
+    let wrong_start = chain.try_call(zk::encode_advance_proven(f.end, &f.proof))?.is_none();
+    println!(
+        "rejected: tampered proof {tampered}, wrong end board {wrong_end}, wrong start board {wrong_start}"
+    );
+    if !(tampered && wrong_end && wrong_start) {
+        return Err("an invalid proof was accepted".into());
+    }
+
+    println!();
+    println!("{:<46} {:>12} {:>12}", "gas (revm, Osaka)", "execution", "with tx");
+    let row = |name: String, e: u64, t: u64| println!("{name:<46} {e:>12} {t:>12}");
+    row(format!("{n} separate step() calls"), steps_exec, steps_tx);
+    row(format!("one run(board, {n}) call"), run_call.exec_gas, run_call.tx_gas);
+    row("one proveRun (verify proof of the same run)".into(), prove_run.exec_gas, prove_run.tx_gas);
+    row("one advanceProven (verify + 2 Poseidon + store)".into(), adv.exec_gas, adv.tx_gas);
+    let per_gen = run_call.exec_gas as f64 / n as f64;
+    println!(
+        "\nbreak-even: a proof pays off above about {:.0} generations ({per_gen:.0} gas per on-chain generation)",
+        prove_run.exec_gas as f64 / per_gen
+    );
+    Ok(())
 }

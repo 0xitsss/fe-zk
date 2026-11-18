@@ -10,14 +10,15 @@ PATTERN="${PATTERN:-glider}"
 SEED="${SEED:-1}"
 
 echo "== Fe tests (step vectors, contract calls, gas events) =="
-(cd "$LIFE" && fe fmt --check && fe test --show-logs 2>&1 | tee "${TMPDIR:-/tmp}/life-test.log" | grep -E "^(PASS|FAIL)  .*(gas|glider_via|stateful)|test result")
+(cd "$LIFE" && fe fmt --check && fe test --show-logs 2>&1 | tee "${TMPDIR:-/tmp}/life-test.log" | grep -E "^(PASS|FAIL)  .*(gas|glider_via|stateful|zk_)|test result")
 
 echo
 echo "== Gas measured inside fe test (GasUsed events: what, gas) =="
 python3 -I - "${TMPDIR:-/tmp}/life-test.log" <<'PY'
 import re, sys
 names = {1: "step() via call", 64: "run(board, 64)", 256: "run(board, 256)",
-         1001: "stateful advance(1) (storage)"}
+         512: "run(board, 512)", 1001: "stateful advance(1) (storage)",
+         2001: "advanceProven (proof of 512 gens)", 2002: "proveRun (proof of 512 gens)"}
 print("%-32s %10s" % ("call", "gas"))
 for m in re.finditer(r"data: 0x([0-9a-f]{64})([0-9a-f]{64})", open(sys.argv[1]).read()):
     what, gas = int(m.group(1), 16), int(m.group(2), 16)
@@ -35,18 +36,19 @@ echo
 echo "Interactive: cd examples/life/cli && cargo run --release -- --pattern rpentomino --gens 200"
 
 # ---------------------------------------------------------------------------
-# zk path. Circuit: examples/life/circuit/life.circom (7 constraints per cell, 1792 per generation).
-# Public signals: [startCommit, endCommit] = Poseidon(lo128, hi128) of the packed boards. The start
-# board is private; N is fixed per circuit. Set ZK=1 to run it (needs circom + snarkjs, see
-# scripts/setup-tools.sh; the first run downloads a PSE ptau of up to 1.2 GB into $CACHE and takes
-# minutes for N=512). Default: reuse the committed fixture vectors/groth16/life_64 (N=64).
-if [ "${ZK:-0}" = 1 ]; then
-  echo
-  echo "== zk path: Groth16 proof of ${ZKGENS:-512} generations (rpentomino) =="
-  "$ROOT/scripts/life-prove.sh" rpentomino "${ZKGENS:-512}"
-fi
-# TODO(zk-integration): emit the Fe verifier with `fe-zk-gen groth16 --snarkjs
-#   vectors/groth16/life_<N>/verification_key.json`, verify vectors/groth16/life_<N>/proof.json
-#   against public.json, and add `--prove` to life-cli to print: gas of N on-chain steps
-#   vs one proof verification (break-even about 450 generations).
-# ---------------------------------------------------------------------------
+# zk path, from the committed fixture vectors/groth16/life_512 (fast, no circom/snarkjs needed).
+# Circuit: examples/life/circuit/life.circom (7 constraints per cell, 1792 per generation), public
+# signals [startCommit, endCommit] = Poseidon(lo128, hi128) of the packed boards, N = 512 fixed by
+# the key. The verifier ingot examples/life/verifier is emitted by fe-zk-gen (see below).
+echo
+echo "== zk path: one Groth16 proof of 512 generations vs 512 on-chain steps =="
+(cd "$LIFE/verifier" && fe test 2>&1 | grep -E "test result")
+(cd "$LIFE/verifier" && fe build >/dev/null)
+(cd "$LIFE/cli" && cargo run --release --quiet -- --prove)
+echo
+echo "Regenerate the fixture (needs circom + snarkjs, scripts/setup-tools.sh; ~30 min, 1.2 GB ptau):"
+echo "  scripts/life-prove.sh rpentomino 512"
+echo "  (cd gen && cargo run -q -p fe-zk-gen -- groth16 --snarkjs ../vectors/groth16/life_512/verification_key.json \\"
+echo "     --proof ../vectors/groth16/life_512/proof.json --public ../vectors/groth16/life_512/public.json \\"
+echo "     --name Life512 --out ../examples/life/verifier --fe-zk-path ../../..)"
+echo "Prove live from the CLI: cd examples/life/cli && cargo run --release -- --prove-live --pattern rpentomino"

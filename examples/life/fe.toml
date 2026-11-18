@@ -3,4 +3,5 @@ name = "life"
 version = "0.1.0"
 
 [dependencies]
-fe_zk = { path = "../.." }
+fe_zk = { path = "../..", allow_unsafe = true }
+life512_verifier = { path = "verifier" }
