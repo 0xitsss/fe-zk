@@ -1,45 +1,97 @@
 # fe-zk
 
-**Pitch:** fe-zk lets Fe contracts verify zero-knowledge proofs: a generic field layer behind a Fe `Field` trait,
-BN254 / BLS12-381 precompile wrappers with checked point types, Poseidon and Poseidon2, on-chain verifiers for
-Groth16 (snarkjs, arkworks), PLONK (snarkjs, gnark), halo2-KZG (SHPLONK and GWC), raw KZG (single, GWC, SHPLONK,
-EIP-4844) and FRI/STARK (Plonky3) proofs, and a generator, `fe-zk-gen`, that turns snarkjs/arkworks Groth16, snarkjs PLONK and halo2-KZG keys into Fe verifier
-contracts whose keys are validated by the Fe compiler itself.
+**Pitch:** fe-zk lets Fe contracts verify zero-knowledge proofs: a generic field, curve and hash layer behind Fe
+traits, on-chain verifiers for Groth16, PLONK, halo2-KZG, KZG and FRI/STARK proofs, and a generator, `fe-zk-gen`,
+that turns verifying keys into Fe verifier contracts whose keys the Fe compiler itself validates.
 
-Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/). Submission commit: (filled in at submission)
+<p align="center"><img src="docs/media/life.svg" alt="Animated: 64 generations of the R-pentomino on a 16x16 board stepped by a Fe contract (657 gas per step), then one Groth16 proof of 512 generations verified for 207,758 gas versus 271,686 gas for run()" width="640"></p>
+
+*What the animation shows: every board and gas number is output of the compiled Fe `Life` contract executed in revm
+(`life-cli --frames-json`, rendered by `scripts/make-life-svg.py`). First, on-chain generations with word-parallel bit
+operations; then one Groth16 proof of 512 generations, checked by a verifier that `fe-zk-gen` generated.*
+
+Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
+Submission commit: (filled in at submission)
+Demo video: (link, optional)
+
+## Try it
+
+Prerequisites: `fe` 26.5.0 and Rust. circom and snarkjs are needed only to regenerate fixtures, not to run anything below.
+
+```sh
+fe test                                  # library: 146 tests (about 4 min), real proofs from snarkjs, gnark, halo2, Plonky3 accepted; tampered ones rejected
+scripts/demo.sh                          # generate verifiers from keys (Groth16, PLONK, halo2) and run their tests
+cd examples/life/cli && cargo run --release -- --prove                                  # one proof of 512 generations vs 512 on-chain steps
+cd examples/life/cli && cargo run --release -- --pattern glider --gens 200 --delay 80   # watch the Fe contract play in your terminal
+```
+
+The Life CLI needs `fe build` run once in `examples/life` and `examples/life/verifier` (`scripts/life-demo.sh` does
+it for you).
+
+## What to look at
+
+- **The Fe highlight: compile-time key validation.** The generator emits `static_assert(g2_is_valid(..))`; the G2
+  subgroup test runs inside the Fe compiler. Source: [`g2_is_valid`](src/ec/bn254.fe#L278), generated use in
+  [`examples/membership/verifier/src/lib.fe`](examples/membership/verifier/src/lib.fe#L47). See [Fe highlight](#fe-highlight).
+- **A corrupted key does not compile.** [`corrupted_key_constant_fails_to_compile`](gen/fe-zk-gen/tests/emit.rs#L218)
+  emits a verifier, corrupts it (off-curve alpha, a non-subgroup beta, ...) and expects `static assertion failed` from
+  `fe build`. It is `#[ignore]`d because it needs the `fe` binary: `cd gen && cargo test -- --ignored corrupted_key`.
+- **Safety, rule by rule.** [docs/SAFETY.md](docs/SAFETY.md) maps each of the nine rules (canonical inputs, curve and
+  subgroup checks, fixed input count, Fiat-Shamir binding, precompile results, malleability, generator hygiene) to the
+  file:line that enforces it and the test that fails without it.
+- **Gas, measured against the reference tools.** [docs/GAS.md](docs/GAS.md): Groth16 costs 1.01-1.03x the snarkjs
+  Solidity verifier on the same proof; Fe Poseidon is cheaper than circomlibjs' hand-written EVM contract (25,400 vs
+  29,005 gas for t = 3). PLONK and halo2 are 1.11-1.32x; we say why in [Limitations](#limitations).
+- **The generator.** [`gen/fe-zk-gen`](gen/fe-zk-gen/src) validates the key with arkworks, embeds its digest and emits
+  an ingot with a real proof and a battery of invalid ones; there is no flag to skip a check.
+- **zk Game of Life.** [`examples/life`](examples/life): a 16x16 torus in one `u256`, stepped for 657 gas per
+  generation, or advanced 512 generations by one proof. Break-even is about 392 generations.
+
+## What's in the box
+
+Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool on the same proof
+([docs/GAS.md](docs/GAS.md)).
+
+| Family | Source format | Fe module | Generator | Fixtures | Tests | Gas, Fe vs Solidity |
+|---|---|---|---|---|---|---|
+| Groth16 | snarkjs, arkworks | [`groth16.fe`](src/verifier/groth16.fe) | `fe-zk-gen groth16` | `vectors/groth16` | `src/tests/groth16.fe` | 191,620 / 188,926 (N=1); 207,341 / 202,220 (N=3) |
+| PLONK | snarkjs 0.7.6 | [`plonk.fe`](src/verifier/plonk.fe) | `fe-zk-gen plonk` | `vectors/plonk` | `src/tests/plonk.fe` | 293,471 / 263,536 (N=3) |
+| PLONK | gnark v0.12.0 | [`gnark_plonk.fe`](src/verifier/gnark_plonk.fe) | none (typed constants) | `vectors/gnark` | `src/tests/gnark_plonk.fe` | 329,800 / 261,868 |
+| halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 384,734 / 322,590 (SHPLONK) |
+| KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,369 single opening, no reference |
+| FRI/STARK | Plonky3 `uni-stark` Fibonacci | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe` | 651,654, no reference exists |
+| Poseidon (BN254) | circomlibjs 0.1.7 | [`src/hash/`](src/hash) | none | `vectors/poseidon` | `src/tests/hash.fe` | 25,400 / 29,005 (t=3) |
+
+Below the table: `src/field/` (Field trait, five fields, `Ext4`), `src/ec/` (BN254 `G1`/`G2`, precompile wrappers,
+BLS12-381 EIP-2537), Poseidon2 for BN254 and KoalaBear, a Merkle path and a Keccak transcript, all generic over the
+`Field` trait.
 
 ## The problem
 
-Fe has no proof verifier. A project that wants to verify a zk proof on chain leaves Fe for Solidity (snarkjs, gnark and
-snark-verifier all export Solidity). Verifier code is also where soundness bugs live: a missing `< r` check on a
+Fe has no proof verifier. A project that wants to verify a zk proof on chain leaves Fe for Solidity (snarkjs, gnark
+and snark-verifier all export Solidity). Verifier code is also where soundness bugs live: a missing `< r` check on a
 public input, an unchecked curve point, a Fiat-Shamir transcript that omits an input. In Solidity every one of these
-is a convention; nothing in the language stops a caller from passing a raw `uint256` where a checked element is
-needed. The audience is Fe contract authors who need proof verification, and anyone who wants verifier code whose
-safety rules are enforced by types and by the compiler.
+is a convention; nothing stops a caller from passing a raw `uint256` where a checked element is needed. The audience
+is Fe contract authors who need proof verification, and anyone who wants verifier code whose safety rules are
+enforced by types and by the compiler.
 
 ## Approach
 
-Everything below was written during the contest window (see Declaration). Each component is tested against vectors
-from an independent reference implementation, never against our own code (`vectors/README.md`).
+Everything was written during the contest window (see Declaration). Each component is tested against vectors from an
+independent reference implementation, never against our own code ([vectors/README.md](vectors/README.md)).
 
-- `src/field/`: `Field` trait, `Fp<const P: u256>`, BN254 `Fr` / `Fq`, KoalaBear, BabyBear, Goldilocks, a generic
+- `src/field/`: `Field` trait, `Fp<const P: u256>`, BN254 `Fr` / `Fq`, KoalaBear, BabyBear, Goldilocks, generic
   extension field `Ext4<F, W>`.
-- `src/ec/`: BN254 `G1`, `G2`, `G2Proof` with on-curve and (G2) subgroup checks; precompile wrappers (0x05, 0x06,
-  0x07, 0x08) that check the success flag, the returndata length and the exact pairing word; BLS12-381 wrappers for
-  EIP-2537; the EIP-4844 point-evaluation precompile (0x0a).
-- `src/hash/`: circomlib-compatible Poseidon (t = 2..6), one generic Poseidon2 for BN254 (t = 3) and KoalaBear
-  (t = 16), a generic Merkle path, a Keccak transcript.
-- `src/verifier/`: Groth16, PLONK (snarkjs 0.7.6 layout), gnark PLONK (v0.12.0, with BSB22 commitments), halo2-KZG,
-  KZG openings, FRI/STARK for a Plonky3 `uni-stark` Fibonacci proof.
-- `gen/`: Rust CLI `fe-zk-gen` with `groth16` (snarkjs and arkworks keys), `plonk` (snarkjs) and `halo2` subcommands. gnark PLONK is a library verifier
-  with its key given as typed constants in the tests; there is no gnark subcommand. It
-  validates the key with arkworks, computes a key digest, and emits an ingot (contract + tests with a real proof and
-  a battery of invalid ones).
+- `src/ec/`: BN254 `G1`, `G2`, `G2Proof` with on-curve and (G2) subgroup checks; wrappers for the precompiles 0x05 to
+  0x08 that check the success flag, the returndata length and the exact pairing word; EIP-2537 and EIP-4844 wrappers.
+- `src/hash/`: circomlib-compatible Poseidon (t = 2..6), one generic Poseidon2 (BN254 t = 3, KoalaBear t = 16), a
+  generic Merkle path, a Keccak transcript.
+- `src/verifier/`: the verifiers in the table above.
+- `gen/`: Rust CLI `fe-zk-gen` (`groth16` for snarkjs and arkworks keys, `plonk` for snarkjs, `halo2`). It validates
+  the key, computes a digest and emits an ingot (contract + tests with a real proof and invalid ones).
 - `examples/membership`: Poseidon incremental Merkle tree plus a Groth16 membership proof.
-- `examples/life`: zk Game of Life. A 16x16 toroidal board in one `u256`, stepped on chain with word-parallel bit
-  operations; or advanced 512 generations by one Groth16 proof.
-- Safety: `docs/SAFETY.md` maps each of the nine safety rules to the file:line that enforces it and the test that
-  fails without it.
+- `examples/life`: zk Game of Life (see Demo).
+- `docs/SAFETY.md`: the nine safety rules, each with its file:line and the test that fails without it.
 
 ## Fe highlight
 
@@ -138,7 +190,7 @@ examples/membership, examples/life   (hand-written contracts that call the gener
 ```sh
 fe --version   # fe 26.5.0 (3dab95f)
 fe fmt --check
-fe test        # root ingot: 146 tests (field, ec, hash, groth16, plonk, gnark plonk, halo2, kzg, fri)
+fe test        # root ingot: 146 tests, about 4 minutes (field, ec, hash, groth16, plonk, gnark plonk, halo2, kzg, fri)
 fe build       # run inside an example ingot (the root ingot has no contract), e.g. examples/life
 (cd gen && cargo test)
 scripts/demo.sh        # membership, PLONK and halo2 emission + tests
@@ -181,11 +233,9 @@ randomised, so a regeneration changes every value.
 
 ## Demo
 
-### Membership (`scripts/demo.sh`)
+Reproducible CLI examples; commands are in "Try it in 60 seconds" above.
 
-```sh
-scripts/demo.sh
-```
+### Membership and generated verifiers (`scripts/demo.sh`)
 
 1. `fe-zk-gen groth16 --snarkjs vectors/groth16/membership/verification_key.json --proof ... --public ...` validates
    the key and emits `examples/membership/verifier` (contract, key constants, tests with the real snarkjs proof).
@@ -199,44 +249,24 @@ CI runs it and checks that the generated membership ingot is unchanged (`git dif
 
 ### zk Game of Life (`scripts/life-demo.sh`, about 5 minutes)
 
-`examples/life/cli` (`life-cli`, Rust, revm) executes the compiled Fe `Life` contract.
+`examples/life/cli` (`life-cli`, Rust, revm) executes the compiled Fe `Life` contract: each generation is one
+`step(board)` call, compared with a per-cell Rust reference. The circuit (`examples/life/circuit/life.circom`, 7
+constraints per cell) proves that 512 generations were computed from a private start board whose Poseidon commitment
+is public, ending at a board with the second public commitment. The verifier is the `fe-zk-gen` output
+`Life512Verifier`; `advanceProven(endLo, endHi, proof)` recomputes both commitments on chain and stores the end board.
+`life-cli --frames-json PATH` dumps the boards and gas that drive the animation at the top.
 
-```sh
-scripts/life-demo.sh                                   # on-chain play + one proof of 512 generations
-cd examples/life/cli && cargo run --release -- --prove       # zk path only
-cd examples/life/cli && cargo run --release -- --prove-live --pattern rpentomino   # prove with circom/snarkjs
+Output of `life-cli --pattern glider --gens 64 --check` (excerpt) and `life-cli --prove`:
+
 ```
-
-On-chain path, captured output (glider, 64 generations, every generation compared with a per-cell Rust reference):
-
-```
-== On-chain play in revm: 64 generations of 'glider' (per-cell reference check) ==
 gen    0  alive   5  start
 gen   16  alive   5  step gas 657 (tx 21885)
 ...
 check: OK, 64 generations match the per-cell reference
 gas, 64 separate step() calls: 42048 execution, 1400880 with tx overhead
 gas, one run(board, 64) call:  34246 execution, 55614 with tx overhead
-```
 
-Gas measured inside `fe test` (`fe test --show-logs`, `GasUsed` events):
-
-```
-call                                    gas
-run(board, 64)                        34591
-run(board, 256)                      136351
-run(board, 512)                      271943
-advanceProven (proof of 512 gens)    256872
-proveRun (proof of 512 gens)         205982
-```
-
-zk path, `life-cli --prove` (one Groth16 proof of 512 generations, verified by the generated Fe verifier; the board
-drawings are omitted here):
-
-```
 fixture vectors/groth16/life_512  proven generations 512
-start board  alive 5
-end board after 512 generations (one proof)  alive 3
 rejected: tampered proof true, wrong end board true, wrong start board true
 
 gas (revm, Osaka)                                 execution      with tx
@@ -248,36 +278,10 @@ one advanceProven (verify + 2 Poseidon + store)       263675       289127
 break-even: a proof pays off above about 392 generations (531 gas per on-chain generation)
 ```
 
-The circuit (`examples/life/circuit/life.circom`, 7 constraints per cell) proves that 512 generations were computed
-from a private start board whose Poseidon commitment is public, ending at a board with the second public
-commitment. The verifier is the `fe-zk-gen` output `Life512Verifier`; `advanceProven(endLo, endHi, proof)` recomputes
-both commitments on chain and stores the end board.
-
-## Gas
-
-Execution gas, same proof and same calldata, Fe verifier vs the Solidity verifier of the reference tool, in revm
-(Osaka). See [docs/GAS.md](docs/GAS.md) for the full, reproducible table, the method and the code sizes.
-
-| Verifier | Fixture | Fe | Solidity | Fe / Sol |
-|---|---|---:|---:|---:|
-| Groth16 (snarkjs) | N = 1 | 191,620 | 188,926 | 1.01x |
-| Groth16 (snarkjs) | N = 3 (membership) | 207,341 | 202,220 | 1.03x |
-| PLONK (snarkjs) | N = 3 (membership) | 293,471 | 263,536 | 1.11x |
-| PLONK (gnark v0.12.0) | mul | 329,800 | 261,868 | 1.26x |
-| halo2-KZG SHPLONK (snark-verifier) | standard_plonk_lookup | 384,734 | 322,590 | 1.19x |
-| KZG single opening | test SRS | 130,369 | no reference | |
-| FRI/STARK (Plonky3 Fibonacci) | 4 queries | 651,654 | no reference | |
-
-Poseidon (BN254) t = 3: 25,400 gas vs 29,005 for circomlibjs' hand-written EVM contract. Every Fe row uses the
-compile-time key path (`from_consts` + `static_assert`, as the generated ingots do); `docs/GAS.md` also shows what a
-runtime-validated halo2 key costs (2.42M instead of 385k).
-
-Game of Life (output of `life-cli --prove` above): 512 `step()` calls cost 336,393 gas, one `run(board, 512)` 271,686,
-one `proveRun` call 207,758; the break-even is about 392 generations. These are a different measurement from the
-table: `life-cli` calls the `Life` contract, which forwards to the verifier (so `proveRun` includes the extra call),
-whereas `docs/GAS.md` calls the verifier directly (199,593 Fe, 195,613 Solidity; 336,384 for 512 `step()` calls;
-break-even about 385 generations with `run`). The gas events printed by `fe test --show-logs` are a third
-measurement (`evm.gas()` around the call, built by `fe test`) and differ by a few percent. `docs/GAS.md` states its method.
+Three measurements of Life gas exist and differ slightly: `life-cli` calls the `Life` contract, which forwards to the
+verifier (so `proveRun` includes the extra call); `docs/GAS.md` calls the verifier directly (199,593 Fe, 195,613
+Solidity; break-even about 385 generations against `run`); and `fe test --show-logs` prints `GasUsed` events
+(`evm.gas()` around the call), a few percent off. The method of each is stated where it is reported.
 
 ## Limitations
 
