@@ -1,282 +1,112 @@
 #!/usr/bin/env python3
-"""Render the fe-zk demo video from REAL command output (python stdlib + ffmpeg only).
+"""Render the fe-zk demo video v2 from REAL command output and repository files (stdlib + ffmpeg).
 
-Every number on screen is captured at render time: `fe-zk-gen`, `fe test`, `life-cli` are run
-here, docs/GAS.md and docs/SAFETY.md are parsed. Only labels and captions are literal text.
+Every number, output line, board and code excerpt on screen is captured at render time:
+`fe-zk-gen`, `fe test`, `fe build`, `life-cli` are run here; docs/GAS.md, docs/TESTING.md and
+docs/SAFETY.md are parsed; code excerpts are cut from src/ and the examples by pattern with their
+real line numbers. Only labels, titles and captions are literal text (see scene list in
+docs/AI_LOG.md / the final report).
 
 Run through scripts/make-video.sh (which builds the tools first). Environment:
-  VIDEO_DIR   work + output directory (default /data/fe-zk-video)
-  FE          fe binary (default: fe)
-  GEN_BIN     fe-zk-gen binary, LIFE_BIN life-cli binary (set by make-video.sh)
+  VIDEO_DIR    work + output directory (default /data/fe-zk-video)
+  FE           fe binary (default: fe)
+  GEN_BIN      fe-zk-gen binary, LIFE_BIN life-cli binary (set by make-video.sh)
+  VIDEO_REUSE  debugging aid: reuse captures of the previous run (VIDEO_DIR/tmp/cap)
+  VIDEO_ONLY   comma separated scene names to render (skips assembly)
 """
-import os, re, shutil, subprocess, sys, time
+import json, os, re, shutil, subprocess, sys, textwrap, time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fx import *  # noqa
 
 ROOT = Path(__file__).resolve().parents[2]
 VIDEO = Path(os.environ.get("VIDEO_DIR", "/data/fe-zk-video"))
 TMP = VIDEO / "tmp"
 CAP = TMP / "cap"
-SCN = TMP / "scenes"
+CLIPS = TMP / "clips"
+SRC = TMP / "scn"
 FE = os.environ.get("FE", "fe")
 GEN = os.environ.get("GEN_BIN", "fe-zk-gen")
 LIFE = os.environ.get("LIFE_BIN", "life-cli")
-MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
-MONOB = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
-SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-SANSB = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-
-W, H, FPS = 1920, 1080, 30
-FS, LH, X0, Y0 = 28, 38, 48, 110  # font size, line height, left margin, first line y
-MAXC = 104  # columns that fit at 28 px mono
-BG, BAR = "0x0d1117", "0x161b22"
-C_TXT, C_DIM, C_OK, C_ERR, C_CMD, C_HI = "0xc9d1d9", "0x8b949e", "0x3fb950", "0xff7b72", "0xe3b341", "0x79c0ff"
-ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an"]
-
-
-def sh(cmd, cwd=None, env=None, check=False):
-    """Run a command, return merged stdout+stderr text (and rc)."""
-    e = dict(os.environ)
-    if env:
-        e.update(env)
-    p = subprocess.run(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if check and p.returncode:
-        sys.exit("command failed (%d): %s\n%s" % (p.returncode, " ".join(map(str, cmd)), p.stdout))
-    return p.returncode, p.stdout
-
-
-def capture(name, cmd, **kw):
-    f = CAP / (name + ".txt")
-    if os.environ.get("VIDEO_REUSE") and f.exists():  # debugging aid: reuse captures of a previous run
-        out = f.read_text()
-        return (1 if re.search(r"FAILED|error", out) else 0), out
-    rc, out = sh(cmd, **kw)
-    (CAP / (name + ".txt")).write_text(out)
-    return rc, out
+NCHAP = 9
 
 
 def log(*a):
     print("[video]", *a, flush=True)
 
 
-# ---------------------------------------------------------------------------------- text scenes
-def colour(line):
-    s = line.strip()
-    if s.startswith("$ "):
-        return C_CMD
-    if re.search(r"error|FAILED|FAIL |static assertion failed|panicked", line):
-        return C_ERR
-    if re.search(r"\bPASS\b|test result: ok|VALID|^\s*ok\b", line):
-        return C_OK
-    if s.startswith("#") or s.startswith("//"):
-        return C_DIM
-    return C_TXT
+def capture(name, cmd, always=False, **kw):
+    f = CAP / (name + ".txt")
+    if os.environ.get("VIDEO_REUSE") and f.exists() and not always:
+        out = f.read_text()
+        return (1 if re.search(r"FAILED|^error", out, re.M) else 0), out
+    rc, out = sh(cmd, **kw)
+    f.write_text(out)
+    return rc, out
 
 
-def clip(s, n=MAXC):
-    s = s.replace("\t", "    ").rstrip()
-    return s if len(s) <= n else s[: n - 1] + "…"
+def relpath(a, b):
+    return os.path.relpath(a, b)
 
 
-def esc_path(p):
-    return str(p).replace(":", r"\:")
+def set_dep_path(ingot):
+    """Point the fe_zk dependency of a scratch ingot at this checkout (relative path, as fe requires)."""
+    f = Path(ingot) / "fe.toml"
+    t = re.sub(r'path = "[^"]*"', 'path = "%s"' % relpath(ROOT, ingot), f.read_text())
+    f.write_text(t)
 
 
-def textfile(name, text):
-    p = SCN / name
-    p.write_text(text)
-    return p
+def fmt(n):
+    return "{:,}".format(int(n))
 
 
-class Scene:
-    def __init__(self, name, title, lines=(), images=(), dur=None, hold=4.0, per_line=0.25):
-        self.name, self.title, self.images = name, title, list(images)
-        # lines: str or (str, colour) or (str, colour, font) ; clipped to the screen width
-        self.lines = []
-        for l in lines:
-            if isinstance(l, str):
-                l = (l, colour(l))
-            self.lines.append((clip(l[0]),) + tuple(l[1:]))
-        self.reveal = per_line * len(self.lines)
-        self.dur = dur if dur else hold + self.reveal
-        self.per_line = per_line
+def num(s):
+    return int(re.sub(r"[^\d]", "", s))
 
 
-def drawtext(font, textf, size, color, x, y, enable=None):
-    if "," in str(y):
-        y = "'%s'" % y
-    f = "drawtext=fontfile=%s:textfile=%s:fontsize=%d:fontcolor=%s:x=%s:y=%s:expansion=none" % (
-        font, esc_path(textf), size, color, x, y)
-    if enable:
-        f += ":enable='%s'" % enable
-    return f
+# ---------------------------------------------------------------------------------- code excerpts
+class Src:
+    def __init__(self, path):
+        self.path = ROOT / path
+        self.lines = self.path.read_text().splitlines()
+
+    def find(self, pat, start=0):
+        for i in range(start, len(self.lines)):
+            if pat in self.lines[i]:
+                return i
+        raise SystemExit("pattern not found in %s: %s" % (self.path, pat))
+
+    def grab(self, pat, n, start=0, dedent=True, until=None):
+        """n lines from the first line containing pat (or until the first line == `until`).
+        Returns (lines, line numbers)."""
+        i = self.find(pat, start)
+        if until is not None:
+            j = i
+            while self.lines[j].rstrip() != until:
+                j += 1
+            n = j - i + 1
+        ls = self.lines[i:i + n]
+        if dedent:
+            k = min(len(l) - len(l.lstrip()) for l in ls if l.strip())
+            ls = [l[k:] for l in ls]
+        return ls, list(range(i + 1, i + 1 + n))
 
 
-def header_filters(title, dur):
-    tf = textfile("t_%d.txt" % abs(hash(title)), title)
-    return [
-        "drawbox=x=0:y=0:w=%d:h=84:color=%s:t=fill" % (W, BAR),
-        drawtext(SANSB, tf, 38, C_HI, X0, 22),
-    ]
-
-
-def run_ffmpeg(args, out):
-    cmd = ["ffmpeg", "-y", "-loglevel", "error"] + args + ENC + [str(out)]
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if p.returncode:
-        sys.exit("ffmpeg failed:\n" + " ".join(cmd) + "\n" + p.stdout)
-
-
-def finish_chain(chain, dur):
-    return chain + ["fade=t=in:st=0:d=0.3", "fade=t=out:st=%.2f:d=0.3" % (dur - 0.3)]
-
-
-def render_text(sc):
-    out = SCN / (sc.name + ".mp4")
-    chain = header_filters(sc.title, sc.dur)
-    for i, ln in enumerate(sc.lines):
-        text, col = ln[0], ln[1]
-        if not text.strip():
-            continue
-        tf = textfile("%s_%02d.txt" % (sc.name, i), text)
-        t0 = 0.3 + i * sc.per_line
-        chain.append(drawtext(MONO, tf, FS, col, X0, Y0 + i * LH, "gte(t,%.2f)" % t0))
-    inputs = ["-f", "lavfi", "-i", "color=c=%s:s=%dx%d:r=%d:d=%.2f" % (BG, W, H, FPS, sc.dur)]
-    fc = ["[0:v]" + ",".join(chain) + "[base]"]
-    last = "base"
-    for k, (path, x, y, size, t0) in enumerate(sc.images, 1):
-        inputs += ["-i", str(path)]
-        cell = size // 16
-        fc.append("[%d:v]scale=%d:%d:flags=neighbor,drawgrid=w=%d:h=%d:t=1:c=0x30363d[im%d]" % (k, size, size, cell, cell, k))
-        fc.append("[%s][im%d]overlay=x=%d:y=%d:enable='gte(t,%.2f)'[o%d]" % (last, k, x, y, t0, k))
-        last = "o%d" % k
-    fc.append("[%s]%s[out]" % (last, ",".join(finish_chain([], sc.dur)[0:2])))
-    script = SCN / (sc.name + ".fc")
-    script.write_text(";\n".join(fc))
-    run_ffmpeg(inputs + ["-filter_complex_script", str(script), "-map", "[out]", "-t", "%.2f" % sc.dur], out)
-    return out
-
-
-def render_scroll(name, title, lines, speed=190.0):
-    """Fast scroll of a long listing, last line ends at the bottom."""
-    lines = [clip(l) for l in lines]
-    n = len(lines)
-    total = n * LH
-    end_y = H - 40 - total
-    dur = (H - 100 - end_y) / speed + 3.0
-    tf = textfile(name + "_scroll.txt", "\n".join(lines))
-    y = "max(%d-t*%.1f,%d)" % (H - 100, speed, end_y)
-    chain = [
-        "%s:line_spacing=%d" % (drawtext(MONO, tf, FS, C_TXT, X0, y), LH - 34),
-    ] + header_filters(title, dur)
-    out = SCN / (name + ".mp4")
-    inputs = ["-f", "lavfi", "-i", "color=c=%s:s=%dx%d:r=%d:d=%.2f" % (BG, W, H, FPS, dur)]
-    run_ffmpeg(inputs + ["-vf", ",".join(finish_chain(chain, dur)), "-t", "%.2f" % dur], out)
-    return out, dur
-
-
-def render_title(name, big, lines, dur=5.0):
-    chain = []
-    tf = textfile(name + "_big.txt", big)
-    chain.append(drawtext(SANSB, tf, 120, C_HI, "(w-text_w)/2", 250))
-    y = 450
-    for i, (t, size, col) in enumerate(lines):
-        f = textfile("%s_l%d.txt" % (name, i), t)
-        chain.append(drawtext(SANS, f, size, col, "(w-text_w)/2", y))
-        y += int(size * 1.6)
-    out = SCN / (name + ".mp4")
-    inputs = ["-f", "lavfi", "-i", "color=c=%s:s=%dx%d:r=%d:d=%.2f" % (BG, W, H, FPS, dur)]
-    run_ffmpeg(inputs + ["-vf", ",".join(finish_chain(chain, dur)), "-t", "%.2f" % dur], out)
-    return out
-
-
-# ---------------------------------------------------------------------------------- Life boards
-def parse_board(lines):
-    """life-cli prints a 16x16 board as '. ' (dead) / '##' (alive) pairs; return 16 rows of 0/1."""
-    rows = []
-    for l in lines:
-        s = l.rstrip("\n")
-        if len(s) >= 31 and set(s) <= set(". #"):
-            s = s.ljust(32)
-            rows.append([1 if s[2 * i] == "#" else 0 for i in range(16)])
-    return rows[:16] if len(rows) >= 16 else None
-
-
-def write_ppm(path, rows, alive=(0x3F, 0xB9, 0x50), dead=(0x16, 0x1B, 0x22)):
-    data = bytearray(b"P6\n16 16\n255\n")
-    for r in rows:
-        for c in r:
-            data += bytes(alive if c else dead)
-    Path(path).write_bytes(bytes(data))
-
-
-def bits_to_rows(h):
-    v = int(h, 16)  # bit index = row * 16 + col
-    return [[(v >> (r * 16 + c)) & 1 for c in range(16)] for r in range(16)]
-
-
-def life_frames(gens, pattern="rpentomino"):
-    """One life-cli run with --frames-json: boards and step gas as returned by the Fe contract in revm."""
-    import json
-    fdir = TMP / "frames"
-    shutil.rmtree(fdir, ignore_errors=True)
-    fdir.mkdir(parents=True)
-    jpath = TMP / "life_play.json"
-    rc, out = capture("life_play", [LIFE, "--pattern", pattern, "--gens", str(gens), "--no-anim", "--frames-json", str(jpath)])
-    if rc:
-        sys.exit("life-cli failed:\n" + out)
-    d = json.loads(jpath.read_text())
-    meta = []
-    for k, f in enumerate(d["frames"]):
-        rows = bits_to_rows(f["board"])
-        write_ppm(fdir / ("f%03d.ppm" % k), rows)
-        meta.append((f["generation"], sum(map(sum, rows)), f["step_gas"]))
-    return fdir, meta
-
-
-def render_life_anim(gens, rate=8, min_dur=10.0):
-    fdir, meta = life_frames(gens)
-    nfr = len(meta)
-    dur = max(nfr / rate + 1.5, min_dur)
-    size = 800
-    chain = header_filters("zk Game of Life: 16x16 torus on one u256, stepped by the Fe contract", dur)
-    pre = ["drawgrid=w=1:h=1:t=0"]  # placeholder, replaced below
-    # per-frame caption on the right
-    for i, (g, alive, gas) in enumerate(meta):
-        t0, t1 = i / rate, (i + 1) / rate
-        cap = "generation %d / %d\nalive cells  %d\nstep() gas   %s" % (g, gens, alive, gas if gas else "-")
-        tf = textfile("life_cap_%03d.txt" % i, cap)
-        en = "gte(t,%.4f)" % t0 if i == nfr - 1 else "between(t,%.4f,%.4f)" % (t0, t1 - 0.0001)
-        chain.append("%s:line_spacing=18" % drawtext(MONO, tf, 40, C_OK, 1000, 280, en))
-    notes = [
-        ("Life.step(board): word-parallel bitwise adders,", C_TXT),
-        ("no per-cell loops, no storage.", C_TXT),
-        ("Boards on the left come from running the compiled", C_DIM),
-        ("Fe contract bytecode in revm, one call per", C_DIM),
-        ("generation (life-cli --pattern rpentomino).", C_DIM),
-    ]
-    for i, (t, col) in enumerate(notes):
-        chain.append(drawtext(MONO, textfile("life_note_%d.txt" % i, t), 28, col, 1000, 520 + i * LH))
-    inputs = ["-f", "lavfi", "-i", "color=c=%s:s=%dx%d:r=%d:d=%.2f" % (BG, W, H, FPS, dur),
-              "-framerate", str(rate), "-i", str(fdir / "f%03d.ppm")]
-    fc = [
-        "[0:v]%s[base]" % ",".join(chain),
-        "[1:v]scale=%d:%d:flags=neighbor,drawgrid=w=%d:h=%d:t=1:c=0x30363d[board]" % (size, size, size // 16, size // 16),
-        "[base][board]overlay=x=120:y=150[o]",
-        "[o]%s[out]" % ",".join(finish_chain([], dur)),
-    ]
-    script = SCN / "life_anim.fc"
-    script.write_text(";\n".join(fc))
-    out = SCN / "life_anim.mp4"
-    run_ffmpeg(inputs + ["-filter_complex_script", str(script), "-map", "[out]", "-t", "%.2f" % dur], out)
-    return out, meta
+def join(*parts):
+    ls, ns = [], []
+    for a, b in parts:
+        ls += a
+        ns += b
+    return ls, ns
 
 
 # ---------------------------------------------------------------------------------- doc parsers
 def md_table(text, heading):
-    """Rows (list of cell lists) of the first table after a '## heading' line."""
     m = re.search(r"^## " + re.escape(heading) + r".*$", text, re.M)
     if not m:
-        return []
+        raise SystemExit("heading not found: " + heading)
     rows, seen = [], False
     for l in text[m.end():].splitlines():
         if l.startswith("## "):
@@ -288,274 +118,573 @@ def md_table(text, heading):
                 rows.append(cells)
         elif seen:
             break
-    return rows[1:]  # drop header row
+    return rows[1:]
 
 
-def gas_lines():
+def families():
+    """Rows for the 'every family' table, all from docs/GAS.md."""
     text = (ROOT / "docs/GAS.md").read_text()
-    out = ["%-68s %9s %9s %7s" % ("same proof, same revm: exec gas", "Fe", "Solidity", "Fe/Sol"), ""]
-    for r in md_table(text, "Verifier gas, same proof"):
-        out.append("%-68s %9s %9s %7s" % (re.sub(r", N=\d+", "", r[0] + " " + r[1])[:68], r[2], r[3], r[4]))
-    out.append("")
-    out.append("%-68s %9s %9s %7s" % ("Poseidon (circomlibjs contract vs Fe)", "Fe", "circomlib", "Fe/ref"))
-    for r in md_table(text, "Poseidon hash"):
-        out.append("%-68s %9s %9s %7s" % ("Poseidon, %s inputs" % r[0], r[1], r[2], r[3]))
-    for r in md_table(text, "Game of Life"):
-        if r[0] == "512":
-            out.append("")
-            out.append("Life, 512 generations: 512 x step() %s, run() %s, one Groth16 proof %s" % (r[1], r[3], r[5]))
+    gas = md_table(text, "Verifier gas, same proof")
+    only = md_table(text, "Fe only")
+    size = md_table(text, "Deployed code size")
+    sizes = {r[0]: r for r in size}
+
+    def grp(prefix):
+        g = [r for r in gas if r[0].startswith(prefix)]
+        s = [r for r in size if r[0].startswith(prefix)]
+        ratios = [float(r[4].rstrip("x")) for r in g]
+        return dict(gas=max(num(r[2]) for r in g), lo=min(ratios), hi=max(ratios), code=max(num(r[1]) for r in s))
+
+    out = []
+    out.append(("Groth16 (snarkjs)", grp("Groth16")))
+    out.append(("PLONK (snarkjs)", grp("PLONK (snarkjs)")))
+    out.append(("PLONK (gnark)", grp("PLONK (gnark")))
+    out.append(("halo2-KZG", grp("halo2-KZG")))
+    kz = [r for r in only if r[0] == "KZG"]
+    ks = [r for r in size if r[0].startswith("KZG")]
+    out.append(("KZG (single, GWC, SHPLONK)", dict(gas=max(num(r[2]) for r in kz), lo=None, hi=None, code=max(num(r[1]) for r in ks))))
+    fr = [r for r in only if r[0] == "FRI/STARK"][0]
+    fs = [r for r in size if r[0].startswith("FRI/STARK")][0]
+    out.append(("FRI / STARK (Plonky3)", dict(gas=num(fr[2]), lo=None, hi=None, code=num(fs[1]))))
     return out
 
 
-def safety_lines():
+def testing_totals():
+    text = (ROOT / "docs/TESTING.md").read_text()
+    row = next(l for l in text.splitlines() if l.startswith("| **total**"))
+    c = [x.strip().strip("*") for x in row.strip("|").split("|")]
+    valid, muts, agree, allowed, bugs = [int(x) for x in c[1:6]]
+    return dict(cases=valid + muts, bugs=bugs, valid=valid, muts=muts)
+
+
+def safety_rules():
     text = (ROOT / "docs/SAFETY.md").read_text()
-    parts = re.split(r"^## (\d+)\. (.*)$", text, flags=re.M)
-    out = ["%-3s %-37s %-33s %s" % ("#", "rule", "enforced at", "tested by")]
-    for i in range(1, len(parts) - 2, 3):
-        n, title, body = parts[i], parts[i + 1], parts[i + 2]
-        if int(n) > 9:
-            break
-        row = next((l for l in body.splitlines() if l.startswith("|") and "`" in l), "")
-        cells = [c.strip() for c in row.strip("|").split("|")]
-        where = re.findall(r"`([^`]+)`", cells[0])[0] if cells and re.findall(r"`([^`]+)`", cells[0]) else "-"
-        toks = re.findall(r"`([^`]+)`", cells[2]) if len(cells) > 2 else []
-        test = next((t for t in toks if "/" not in t), toks[0] if toks else "-")
-        title = re.split(r"[:,]| are | of every| every", title)[0].strip()
-        out.append("%-3s %-37s %-33s %s" % (n, title[:37], where[:33], test))
-    return out
+    return len([n for n in re.findall(r"^## (\d+)\. ", text, re.M) if int(n) <= 9])
 
 
-# ---------------------------------------------------------------------------------- tree scene
-TREE_LABELS = {
-    "": "fe_zk ingot (Fe 26.5.0)",
-    "lib.fe": "re-exports",
-    "field": "Field trait + 5 fields",
-    "field/fp.fe": "Fp<P>: Bn254Fr, Bn254Fq, KoalaBear, BabyBear, Goldilocks",
-    "field/ext.fe": "extension fields (KoalaBear degree 4)",
-    "ec": "curves and precompiles",
-    "ec/bn254.fe": "BN254 G1/G2: curve + subgroup checks, pairing_check",
-    "ec/bls12_381.fe": "BLS12-381 wrappers (EIP-2537)",
-    "ec/eip4844.fe": "EIP-4844 point evaluation (0x0a)",
-    "ec/precompile.fe": "ecAdd / ecMul / ecPairing, checked results",
-    "hash": "hashes and transcripts, generic over Field",
-    "hash/poseidon.fe": "Poseidon (circomlib-compatible, BN254)",
-    "hash/poseidon2.fe": "Poseidon2 (BN254 t=3, KoalaBear t=16)",
-    "hash/transcript.fe": "Keccak Fiat-Shamir transcript",
-    "verifier": "proof verifiers",
-    "verifier/groth16.fe": "Groth16 (snarkjs / arkworks / gnark keys)",
-    "verifier/plonk.fe": "PLONK (snarkjs)",
-    "verifier/gnark_plonk.fe": "PLONK (gnark)",
-    "verifier/halo2": "halo2-KZG (SHPLONK + GWC)",
-    "verifier/kzg.fe": "KZG: single, GWC, SHPLONK openings",
-    "verifier/fri": "FRI / STARK (Plonky3, KoalaBear)",
-}
+# ---------------------------------------------------------------------------------- life data
+def bits_to_rows(h):
+    v = int(h, 16)
+    return [[(v >> (r * 16 + c)) & 1 for c in range(16)] for r in range(16)]
 
 
-def tree_lines():
-    src = ROOT / "src"
-    files = sorted(
-        p.relative_to(src).as_posix()
-        for p in src.rglob("*.fe")
-        if "tests" not in p.relative_to(src).parts and p.name != "tests.fe"
-        and not re.search(r"(_constants|_unrolled)\.fe$", p.name)
-    )
-    # top-level facade files (field.fe, ec.fe, ...) are just module roots of the directories
-    files = [f for f in files if "/" in f or f == "lib.fe"]
-    tree = {}
-    for f in files:
-        node = tree
-        parts = f.split("/")
-        for d in parts[:-1]:
-            node = node.setdefault(d, {})
-        node[parts[-1]] = None
-    out = ["src/".ljust(34) + "# " + TREE_LABELS[""]]
+def write_ppm(path, rows, alive=(255, 150, 70), dead=(18, 24, 33)):
+    data = bytearray(b"P6\n16 16\n255\n")
+    for r in rows:
+        for c in r:
+            data += bytes(alive if c else dead)
+    Path(path).write_bytes(bytes(data))
 
-    def walk(node, prefix, rel):
-        items = sorted(node.items(), key=lambda kv: (kv[1] is None, kv[0]))
-        for i, (name, sub) in enumerate(items):
-            last = i == len(items) - 1
-            r = (rel + "/" + name) if rel else name
-            lab = TREE_LABELS.get(r)
-            if sub is not None:
-                r2 = r
-                lab = TREE_LABELS.get(r2)
-            nm = prefix + ("└── " if last else "├── ") + name + ("/" if sub is not None else "")
-            out.append((nm.ljust(34) + ("# " + lab if lab else "")).rstrip())
-            if sub is not None:
-                walk(sub, prefix + ("    " if last else "│   "), r)
 
-    walk(tree, "", "")
-    return out
+def life_run(name, args):
+    jp = TMP / (name + ".json")
+    rc, out = capture(name, [LIFE] + args + ["--frames-json", str(jp)])
+    if rc:
+        sys.exit("life-cli failed:\n" + out)
+    return json.loads(jp.read_text()), out
+
+
+# ---------------------------------------------------------------------------------- helpers
+def counter(sc, value, x, y, size, color, t0, dur=1.8, font=MONOB):
+    p = "clip((t-%.2f)/%.2f,0,1)" % (t0, dur)
+    X = "trunc(%d*(1-pow(1-%s,3)))" % (value, p)
+    sc.text("%%{eif:%s:d}" % X, x, y, size, color, font, t0=t0, anim="cut", expansion=True, enable="lt(%s,1000)" % X, tick=True)
+    sc.text("%%{eif:floor(%s/1000):d},%%{eif:mod(%s,1000):d:3}" % (X, X), x, y, size, color, font, t0=t0, anim="cut",
+            expansion=True, enable="gte(%s,1000)" % X, tick=True)
+    sc.track(t0, y)
+
+
+def flash(sc, x, y, w, h, t0, color=ACC, thick=3):
+    """Outline box that blinks three times, then stays on."""
+    sc.box(x, y, w, h, color, t0, fill=False, thick=thick,
+           enable="gt(t,%.2f)+lt(mod(t-%.2f,0.24),0.12)" % (t0 + 0.72, t0))
+
+
+def grow_bar(sc, x, y, wfinal, h, color, t0, dur, step=2):
+    n = max(2, int(dur * FPS / step))
+    for i in range(n):
+        a = t0 + i * step / float(FPS)
+        e = (i + 1) / float(n)
+        e = 1 - (1 - e) ** 3
+        sc.f("drawbox=x=%d:y=%d:w=%d:h=%d:color=%s:t=fill:enable='%s'" % (
+            x, y, max(2, int(wfinal * e)), h, color,
+            ("between(t,%.3f,%.3f)" % (a, a + step / float(FPS) - 0.001)) if i < n - 1 else "gte(t,%.3f)" % a))
+
 
 
 # ---------------------------------------------------------------------------------- main
 def main():
     reuse = bool(os.environ.get("VIDEO_REUSE"))
     for d in (TMP.iterdir() if TMP.exists() else []):
-        if not (reuse and d.name in ("cap", "gen")):
+        if not (reuse and d.name in ("cap",)):
             shutil.rmtree(d, ignore_errors=True)
-    for d in (TMP, CAP, SCN):
+    for d in (TMP, CAP, CLIPS, SRC):
         d.mkdir(parents=True, exist_ok=True)
     t_start = time.time()
-    scenes = []
+    only = set(filter(None, os.environ.get("VIDEO_ONLY", "").split(",")))
+    make_background(SRC / "bg.png", SRC)
     fe_ver = sh([FE, "--version"])[1].strip()
-    rel = lambda p: os.path.relpath(ROOT, p)
+    log("fe:", fe_ver)
 
-    # 1. title
-    scenes.append(render_title("s01_title", "fe-zk", [
-        ("Zero-knowledge proof verifiers for Fe", 52, C_TXT),
-        ("Fe contracts verify Groth16, PLONK, halo2-KZG, KZG and FRI/STARK proofs,", 30, C_DIM),
-        ("and a generator turns verifying keys into safe Fe verifier contracts.", 30, C_DIM),
-        ("Fe Builders Challenge 2026", 30, C_HI),
-    ]))
+    # ------------------------------------------------------------ captures (real runs)
+    log("capture: fe test over every ingot (parallel)")
+    ingots = [("fe-zk library", ROOT)] + [
+        (str(p.parent.relative_to(ROOT)), p.parent) for p in sorted((ROOT / "examples").rglob("fe.toml"))
+        if "out" not in p.parts]
 
-    # 2. the library (scroll of the real src/ tree)
-    log("scene 2: library tree")
-    p, d = render_scroll("s02_library", "The library: src/ module tree", tree_lines())
-    scenes.append(p)
+    def run_test(it):
+        label, d = it
+        rc, out = capture("fe_test_" + re.sub(r"\W", "_", label), [FE, "test"], cwd=d)
+        m = re.search(r"test result: (\w+)\. (\d+) passed; (\d+) failed", out)
+        return label, rc, out, (int(m.group(2)) if m else 0), (int(m.group(3)) if m else 99)
 
-    # 3. generator
-    log("scene 3: generator")
+    with ThreadPoolExecutor(4) as ex:
+        results = list(ex.map(run_test, ingots))
+    n_tests = 0
+    results = [r for r in results if "No tests found" not in r[2]]  # e.g. examples/fri_stark: deployable ingot, tests live in src/tests
+    for label, rc, out, p, f in results:
+        log("   %-40s %4d passed, %d failed" % (label, p, f))
+        assert f == 0 and p > 0, "fe test failed in %s:\n%s" % (label, out[-2000:])
+        n_tests += p
+    quick_out = next(o for l, r, o, p, f in results if l == "examples/quickstart")
+    sem_label = "examples/real_semaphore/verifier"
+    sem_out = next(o for l, r, o, p, f in results if l == sem_label)
+
+    log("capture: fe-zk-gen on the real Semaphore v4 key")
     gdir = TMP / "gen"
-    gdir.mkdir(exist_ok=True)
-    V = ROOT / "vectors/groth16/membership"
-    gm = gdir / "membership_verifier"
-    cmd = [GEN, "groth16", "--snarkjs", str(V / "verification_key.json"), "--proof", str(V / "proof.json"),
-           "--public", str(V / "public.json"), "--name", "Membership", "--out", str(gm),
-           "--fe-zk-path", os.path.relpath(ROOT, gm)]
-    rc, out_g = capture("gen_groth16", cmd)
-    assert rc == 0, out_g
-    shown = "$ fe-zk-gen groth16 --snarkjs vectors/groth16/membership/verification_key.json \\"
-    gl = [shown, "      --proof proof.json --public public.json --name Membership --out membership_verifier"]
-    gl += out_g.rstrip().splitlines()
-    gl.append("")
-    P = ROOT / "vectors/plonk/membership"
-    pdir = gdir / "plonk_verifier"
-    rc, out_p = capture("gen_plonk", [GEN, "plonk", "--snarkjs", str(P / "verification_key.json"), "--proof", str(P / "proof.json"),
-                                      "--public", str(P / "public.json"), "--name", "PlonkMembership", "--out", str(pdir),
-                                      "--fe-zk-path", os.path.relpath(ROOT, pdir)])
-    assert rc == 0, out_p
-    gl.append("$ fe-zk-gen plonk --snarkjs vectors/plonk/membership/verification_key.json ...")
-    gl += out_p.rstrip().splitlines()
-    gl.append("")
-    Hh = ROOT / "vectors/halo2/standard_plonk_lookup"
-    hdir = gdir / "halo2_verifier"
-    rc, out_h = capture("gen_halo2", [GEN, "halo2", "--vk", str(Hh / "vk.json"), "--shplonk", str(Hh / "shplonk.json"),
-                                      "--gwc", str(Hh / "gwc.json"), "--scheme", "both", "--name", "Halo2Circuit", "--out", str(hdir),
-                                      "--fe-zk-path", os.path.relpath(ROOT, hdir)])
-    assert rc == 0, out_h
-    gl.append("$ fe-zk-gen halo2 --vk vectors/halo2/standard_plonk_lookup/vk.json --shplonk ... --gwc ...")
-    gl += out_h.rstrip().splitlines()
-    scenes.append(render_text(Scene("s03a_gen", "Generator: fe-zk-gen validates the key, then emits a Fe verifier", gl)))
+    gdir.mkdir()
+    (gdir / "vectors").symlink_to(ROOT / "vectors")
+    vk = "vectors/groth16/real_semaphore_d10"
+    gcmd = [GEN, "groth16", "--snarkjs", vk + "/verification_key.json", "--proof", vk + "/proof.json", "--public",
+            vk + "/public.json", "--name", "Semaphore", "--out", "semaphore_verifier", "--fe-zk-path", relpath(ROOT, gdir / "semaphore_verifier")]
+    rc, gen_out = capture("gen_semaphore", gcmd, always=True, cwd=gdir)
+    assert rc == 0, gen_out
+    sem_dir = gdir / "semaphore_verifier"
+    sem_lib = Src.__new__(Src)
+    sem_lib.path, sem_lib.lines = sem_dir / "src/lib.fe", (sem_dir / "src/lib.fe").read_text().splitlines()
+    digest = re.search(r"key digest\s*:\s*(0x[0-9a-f]+)", gen_out).group(1)
+    committed = (ROOT / "examples/real_semaphore/verifier/src/lib.fe").read_text()
+    same = digest in committed
+    log("   digest", digest, "matches committed real_semaphore ingot:", same)
 
-    lib = (gm / "src/lib.fe").read_text().splitlines()
-    head = lib[:12]
-    sa = [l for l in lib if l.startswith("static_assert")][:5]
-    gl2 = ["$ head -n 12 membership_verifier/src/lib.fe"] + head
-    gl2 += ["", "$ grep static_assert membership_verifier/src/lib.fe"] + sa
-    scenes.append(render_text(Scene("s03b_head", "Generated verifier: header with key digest, compile-time key checks", gl2, per_line=0.2)))
+    log("capture: corrupted key, fe test")
+    bad = TMP / "bad_semaphore"
+    shutil.copytree(sem_dir, bad, ignore=shutil.ignore_patterns("out"))
+    set_dep_path(bad)
+    btxt = (bad / "src/lib.fe").read_text()
+    m = re.search(r"^pub const BETA_X0: u256 = (\d+)$", btxt, re.M)
+    old_digit = m.group(1)[-1]
+    new_digit = str((int(old_digit) + 5) % 10)
+    (bad / "src/lib.fe").write_text(btxt.replace(m.group(0), m.group(0)[:-1] + new_digit))
+    rc, bad_out = capture("fe_test_bad", [FE, "test"], cwd=bad)
+    assert rc != 0 and "static assertion failed" in bad_out, bad_out
 
-    log("   fe test in generated ingot (slow on a cold cache)")
-    rc, out_t = capture("fe_test_generated", [FE, "test"], cwd=gm)
-    tl = ["$ cd membership_verifier && fe test"] + [l for l in out_t.splitlines() if l.strip()][-20:]
-    scenes.append(render_text(Scene("s03c_test", "fe test in the generated ingot: valid proof accepted, invalid battery rejected", tl, per_line=0.2)))
+    log("capture: raw u256 -> G1 compile error")
+    probe = TMP / "g1probe"
+    (probe / "src").mkdir(parents=True)
+    (probe / "fe.toml").write_text('[ingot]\nname = "g1probe"\nversion = "0.1.0"\n\n[dependencies]\nfe_zk = { path = "x", allow_unsafe = true }\n')
+    set_dep_path(probe)
+    (probe / "src/lib.fe").write_text("use fe_zk::ec::G1\n\npub fn forge() -> G1 {\n    G1 { x: 1, y: 2 }\n}\n")
+    rc, probe_out = capture("fe_build_g1probe", [FE, "build"], cwd=probe)
+    assert rc != 0 and "not visible" in probe_out, probe_out
 
-    # 4. compile-time failure on a corrupted key
-    log("scene 4: corrupted key")
-    bad = gdir / "bad_verifier"
-    shutil.rmtree(bad, ignore_errors=True)
-    shutil.copytree(gm, bad, ignore=shutil.ignore_patterns("out"))
-    text = (bad / "src/lib.fe").read_text()
-    m = re.search(r"^pub const BETA_X0: u256 = \d*(\d)$", text, re.M)
-    digit, new = m.group(1), str((int(m.group(1)) + 1) % 10)
-    sed = ["sed", "-i", "-E", "/^pub const BETA_X0/ s/%s$/%s/" % (digit, new), str(bad / "src/lib.fe")]
-    subprocess.run(sed, check=True)
-    rc, out_b = capture("fe_test_bad", [FE, "test"], cwd=bad)
-    assert rc != 0 and "static assertion failed" in out_b, out_b
-    bl = ["$ sed -i -E '/^pub const BETA_X0/ s/%s$/%s/' src/lib.fe    # change one digit of a vk coordinate" % (digit, new),
-          "$ fe test"] + [l for l in out_b.splitlines() if l.strip()][:20]
-    scenes.append(render_text(Scene("s04_bad", "Fe catches a bad verifying key at compile time", bl, per_line=0.2)))
+    log("capture: life-cli")
+    cold, _ = life_run("life_cold", ["--pattern", "random", "--seed", "7", "--gens", "80", "--no-anim"])
+    play, _ = life_run("life_play", ["--pattern", "rpentomino", "--gens", "64", "--no-anim"])
+    prove, prove_out = life_run("life_prove", ["--prove"])
 
-    # 5. quickstart
-    log("scene 5: quickstart")
-    q = ROOT / "examples/quickstart"
-    toml = [l for l in (q / "fe.toml").read_text().splitlines() if l.startswith(("fe_zk", "multiplier2_verifier", "[dep"))]
-    src = (q / "src/lib.fe").read_text().splitlines()
+    # ------------------------------------------------------------ scenes
+    scenes = []  # (name, Scene)
 
-    def grab(pat, n):
-        i = next(i for i, l in enumerate(src) if pat in l)
-        return src[i:i + n]
+    def new(name, dur, title=None, chapter=None, idx=None):
+        sc = Scene(name, dur, SRC, title, chapter, idx, NCHAP)
+        scenes.append(sc)
+        return sc
 
-    def dedent(ls):
-        k = min(len(l) - len(l.lstrip()) for l in ls if l.strip())
-        return [l[k:] for l in ls]
+    # ---- 1. cold open
+    sc = new("s01_cold", 9.5)
+    rate = 8
+    boards = [bits_to_rows(f["board"]) for f in cold["frames"]]
+    d, nfr, starts = life_clip(SRC / "cold", boards, rate, hold_tail=1.0)
+    i = sc.add_input(["-framerate", str(FPS), "-i", str(d / "f%04d.ppm")])
+    sc.overlay(i, board_pre(1008, 6, True, 26, "c"), 620, 36)
+    sc.text("GENERATION", 70, 330, 26, DIM, MONO, t0=0.3, t1=5.5, anim="fade", tick=True)
+    sc.text("STEP() GAS", 70, 640, 26, DIM, MONO, t0=0.3, t1=5.5, anim="fade", tick=True)
+    sc.text("Fe contract, run in revm", 70, 800, 26, DIM, MONO, t0=0.3, t1=5.5, anim="fade", tick=True)
+    for g, f in enumerate(cold["frames"]):
+        ta, tb = g / float(rate), (g + 1) / float(rate)
+        if ta > 5.5:
+            break
+        sc.text("%d" % g, 70, 370, 170, ACC, MONOB, t0=ta, t1=min(tb, 5.5), anim="cut", tick=True)
+        sc.text(str(f["step_gas"]) if f["step_gas"] else "-", 70, 680, 100, TXT, MONOB, t0=ta, t1=min(tb, 5.5), anim="cut", tick=True)
+    for k in range(6):
+        sc.box(0, 0, W, H, "0x05080c@0.2", 5.4 + k * 0.1, fill=True, fade=False)
+    sc.text("fe-zk", "c", 330, 190, ACC, SANSB, t0=6.0, anim="up", tick=True)
+    sc.text("zero-knowledge verifiers, written in Fe", "c", 560, 62, TXT, SANSB, t0=6.4, anim="up", tick=True)
+    sc.text("Fe Builders Challenge 2026", "c", 660, 34, DIM, SANS, t0=6.9, anim="fade", tick=True)
+    sc.track(0.3, 1)
 
-    ql = ["$ cat examples/quickstart/fe.toml    # [dependencies]"] + toml
-    ql += ["// examples/quickstart/src/lib.fe"]
-    ql += [l for l in src if l.startswith("use ") and "std::" not in l]
-    ql += grab("pub fn horner", 9)
-    ql += dedent(grab("poseidon_2(v, s)", 1))
-    ql += dedent(grab("store\n", 1) if False else [src[next(i for i, l in enumerate(src) if "Check { a, b, c, input }" in l) + 1 + j] for j in range(5)])
-    scenes.append(render_text(Scene("s05a_quick", "Use it in your own Fe code: examples/quickstart", ql, per_line=0.2)))
-    rc, out_q = capture("fe_test_quickstart", [FE, "test"], cwd=q)
-    qt = ["$ cd examples/quickstart && fe test"] + [l for l in out_q.splitlines() if l.strip()][-8:]
-    scenes.append(render_text(Scene("s05b_quicktest", "Valid proof accepted, tampered rejected, Poseidon = circomlibjs, one generic helper, two fields", qt)))
+    # ---- 2. the problem
+    sc = new("s02_problem", 9.0, "The problem", "why", 1)
+    sc.text("Fe had no proof verifier.", 80, 230, 90, TXT, SANSB, t0=0.5)
+    sc.text("zk projects had to leave Fe for Solidity.", 80, 350, 64, ACC, SANSB, t0=2.2)
+    cards = [("Your Fe contract", ACC, 0.8), ("Proof verifier", ERR, 3.8), ("Solidity", DIM, 5.2)]
+    for k, (lab, col, t0) in enumerate(cards):
+        x = 80 + k * 640
+        sc.box(x, 540, 480, 190, PANEL2 + "@0.9", t0)
+        sc.box(x, 540, 480, 190, col, t0, fill=False, thick=3)
+        sc.text(lab, x + 30, 580, 44, TXT, SANSB, t0=t0 + 0.1, tick=True)
+    sc.text("Groth16 · PLONK · halo2", 80 + 640 + 30, 636, 24, DIM, MONO, t0=3.9, tick=True)
+    sc.text("KZG · FRI/STARK", 80 + 640 + 30, 664, 24, DIM, MONO, t0=3.9, tick=True)
+    sc.text("none in Fe", 80 + 640 + 30, 694, 28, ERR, MONOB, t0=4.2, tick=True)
+    sc.text("the only option", 80 + 1280 + 30, 650, 28, DIM, MONO, t0=5.3, tick=True)
+    sc.text("→", 570, 570, 90, ACC, SYM, t0=1.6, tick=True)
+    sc.text("→", 1210, 570, 90, DIM, SYM, t0=5.0, tick=True)
+    sc.caption("fe-zk closes the gap: field, curve and hash layer, verifiers and a safe generator, all in Fe", 6.2)
+    sc.track(0.5, 1)
 
-    # 6. Life
-    log("scene 6: life (life-cli --frames-json)")
-    anim, meta = render_life_anim(64)
-    scenes.append(anim)
-    import json
-    pj = TMP / "life_prove.json"
-    rc, out_l = capture("life_prove", [LIFE, "--prove", "--frames-json", str(pj)])
-    assert rc == 0, out_l
-    lines = out_l.splitlines()
-    idx_end = next(i for i, l in enumerate(lines) if l.startswith("end board"))
-    pd = json.loads(pj.read_text())
-    start_rows = bits_to_rows(pd["start_board"])
-    end_rows = bits_to_rows(pd["end_board"])
-    write_ppm(TMP / "prove_start.ppm", start_rows)
-    write_ppm(TMP / "prove_end.ppm", end_rows)
-    gens = re.search(r"proven generations (\d+)", out_l).group(1)
-    s_alive = re.search(r"start board\s+alive (\d+)", out_l).group(1)
-    e_alive = re.search(r"end board after (\d+) generations.*alive (\d+)", out_l)
-    rest = [l for l in lines[idx_end + 17:] if l.strip()]
-    below = list(rest)
-    ims = [(TMP / "prove_start.ppm", 360, 130, 384, 0.5), (TMP / "prove_end.ppm", 1176, 130, 384, 1.0)]
-    cap = " " * 18 + ("start (alive %s)" % s_alive).ljust(48) + "end, gen %s (alive %s)" % (e_alive.group(1), e_alive.group(2))
-    body = [("", C_TXT)] * 11 + [(cap, C_DIM), ("", C_TXT)] + [(l, colour(l)) for l in ["$ life-cli --prove"] + below]
-    sc = Scene("s06b_prove", "One Groth16 proof of %s generations, verified on chain" % gens, body, images=ims, hold=5.0)
-    sc.reveal = sc.dur = 0
-    sc.dur = 5.0 + 0.25 * len([l for l in body if l[0].strip()])
-    scenes.append(render_text(sc))
+    # ---- 3a. pipeline
+    sc = new("s03a_pipe", 7.0, "One command", "the generator", 2)
+    boxes = [("vk.json", ["snarkjs · arkworks", "gnark"]), ("fe-zk-gen", ["validates the key", "on curve, in subgroup"]),
+             ("Fe verifier", ["an ingot, key inside", "static_assert checks"]), ("deployed contract", ["pure verification", "static call"])]
+    for k, (a, bl) in enumerate(boxes):
+        x, t0 = 80 + k * 470, 0.5 + k * 0.9
+        sc.box(x, 300, 360, 210, PANEL2 + "@0.92", t0)
+        sc.box(x, 300, 360, 210, ACC if k == 1 else LINE, t0, fill=False, thick=3)
+        sc.text(a, x + 28, 340, 40 if k < 3 else 36, TXT, SANSB, t0=t0 + 0.1, tick=True)
+        for j, l in enumerate(bl):
+            sc.text(l, x + 28, 420 + j * 34, 24, DIM, MONO, t0=t0 + 0.2, tick=True)
+        if k < 3:
+            sc.text("→", x + 372, 372, 64, ACC, SYM, t0=t0 + 0.6, anim="left", tick=True)
+    sc.term(["$ " + "fe-zk-gen groth16 --snarkjs verification_key.json --proof proof.json --public public.json"],
+            80, 600, 1760, 28, 40, t0=4.0, title="one command", maxc=105)
+    sc.caption("One command turns a verifying key into a safe Fe verifier ingot.", 4.4)
+    sc.track(0.5, 300)
 
-    # 7. safety
-    log("scene 7-8: safety, gas")
-    scenes.append(render_text(Scene("s07_safety", "Safety: every rule has an enforcement point and a test that fails without it", safety_lines(), per_line=0.35)))
+    # ---- 3b. real output on the real Semaphore key
+    sc = new("s03b_real", 12.5, "Real Semaphore v4 key", "the generator", 2)
+    out_lines = [l for l in gen_out.splitlines() if l.strip()]
+    cmds = ["$ fe-zk-gen groth16 --snarkjs %s/verification_key.json \\" % vk, "      --proof %s/proof.json \\" % vk,
+            "      --public %s/public.json \\" % vk, "      --name Semaphore --out semaphore_verifier"]
+    L = cmds + out_lines
+    L = [re.sub(r"/.*/gen/", "", l) if "emitted" in l else l for l in L]
+    sc.term(L, 80, 190, 1760, 28, 38, t0=0.3, per=0.3, title="~/fe-zk", maxc=104)
+    dig_i = next(i for i, l in enumerate(L) if "key digest" in l)
+    h1 = 54 + len(L) * 38 + 20
+    assert len(cmds) == 4
+    flash(sc, 90, 190 + 54 + dig_i * 38 - 3, 1740, 40, 0.3 + dig_i * 0.3 + 1.6)
+    head = [l for l in sem_lib.lines[:6]]
+    y2 = 190 + h1 + 30
+    hd = [l for l in sem_lib.lines[:4]]
+    getd = next(i for i, l in enumerate(hd) if "Key digest" in l)
+    co, h2 = sc.code(hd, 80, y2, 1760, 28, 38, t0=4.6, per=0.3, title="semaphore_verifier/src/lib.fe  (generated)",
+                     numbers=[1, 2, 3, 4], color_fn=lambda l: DIM if "Key digest" not in l else TXT)
+    flash(sc, 90, y2 + 54 + getd * 38 - 3, 1740, 40, 6.6)
+    sc.caption("The key digest is embedded in the emitted code%s." % (" and matches the committed Semaphore v4 ingot" if same else ""), 7.0)
 
-    # 8. gas
-    scenes.append(render_text(Scene("s08_gas", "Gas vs Solidity reference verifiers (docs/GAS.md, scripts/gas-table.sh)", gas_lines(), per_line=0.35)))
+    # ---- 4a. static_assert + one digit
+    sc = new("s04a_static", 11.0, "Fe catches a bad key at compile time", "compile-time safety", 3)
+    ln_const = sem_lib.find("pub const BETA_X0")
+    sa = [l for l in sem_lib.lines if l.startswith("static_assert(g")]
+    pick = [l for l in sa if any(k in l for k in ("ALPHA", "BETA", "GAMMA", "DELTA", "IC0"))]
+    code_lines = [sem_lib.lines[ln_const], ""] + pick
+    nums = [ln_const + 1, 0] + [sem_lib.lines.index(l) + 1 for l in pick]
+    cl = list(code_lines)
+    cl[0] = cl[0][:-1]  # last digit drawn separately
+    pos, h = sc.code(cl, 20, 190, 1880, 28, 42, t0=0.3, per=0.3, title="semaphore_verifier/src/lib.fe", numbers=[n or 0 for n in nums])
+    gx, gy = pos(0, len(code_lines[0]) - 1)
+    # blank line number cleanup: draw nothing for the blank row (number 0 would show "  0")
+    sc.text(old_digit, gx, gy, 28, BLUE, MONO, t0=0.9, t1=5.6, anim="fade", tick=True)
+    sc.box(gx - 3, gy - 2, 24, 40, ERR + "@0.55", 5.0, 5.6, fade=False)
+    sc.box(gx - 3, gy - 2, 24, 40, ERR + "@0.55", 5.7, 6.1, fade=False)
+    sc.box(gx - 3, gy - 2, 24, 40, ERR + "@0.55", 6.2, 6.6, fade=False)
+    sc.text(new_digit, gx, gy, 28, ERR, MONOB, t0=5.6, anim="cut", tick=True)
+    sc.text("▲ one digit of the key changed: %s → %s" % (old_digit, new_digit), ("r", 1830), gy + 42, 30, ERR, MONO, t0=5.8, anim="fade")
+    sc.text("static_assert(...) is evaluated by the compiler (CTFE), not at runtime", 80, 190 + h + 40, 34, ACC2, SANS, t0=2.5, anim="fade")
+    sc.text("g2_is_valid: canonical coordinates, on the twist curve, in the order-r subgroup", 80, 190 + h + 100, 30, DIM, SANS, t0=3.2, anim="fade")
+    sc.caption("Every point of the verifying key is checked by static_assert while compiling.", 1.0, 5.4)
+    sc.caption("Change one digit and the verifier does not compile.", 6.4)
 
-    # 9. outro
-    scenes.append(render_title("s09_outro", "fe-zk", [
-        ("github.com/0xitsss/fe-zk", 48, C_TXT),
-        (fe_ver, 34, C_DIM),
-        ("Apache-2.0", 34, C_DIM),
-        ("Verifiers, generator, safety rules and tests: all in Fe", 30, C_HI),
-    ]))
+    # ---- 4b. the real error
+    sc = new("s04b_error", 9.0, "Fe catches a bad key at compile time", "compile-time safety", 3)
+    el = [l for l in bad_out.splitlines()]
+    first = []
+    for l in el:
+        first.append(l)
+        if l.startswith("error") and len(first) > 1 and sum(1 for x in first if x.startswith("error")) == 2:
+            first.pop()
+            break
+    first = [l for l in first if l.strip()][:9]
+    tail = [l for l in el if l.startswith("ERROR") or l.startswith("test result")]
+    L = ["$ fe test"] + first + tail[:2]
+    sc.term(L, 60, 190, 1800, 28, 41, t0=0.3, per=0.25, title="semaphore_verifier (one digit of BETA_X0 changed)", maxc=105)
+    ai = next(i for i, l in enumerate(L) if "static assertion failed" in l)
+    flash(sc, 70, 190 + 54 + ai * 41 - 3, 700, 40, 0.3 + ai * 0.25 + 1.5, ERR)
+    sc.text("✗", 400, 826, 64, ERR, SYM, t0=4.8)
+    sc.text("compile error: no contract is produced", 490, 830, 56, ERR, SANSB, t0=4.8)
+    sc.caption("An invalid key does not compile: zero runtime gas for key checks.", 1.0)
 
-    # concat
-    lst = SCN / "concat.txt"
-    lst.write_text("".join("file '%s'\n" % s for s in scenes))
+    # ---- 5a. typed safety
+    sc = new("s05a_typed", 10.0, "Typed safety: raw u256 is not a point", "typed safety", 4)
+    bn = Src("src/ec/bn254.fe")
+    g1_lines, g1_nums = join(bn.grab("pub struct G1 {", 1), bn.grab("pub fn from_coords(_ x: u256, _ y: u256) -> Option<G1>", 7))
+    sc.code(g1_lines, 60, 190, 1070, 28, 40, t0=0.3, per=0.25, title="src/ec/bn254.fe", numbers=g1_nums)
+    pe = [l for l in probe_out.splitlines() if l.strip() and l.strip() != "│"]  # blank gutter lines elided
+    blk = []
+    for l in pe:
+        if l.startswith("error") and blk:
+            break
+        blk.append(l)
+    blk = ["$ fe build   # G1 { x: 1, y: 2 }"] + blk[:5]
+    sc.term(blk, 1140, 190, 720, 28, 40, t0=3.2, per=0.3, title="a caller outside fe_zk", maxc=40)
+    sc.text("raw u256 cannot become a point", "c", 740, 70, ACC, SANSB, t0=5.8)
+    sc.caption("G1::from_coords is the only way in: coordinates below q, on the curve, never reduced.", 0.8, 5.6)
+    sc.caption("The fields are private, so there is no unchecked way to build a G1.", 5.9)
+
+    # ---- 5b. G2Proof
+    sc = new("s05b_g2", 9.0, "Typed safety: G2Proof", "typed safety", 4)
+    # re-grab with the real signature line as the first line
+    i0 = bn.find("-> Option<G2Proof> {")
+    sig_i = i0
+    body = bn.lines[sig_i:sig_i + 7]
+    g2l = [bn.lines[bn.find("pub struct G2Proof")], "", bn.lines[bn.find("impl G2Proof {")]] + body
+    g2n = [bn.find("pub struct G2Proof") + 1, 0, bn.find("impl G2Proof {") + 1] + list(range(sig_i + 1, sig_i + 8))
+    k = bn.find("pub fn from_g2")
+    g2l += ["", bn.lines[k], bn.lines[k + 1], bn.lines[k + 2], "}"]
+    g2n += [0, k + 1, k + 2, k + 3, k + 4]
+    pos, h = sc.code(g2l, 60, 190, 1800, 28, 36, t0=0.3, per=0.22, title="src/ec/bn254.fe", numbers=g2n)
+    sx, sy = pos(0, 0)
+    flash(sc, sx - 6, sy - 3, int(cw(28) * len(g2l[0])) + 12, 40, 2.8)
+    sc.text("◀ no conversion to G2: it can only reach the pairing", sx + int(cw(28) * len(g2l[0])) + 30, sy, 28, ACC2, MONO, t0=3.2, anim="fade")
+    sc.text("the subgroup check runs in the pairing precompile (EIP-197)", 80, 190 + h + 30, 34, TXT, SANS, t0=4.2, anim="fade")
+    sc.caption("G2 points from a proof: canonical and on-twist checked in Fe, subgroup completed by the pairing.", 1.0)
+
+    # ---- 6a. generic Field
+    p2 = Src("src/hash/poseidon2.fe")
+    sc = new("s06a_generic", 8.0, "One implementation, every field", "generic field layer", 5)
+    fi = p2.find("pub fn permute_generic")
+    gl = [p2.lines[fi - 1]] + p2.lines[fi:fi + 7]
+    gn = list(range(fi, fi + 8))
+    for pat in ("let half = NE", "s[0] = sbox(s[0].add(F::reduce"):
+        j = p2.find(pat, fi)
+        gl.append(p2.lines[j])
+        gn.append(j + 1)
+    gl = [l for l in gl]
+    ded = min(len(l) - len(l.lstrip()) for l in gl if l.strip() and not l.startswith(("#", "pub", ")")))
+    pos, h = sc.code(gl, 60, 190, 1800, 28, 42, t0=0.3, per=0.2, title="src/hash/poseidon2.fe: the single Poseidon2 permutation", numbers=gn)
+    fx_, fy_ = pos(1, gl[1].index("F: Field"))
+    flash(sc, fx_ - 6, fy_ - 3, int(cw(28) * len("F: Field + Copy")) + 12, 40, 3.6)
+    sc.text("F: Field", 80, 190 + h + 36, 40, ACC, MONOB, t0=4.6, anim="fade")
+    sc.text("is all the permutation body knows about the field", 80 + int(cw(40) * 9), 190 + h + 40, 34, TXT, SANS, t0=4.6, anim="fade")
+    sc.caption("Hash, Merkle and transcript code is written once against the Field trait.", 1.0)
+
+    # ---- 6b. two instantiations
+    sc = new("s06b_inst", 9.0, "One implementation, every field", "generic field layer", 5)
+    a_l, a_n = p2.grab("pub fn bn254_t3_permute_generic", 3, dedent=False)
+    b_l, b_n = p2.grab("pub fn koalabear_t16_permute_generic", 0, dedent=False, until="}")
+    ha = 54 + len(a_l) * 40 + 20
+    sc.code(a_l, 60, 190, 1800, 28, 40, t0=0.3, per=0.25, title="BN254 scalar field · 254-bit · t = 3", numbers=a_n)
+    sc.code(b_l, 60, 190 + ha + 24, 1800, 28, 40, t0=2.4, per=0.25, title="KoalaBear · 31-bit · t = 16", numbers=b_n)
+    sc.caption("Same permute_generic body, two fields: monomorphised at compile time, zero runtime cost.", 1.0)
+
+    # ---- 7. quickstart (three beats)
+    q = Src("examples/quickstart/src/lib.fe")
+    sc = new("s07_quick", 15.0, "Use it in your contract", "quickstart", 6)
+    use_l, use_n = join(q.grab("use fe_zk::", 1), q.grab("use multiplier2_verifier", 1))
+    hr_l, hr_n = q.grab("pub fn horner", 0, until="}")
+    l1 = use_l + [""] + hr_l
+    n1 = use_n + [0] + hr_n
+    sc.code(l1, 60, 190, 1800, 28, 40, t0=0.3, per=0.2, title="examples/quickstart/src/lib.fe", numbers=n1, t1=5.4)
+    sc.text("a helper written once, usable with any field", 80, 190 + 54 + len(l1) * 40 + 30, 34, ACC2, SANS, t0=2.5, t1=5.4, anim="fade")
+    c_l, c_n = join(q.grab("Commit { value, salt } -> u256 {", 6),
+                    q.grab("Check { a, b, c, input } -> bool", 0, until="        }"))
+    sc.code(c_l, 60, 190, 1800, 28, 38, t0=5.9, per=0.2, title="examples/quickstart/src/lib.fe", numbers=c_n, t1=10.6)
+    sc.text("static call to the generated verifier: it cannot touch our storage", 80, 190 + 54 + len(c_l) * 38 + 30, 34, ACC2, SANS, t0=8.0, t1=10.6, anim="fade")
+    ql = [l for l in quick_out.splitlines() if l.strip()]
+    tl = ["$ cd examples/quickstart && fe test"] + ql[-8:]
+    sc.term(tl, 60, 190, 1800, 28, 42, t0=11.1, per=0.25, title="examples/quickstart")
+    ri = next(i for i, l in enumerate(tl) if "test result" in l)
+    flash(sc, 70, 190 + 54 + ri * 42 - 3, 640, 40, 11.1 + ri * 0.25 + 1.2, OK)
+    sc.caption("Generated verifier, circomlib-compatible Poseidon and one generic helper in a %d-line contract." % len(q.lines), 11.4)
+
+    # ---- 8a. Life on chain
+    sc = new("s08a_life", 9.5, "zk Game of Life, on chain", "game of life", 7)
+    rate = 9
+    boards = [bits_to_rows(f["board"]) for f in play["frames"]]
+    d, nfr, _ = life_clip(SRC / "play", boards, rate, hold_tail=1.5)
+    i = sc.add_input(["-framerate", str(FPS), "-i", str(d / "f%04d.ppm")])
+    sc.overlay(i, board_pre(704, 5, True, 18, "p"), 80, 190)
+    N = len(play["frames"]) - 1
+    sc.text("GENERATION", 900, 210, 26, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    sc.text("ALIVE CELLS", 900, 450, 26, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    sc.text("step() GAS", 900, 680, 26, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    for g, f in enumerate(play["frames"]):
+        ta, tb = g / float(rate), (g + 1) / float(rate)
+        last = g == len(play["frames"]) - 1
+        t1 = None if last else tb
+        alive = sum(map(sum, boards[g]))
+        sc.text("%d" % g, 900, 250, 150, ACC, MONOB, t0=ta, t1=t1, anim="cut", tick=True)
+        sc.text("/ %d" % N, 900 + int(cw(150) * 2) + 20, 330, 60, FAINT, MONOB, t0=ta, t1=t1, anim="cut", tick=True)
+        sc.text("%d" % alive, 900, 490, 110, TXT, MONOB, t0=ta, t1=t1, anim="cut", tick=True)
+        sc.text(str(f["step_gas"]) if f["step_gas"] else "-", 900, 720, 110, ACC2, MONOB, t0=ta, t1=t1, anim="cut", tick=True)
+    sc.text("word-parallel bit tricks, no per-cell loops", 900, 850, 30, DIM, SANS, t0=1.0, anim="fade", tick=True)
+    sc.caption("A 16x16 torus packed into one u256, stepped by the Fe contract: one call per generation.", 0.8)
+    sc.track(0.3, 1)
+
+    # ---- 8b. the proof
+    gens = prove["generations"]
+    sb, eb = bits_to_rows(prove["start_board"]), bits_to_rows(prove["end_board"])
+    s_alive, e_alive = sum(map(sum, sb)), sum(map(sum, eb))
+    sc = new("s08b_proof", 9.0, "%d generations, one proof" % gens, "game of life", 7)
+    for k, (rows, x, t0) in enumerate(((sb, 130, 0.6), (eb, 1358, 3.4))):
+        pp = SRC / ("prove_%d.ppm" % k)
+        write_ppm(pp, rows)
+        i = sc.add_input(["-loop", "1", "-framerate", str(FPS), "-t", "%.2f" % sc.dur, "-i", str(pp)])
+        sc.overlay(i, board_pre(432, 3, True, 12, "q%d" % k) + ",format=rgba,fade=t=in:st=%.2f:d=0.5:alpha=1" % t0, x, 250)
+    sc.text("start board", 130, 700, 30, DIM, MONO, t0=0.8, tick=True)
+    sc.text("alive %d" % s_alive, 130, 740, 40, TXT, MONOB, t0=0.8, tick=True)
+    sc.text("end board, generation %d" % gens, 1358, 700, 30, DIM, MONO, t0=3.6, tick=True)
+    sc.text("alive %d" % e_alive, 1358, 740, 40, TXT, MONOB, t0=3.6, tick=True)
+    sc.text("%d generations" % gens, "c", 320, 60, ACC, SANSB, t0=1.6)
+    sc.text("one Groth16 proof", "c", 400, 60, TXT, SANSB, t0=2.2)
+    sc.text("→", "c", 480, 120, ACC, SYM, t0=2.8, anim="left")
+    sc.text("verified on chain", "c", 640, 40, DIM, SANS, t0=3.6, anim="fade")
+    sc.caption("Poseidon commitments of the start and the end board are the proof's public inputs.", 1.0)
+
+    # ---- 8c. gas bars + rejected
+    sc = new("s08c_gas", 13.0, "Gas: stepping vs one proof", "game of life", 7)
+    gv = lambda pat: int(re.search(pat + r"\s+(\d+)\s+(\d+)", prove_out).group(1))
+    rows = [("%d × step()" % gens, gv(r"separate step\(\) calls"), ACC2), ("one run(board, %d)" % gens, gv(r"run\(board, \d+\) call"), ACC),
+            ("one proof (proveRun)", gv(r"proveRun \(verify proof of the same run\)"), OK)]
+    mx = max(r[1] for r in rows)
+    bx, bw = 640, 940
+    for k, (lab, v, col) in enumerate(rows):
+        y = 210 + k * 105
+        t0 = 0.6 + k * 1.1
+        sc.text(lab, 80, y + 12, 38, TXT, SANSB, t0=t0)
+        w = int(bw * v / mx)
+        grow_bar(sc, bx, y, w, 70, col, t0 + 0.2, 0.2 + 1.8 * v / mx)
+        sc.text(fmt(v), bx + w + 24, y + 8, 44, col, MONOB, t0=t0 + 0.4 + 1.8 * v / mx, anim="cut", tick=True)
+        sc.track(t0, y)
+    sc.text("execution gas, revm (life-cli --prove)", bx, 180, 24, DIM, MONO, t0=0.6, anim="fade", tick=True)
+    rj = [l for l in prove_out.splitlines() if "REJECTED" in l]
+    sc.term(["$ life-cli --prove"] + rj, 80, 560, 900, 30, 42, t0=5.8, per=0.9, title="negative cases", colour=lambda l: OK if "REJECTED" in l else TXT, maxc=48)
+    be = next(l for l in prove_out.splitlines() if l.startswith("break-even"))
+    be = be.replace("break-even: ", "")
+    wr = textwrap.wrap(be, 38)
+    for k, l in enumerate(wr):
+        sc.text(l, 1040, 600 + k * 44, 34, TXT if k == 0 else DIM, SANS, t0=10.0 + k * 0.2, anim="fade", tick=True)
+    sc.text("break-even", 1040, 560, 26, ACC, MONOB, t0=10.0, anim="fade", tick=True)
+    sc.track(5.8, 600)
+    sc.caption("A tampered proof, a wrong end board and a wrong start board are all rejected.", 6.0)
+
+    # ---- 9. every family
+    fam = families()
+    sc = new("s09_families", 14.0, "Every proof family", "coverage", 8)
+    hy = 196
+    sc.text("FAMILY", 100, hy, 24, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    sc.text("FE EXEC GAS", ("r", 890), hy, 24, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    sc.text("FE / SOLIDITY (tick = 1.0x)", 960, hy, 24, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    sc.text("CODE SIZE", 1440, hy, 24, DIM, MONO, t0=0.3, anim="fade", tick=True)
+    one_x, scale = 960, 190
+    bls_n = len(re.findall(r"#\[test", (ROOT / "src/tests/ec_bls.fe").read_text()))
+    rows9 = [(n, d) for n, d in fam]
+    for k, (name, d) in enumerate(rows9 + [("BLS12-381 (EIP-2537)", None), ("EIP-4844 point evaluation", None)]):
+        y = hy + 44 + k * 80
+        t0 = 0.8 + k * 1.2
+        sc.box(80, y - 6, 1760, 70, PANEL2 + "@0.55", t0)
+        sc.text(name, 100, y + 8, 32, TXT, SANSB, t0=t0)
+        if d:
+            sc.text(fmt(d["gas"]), ("r", 890), y + 10, 32, ACC2, MONOB, t0=t0 + 0.15, tick=True)
+            if d["hi"]:
+                lab = ("%.2fx" % d["hi"]) if d["lo"] == d["hi"] else ("%.2f-%.2fx" % (d["lo"], d["hi"]))
+                grow_bar(sc, one_x, y + 6, int(scale * d["hi"]), 40, ACC, t0 + 0.2, 0.8, step=3)
+                sc.box(one_x + scale, y, 3, 52, TXT, t0 + 0.2, fade=False)
+                sc.text(lab, one_x + int(scale * d["hi"]) + 16, y + 10, 30, TXT, MONOB, t0=t0 + 1.0, anim="cut", tick=True)
+            else:
+                sc.text("no Solidity reference exists", one_x, y + 14, 26, DIM, MONO, t0=t0 + 0.3, tick=True)
+            ok = d["code"] <= 24576
+            sc.text("%s B" % fmt(d["code"]), 1440, y + 10, 30, TXT, MONOB, t0=t0 + 0.3, tick=True)
+            sc.text("EIP-170 OK" if ok else "over EIP-170", 1660, y + 12, 26, "0x04120a" if ok else "0xffffff", MONOB, t0=t0 + 0.5, anim="cut", tick=True,
+                    box=((OK if ok else ERR) + "@0.95", 8))
+        else:
+            ref = "py_ecc 8.0.0 vectors" if name.startswith("BLS") else "c-kzg-4844 test vector"
+            sc.text("wrapper tested against %s" % ref, one_x - 840 + 840, y + 14, 26, DIM, MONO, t0=t0 + 0.3, tick=True)
+        sc.track(t0, y)
+    sc.caption("Fe / Solidity execution gas on the same proof, same revm (docs/GAS.md).", 1.0)
+
+    # ---- 10. tested
+    td = testing_totals()
+    sc = new("s10_tested", 11.0, "Tested like it matters", "verification", 9)
+    cards = [(n_tests, "Fe tests passing", "fe test, %d ingots, 0 failed" % len(results)),
+             (td["cases"], "differential cases", "Fe vs reference verifiers: %d bugs" % td["bugs"]),
+             (safety_rules(), "safety rules", "enforcement point + test, each")]
+    for k, (v, lab, sub) in enumerate(cards):
+        x, t0 = 80 + k * 600, 0.4 + k * 0.5
+        sc.box(x, 230, 560, 330, PANEL2 + "@0.92", t0)
+        sc.box(x, 230, 560, 330, LINE, t0, fill=False, thick=2)
+        sc.box(x, 230, 560, 6, ACC, t0, fade=False)
+        counter(sc, v, x + 30, 280, 112, ACC, t0 + 0.3, 2.0)
+        sc.text(lab, x + 30, 430, 40, TXT, SANSB, t0=t0 + 0.4, tick=True)
+        sc.text(sub, x + 30, 490, 24, DIM, MONO, t0=t0 + 0.5, tick=True)
+        sc.track(t0, 230)
+    sem_pass = [l for l in sem_out.splitlines() if "test result" in l][-1]
+    sc.text("✓", 80, 640, 80, OK, SYM, t0=4.2, anim="fade")
+    sc.text("Semaphore v4: real ceremony key verified", 180, 650, 60, TXT, SANSB, t0=4.2)
+    sc.text("%s: %s" % (sem_label, sem_pass), 180, 740, 28, DIM, MONO, t0=4.8, anim="fade")
+    sc.caption("Every verifier test: a valid proof accepted; tampered, non-canonical, off-curve and swapped inputs rejected.", 6.0)
+
+    # ---- 11. outro
+    sc = new("s11_outro", 7.0)
+    sc.text("fe-zk", "c", 250, 190, ACC, SANSB, t0=0.3)
+    sc.text("github.com/0xitsss/fe-zk", "c", 480, 68, TXT, SANSB, t0=1.0)
+    sc.text("%s  ·  Apache-2.0  ·  docs/USAGE.md" % fe_ver, "c", 600, 40, DIM, MONO, t0=1.6, anim="fade")
+    sc.text("Verifiers, generator, safety rules and tests: all in Fe", "c", 720, 40, ACC2, SANS, t0=2.2, anim="fade")
+    sc.track(0.3, 1)
+
+    # ------------------------------------------------------------ render
+    for s in scenes:
+        s.check()
+    log("render %d scenes" % len(scenes))
+    sel = [s for s in scenes if not only or s.name in only]
+    with ThreadPoolExecutor(6) as ex:
+        list(ex.map(lambda s: (log("  ", s.name), s.render(CLIPS))[1], sel))
+    if only:
+        log("VIDEO_ONLY set: skipping assembly")
+        return
+    clips = [CLIPS / (s.name + ".mp4") for s in scenes]
+    durs = [s.dur for s in scenes]
+    kinds = ["fade", "slideleft", "fade", "wipeleft", "fadeblack", "smoothleft", "fade", "slideup", "fade", "smoothleft", "fade",
+             "slideleft", "fade", "fadeblack", "smoothup", "fade"]
     final = VIDEO / "fe-zk-demo.mp4"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy",
-                    "-movflags", "+faststart", str(final)], check=True)
-    # teaser: first 10 s of the Life animation
+    total = assemble(clips, durs, final, 0.55, kinds)
+    log("final %.1f s" % total)
+
+    # teaser GIF: 12 s from the Life game scene
     gif = VIDEO / "teaser.gif"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-t", "10", "-i", str(anim), "-vf",
-                    "fps=10,scale=800:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse",
+    off = 0.0
+    names = [s.name for s in scenes]
+    ts = 0.0
+    for s in scenes:
+        if s.name == "s08a_life":
+            break
+        ts += s.dur - 0.55
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.2f" % (ts + 0.3), "-t", "12", "-i", str(final), "-vf",
+                    "fps=12,scale=800:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=4",
                     str(gif)], check=True)
-    log("done in %.0f s: %s, %s" % (time.time() - t_start, final, gif))
+    # contact sheet: one frame per scene (mid scene)
+    cdir = TMP / "contact"
+    cdir.mkdir()
+    t = 0.0
+    for k, s in enumerate(scenes):
+        mid = t + s.dur * (0.38 if k == 0 else 0.62)
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.2f" % mid, "-i", str(final), "-frames:v", "1",
+                        "-vf", "scale=640:-1", str(cdir / ("c%02d.png" % k))], check=True)
+        t += s.dur - 0.55
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "1", "-i", str(cdir / "c%02d.png"), "-vf",
+                    "tile=4x5:padding=8:color=0x0b0f14", "-frames:v", "1", str(VIDEO / "contact.png")], check=True)
+    log("done in %.0f s: %s (%.1f s), %s" % (time.time() - t_start, final, total, gif))
+    (TMP / "scene_times.json").write_text(json.dumps([(s.name, s.dur) for s in scenes]))
 
 
 if __name__ == "__main__":
