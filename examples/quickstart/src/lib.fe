@@ -1,0 +1,53 @@
+//! quickstart: the smallest "my own Fe contract uses fe-zk" example.
+//!   1. a verifier emitted by `fe-zk-gen groth16` (ingot `verifier/`), called by static call;
+//!   2. `poseidon_2` from fe_zk (circomlib-compatible) to commit to a value;
+//!   3. a helper written once against the `Field` trait, used with any field.
+use fe_zk::{Bn254Fr, Field, poseidon_2}
+use multiplier2_verifier::Multiplier2VerifierMsg
+use std::evm::{Address, Call}
+
+/// (3) Horner evaluation of coeffs[0] + coeffs[1]*x + ... over ANY fe-zk field.
+/// One generic body; each field gets its own monomorphised copy at compile time.
+pub fn horner<F: Field, const N: usize>(_ coeffs: [F; N], _ x: F) -> F {
+    var acc: F = F::zero()
+    var i: usize = N
+    while i > 0 {
+        i -= 1
+        acc = acc.mul(x).add(coeffs[i])
+    }
+    acc
+}
+
+msg GateMsg {
+    #[selector = sol("commit(uint256,uint256)")]
+    Commit { value: u256, salt: u256 } -> u256,
+    #[selector = sol("check(uint256[2],uint256[2][2],uint256[2],uint256[2])")]
+    Check { a: [u256; 2], b: [[u256; 2]; 2], c: [u256; 2], input: [u256; 2] } -> bool,
+}
+
+struct Store { verifier: Address }
+
+pub contract Gate {
+    mut store: Store,
+
+    init(verifier: Address) uses (mut store) { store.verifier = verifier }
+
+    recv GateMsg {
+        // (2) from_canonical rejects values >= r instead of silently reducing (safety rule 1).
+        Commit { value, salt } -> u256 {
+            let v = Bn254Fr::from_canonical(value).unwrap()
+            let s = Bn254Fr::from_canonical(salt).unwrap()
+            poseidon_2(v, s).to_canonical()
+        }
+
+        // (1) The generated verifier does every check (canonical inputs, curve/subgroup,
+        // pairing == 1). Static call: the verifier cannot touch our storage.
+        Check { a, b, c, input } -> bool uses (store, call: Call) {
+            store
+                .verifier
+                .static(
+                    Multiplier2VerifierMsg::VerifyProof { a: a, b: b, c: c, input: input },
+                )
+        }
+    }
+}

@@ -1,0 +1,6 @@
+[ingot]
+name = "multiplier2_verifier"
+version = "0.1.0"
+
+[dependencies]
+fe_zk = { path = "../../..", allow_unsafe = true }

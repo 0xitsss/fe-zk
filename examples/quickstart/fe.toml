@@ -1,0 +1,12 @@
+[ingot]
+name = "quickstart"
+version = "0.1.0"
+
+[dependencies]
+# Inside this repository: a path dependency on the fe-zk root ingot.
+fe_zk = { path = "../..", allow_unsafe = true }
+# Outside it, Fe 26.5 also reads remote (git) dependencies. Keys: `source` (URL), `rev`, optional
+# `path` (crates/common/src/config/dependency.rs). Not exercised by CI here; pin a full commit SHA:
+#   fe_zk = { source = "https://github.com/0xitsss/fe-zk.git", rev = "<full-commit-sha>", allow_unsafe = true }
+# The verifier below was emitted by fe-zk-gen from vectors/groth16/multiplier2 (see README.md).
+multiplier2_verifier = { path = "verifier" }
