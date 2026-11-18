@@ -15,7 +15,8 @@ use std::process::ExitCode;
 #[command(
     name = "fe-zk-gen",
     version,
-    about = "Validate zk verifying keys and emit safe Fe verifiers"
+    about = "Validate zk verifying keys and emit safe Fe verifiers",
+    after_help = "Guide with copy-pasteable recipes per proof system: docs/USAGE.md in the fe-zk repository"
 )]
 struct Cli {
     #[command(subcommand)]
