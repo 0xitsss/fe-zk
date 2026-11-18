@@ -1,6 +1,6 @@
 //! Shared helpers for calling EVM precompiles with explicit success and length checks
 //! (safety rule 6). Not re-exported: every public wrapper lives next to its point types.
-use core::ptr::{self, MemBuffer}
+use core::ptr::{self, FixedMemBuffer, MemBuffer}
 use core::abi::{load_word, store_word}
 use std::evm::{Address, Call}
 
@@ -73,4 +73,74 @@ pub fn call_checked(
 uses (call: Call)
 {
     assert(call_try(addr, gas, mut input, in_len, mut out, out_len))
+}
+
+/// Writes `v` as the word at byte offset `at` of a fixed buffer.
+#[inline(always)]
+pub fn fput<const N: usize>(_ buf: FixedMemBuffer<N>, _ at: u256, _ v: u256) {
+    unsafe {
+        store_word(ptr: ptr::offset_bytes(buf.ptr(), at), value: v)
+    }
+}
+
+/// Reads the word at byte offset `at` of a fixed buffer.
+#[inline(always)]
+pub fn fget<const N: usize>(_ buf: FixedMemBuffer<N>, _ at: u256) -> u256 {
+    unsafe {
+        load_word(ptr::offset_bytes(buf.ptr(), at))
+    }
+}
+
+/// Fixed-size variant of `call_try`: no heap allocation, `I` input bytes and `O` output bytes
+/// are static. Success flag is returned; if the call succeeded, reverts unless it returned
+/// exactly `O` bytes.
+#[inline(always)]
+pub fn call_try_fixed<const I: usize>(
+    _ addr: u256,
+    _ gas: u256,
+    _ input: own FixedMemBuffer<I>,
+    _ out: mut MemBuffer,
+    _ out_len: u256,
+) -> bool
+uses (call: Call)
+{
+    var inb = input.into_buffer()
+    let r = call.raw_staticcall(
+            addr: Address::new(addr),
+            gas: gas,
+            args: inb.span(),
+            ret: mut out,
+        )
+    if r.success() {
+        assert(r.returndata_len() == out_len)
+    }
+    r.success()
+}
+
+/// `call_try_fixed` for an input in a `MemBuffer` whose first `in_len` bytes are written.
+#[inline(always)]
+pub fn call_try_fixed_buf(
+    _ addr: u256,
+    _ gas: u256,
+    _ input: mut MemBuffer,
+    _ in_len: usize,
+    _ out: mut MemBuffer,
+    _ out_len: u256,
+) -> bool
+uses (call: Call)
+{
+    unsafe {
+        input.set_len(in_len)
+    }
+    let r = call
+        .raw_staticcall(
+            addr: Address::new(addr),
+            gas: gas,
+            args: input.span(),
+            ret: mut out,
+        )
+    if r.success() {
+        assert(r.returndata_len() == out_len)
+    }
+    r.success()
 }
