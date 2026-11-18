@@ -25,4 +25,10 @@ pub use plonk::{
     plonk_verify,
     plonk_verify_words,
 }
-pub use gnark_plonk::{GnarkProof, GnarkVk, gnark_plonk_verify, gnark_plonk_verify_words}
+pub use gnark_plonk::{
+    GnarkProof,
+    GnarkVk,
+    gnark_domain_is_valid,
+    gnark_plonk_verify,
+    gnark_plonk_verify_words,
+}

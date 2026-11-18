@@ -4,6 +4,8 @@
 #      examples/membership/verifier (contract + tests with the real snarkjs proof)
 #   2. fe test of the generated verifier (valid proof + invalid battery + compile-time key checks)
 #   3. fe test of the demo contract (Poseidon Merkle tree, Groth16 membership proof, nullifiers)
+#   4. PLONK (snarkjs) verifier emitted from vectors/plonk/membership and tested
+#   5. halo2-KZG verifier emitted from vectors/halo2/standard_plonk_lookup and tested
 # Needs: `fe` (26.5.0) and a Rust toolchain on PATH. Set FE=/path/to/fe to override the binary.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -22,5 +24,20 @@ echo "== 2. generated verifier tests"
 
 echo "== 3. demo contract tests"
 (cd examples/membership && "$FE" test)
+
+echo "== 4. PLONK: fe-zk-gen plonk -> generated verifier -> fe test"
+P=vectors/plonk/membership
+(cd gen && cargo run -q -p fe-zk-gen -- plonk \
+    --snarkjs "../$P/verification_key.json" \
+    --proof "../$P/proof.json" --public "../$P/public.json" \
+    --name PlonkMembership --out ../examples/plonk/membership_verifier --fe-zk-path ../../..)
+(cd examples/plonk/membership_verifier && "$FE" fmt >/dev/null && "$FE" test)
+
+echo "== 5. halo2-KZG: fe-zk-gen halo2 -> generated verifier -> fe test"
+H=vectors/halo2/standard_plonk_lookup
+(cd gen && cargo run -q -p fe-zk-gen -- halo2 \
+    --vk "../$H/vk.json" --shplonk "../$H/shplonk.json" --gwc "../$H/gwc.json" \
+    --name Halo2Circuit --out ../examples/halo2/circuit_verifier --fe-zk-path ../../..)
+(cd examples/halo2/circuit_verifier && "$FE" fmt >/dev/null && "$FE" test)
 
 echo "demo OK"

@@ -29,3 +29,5 @@ node_modules/
 .claude/worktrees/
 .serena/
 __pycache__/
+# fe-zk-gen integration test scratch dirs
+.emit-*-tmp/

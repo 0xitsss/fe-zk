@@ -177,12 +177,13 @@ fn write_ingot(dir: &std::path::Path, toml: &str, lib: &str, tests: &str) {
 #[ignore = "needs the fe binary (set FE=/path/to/fe) and takes a few minutes"]
 fn emitted_halo2_ingot_passes_fe_test() {
     let e = emit_halo2_ingot(&vk(), &opts()).unwrap();
-    let d = root().join(".emit-halo2-test-tmp");
+    let base = root().join(".emit-halo2-test-tmp");
+    let d = base.join("ok");
     write_ingot(&d, &e.fe_toml, &e.lib_fe, e.tests_fe.as_ref().unwrap());
     let (ok, text) = fe_test(&d);
     assert!(ok, "fe test failed\n{text}");
     assert!(text.contains("0 failed"), "{text}");
-    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
