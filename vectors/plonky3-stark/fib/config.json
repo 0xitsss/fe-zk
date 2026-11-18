@@ -31,5 +31,12 @@
     1,
     987
   ],
-  "query_proof_of_work_bits": 3
+  "query_proof_of_work_bits": 3,
+  "soundness": {
+    "conjectured_bits": 11,
+    "conjectured_formula": "log_blowup * num_queries + query_proof_of_work_bits (p3_fri FriParameters::conjectured_soundness_bits)",
+    "log2_eps_commit_phase": -86.83874054126983,
+    "proven_johnson_m10_bits": 6.718442688434408,
+    "proven_unique_decoding_bits": 5.712287620450551
+  }
 }
