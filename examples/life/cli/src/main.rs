@@ -6,6 +6,7 @@
 mod abi;
 mod board;
 mod chain;
+mod frames;
 mod zk;
 
 use std::{io::Write, process::ExitCode, thread, time::Duration};
@@ -22,11 +23,12 @@ struct Args {
     prove_live: bool,
     fixture: String,
     verifier_bin: String,
+    frames_json: Option<String>,
 }
 
 const USAGE: &str = "usage: life-cli --pattern glider|blinker|rpentomino|random --gens N \
-[--delay ms] [--seed S] [--no-anim] [--check] [--bin path/to/Life.bin]\n\
-       life-cli --prove [--fixture DIR] [--bin Life.bin] [--verifier-bin Life512Verifier.bin]\n\
+[--delay ms] [--seed S] [--no-anim] [--check] [--bin path/to/Life.bin] [--frames-json PATH]\n\
+       life-cli --prove [--fixture DIR] [--bin Life.bin] [--verifier-bin Life512Verifier.bin] [--frames-json PATH]\n\
        life-cli --prove-live [--pattern P] [--seed S]   (runs scripts/life-prove.sh, takes minutes)";
 
 fn parse_args() -> Result<Args, String> {
@@ -42,6 +44,7 @@ fn parse_args() -> Result<Args, String> {
         prove_live: false,
         fixture: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../vectors/groth16/life_512").into(),
         verifier_bin: concat!(env!("CARGO_MANIFEST_DIR"), "/../verifier/out/Life512Verifier.bin").into(),
+        frames_json: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -61,6 +64,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--fixture" => a.fixture = val("--fixture")?,
             "--verifier-bin" => a.verifier_bin = val("--verifier-bin")?,
+            "--frames-json" => a.frames_json = Some(val("--frames-json")?),
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
@@ -81,6 +85,7 @@ fn run() -> Result<(), String> {
     let mut total_exec = 0u64;
     let mut total_tx = 0u64;
     let mut expect = start;
+    let mut frames = vec![frames::Frame { generation: 0, board: start, step_gas: None }];
     let animate = !a.no_anim;
     let mut out = std::io::stdout();
     if animate {
@@ -94,6 +99,7 @@ fn run() -> Result<(), String> {
             total_exec += call.exec_gas;
             total_tx += call.tx_gas;
             gas_line = format!("step gas {} (tx {})", call.exec_gas, call.tx_gas);
+            frames.push(frames::Frame { generation: g, board: b, step_gas: Some(call.exec_gas) });
             if a.check {
                 expect = board::ref_step_packed(expect);
                 if b != expect {
@@ -120,6 +126,10 @@ fn run() -> Result<(), String> {
     let (run_b, run_call) = chain.run(start, a.gens)?;
     if run_b != b {
         return Err(format!("run({}) disagrees with {} step calls", a.gens, a.gens));
+    }
+    if let Some(path) = &a.frames_json {
+        frames::write_play(path, &a.pattern, a.gens, &frames, run_call.exec_gas)?;
+        println!("frames written to {path}");
     }
     if a.check {
         println!("check: OK, {} generations match the per-cell reference", a.gens);
@@ -243,5 +253,9 @@ fn prove_mode(a: &Args) -> Result<(), String> {
         "\nbreak-even: a proof pays off above about {:.0} generations ({per_gen:.0} gas per on-chain generation)",
         prove_run.exec_gas as f64 / per_gen
     );
+    if let Some(path) = &a.frames_json {
+        frames::write_prove(path, n, f.start, f.end, steps_exec, run_call.exec_gas, prove_run.exec_gas, adv.exec_gas)?;
+        println!("frames written to {path}");
+    }
     Ok(())
 }
