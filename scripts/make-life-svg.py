@@ -13,8 +13,8 @@ import json
 import sys
 
 W, H = 640, 420
-BG, DEAD, ALIVE, FG, DIM = "#0d1117", "#1b222c", "#3fb950", "#e6edf3", "#9aa7b4"
-BAR_STEPS, BAR_RUN, BAR_PROOF = "#8b949e", "#58a6ff", "#3fb950"
+BG, DEAD, ALIVE, FG, DIM = "#0d1117", "#1b222c", "#4fc3f7", "#e6edf3", "#9aa7b4"
+BAR_STEPS, BAR_RUN, BAR_PROOF = "#8b949e", "#2f81f7", "#4fc3f7"
 DT = 0.12          # seconds per generation
 HOLD = 5.0         # seconds the final scene stays
 N = 16

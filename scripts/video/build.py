@@ -168,7 +168,7 @@ def bits_to_rows(h):
     return [[(v >> (r * 16 + c)) & 1 for c in range(16)] for r in range(16)]
 
 
-def write_ppm(path, rows, alive=(255, 150, 70), dead=(18, 24, 33)):
+def write_ppm(path, rows, alive=(79, 195, 247), dead=(18, 24, 33)):
     data = bytearray(b"P6\n16 16\n255\n")
     for r in rows:
         for c in r:

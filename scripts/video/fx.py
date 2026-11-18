@@ -16,9 +16,9 @@ MONO, MONOB = DJV + "DejaVuSansMono.ttf", DJV + "DejaVuSansMono-Bold.ttf"
 SYM = DJV + "DejaVuSans.ttf"
 CHARW = 1233 / 2048.0  # DejaVu Sans Mono advance, in em
 
-# palette (one accent: Fe orange)
-ACC = "0xff7a1a"
-ACC2 = "0xffb36b"
+# palette (one accent: sky blue; no orange anywhere)
+ACC = "0x4fc3f7"
+ACC2 = "0xa6dcff"
 BG0 = "0x0b0f14"
 PANEL = "0x0d1117"
 PANEL2 = "0x161b22"
@@ -27,11 +27,11 @@ TXT = "0xe6edf3"
 DIM = "0x8b949e"
 FAINT = "0x6e7681"
 OK = "0x3fb950"
-ERR = "0xff5f56"
+ERR = "0xf85149"
 BLUE = "0x79c0ff"
 PURPLE = "0xd2a8ff"
 STR = "0xa5d6ff"
-PINK = "0xff7b72"
+PINK = "0xd2a8ff"
 
 ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an"]
 
@@ -255,7 +255,7 @@ class Scene:
             self.box(x, y, w, 44, PANEL2 + "@0.98", t0, t1)
             self.box(x, y + 44, w, 2, LINE, t0, t1)
             if kind == "term":
-                for i, c in enumerate((ERR, "0xe3b341", OK)):
+                for i, c in enumerate((ERR, "0xa6dcff", OK)):
                     self.text("●", x + 20 + i * 30, y + 6, 26, c, SYM, t0=t0, t1=t1, anim="fade", tick=True)
             self.text(title, x + (120 if kind == "term" else 20), y + 8, 26, DIM, MONO, t0=t0, t1=t1, anim="fade", tick=True)
 
@@ -374,7 +374,7 @@ def mix(a, b, t):
     return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
 
 
-def life_clip(outdir, boards, rate, hold_tail=0.0, alive=(255, 150, 70), dead=(18, 24, 33), decay=0.78):
+def life_clip(outdir, boards, rate, hold_tail=0.0, alive=(79, 195, 247), dead=(18, 24, 33), decay=0.78):
     """16x16 PPM sequence at FPS: generation k shown for 1/rate s, smooth crossfade + fading trail.
     boards: list of 16x16 0/1 rows. Returns (dir, n_frames, [(gen_index, frame_start)])."""
     outdir = Path(outdir)
@@ -400,7 +400,7 @@ def life_clip(outdir, boards, rate, hold_tail=0.0, alive=(255, 150, 70), dead=(1
                 v = vals[g][r][c] + (nxt[r][c] - vals[g][r][c]) * e
                 col = mix(dead, alive, min(1.0, v))
                 if v > 0.85:
-                    col = mix(col, (255, 220, 160), (v - 0.85) * 3)
+                    col = mix(col, (205, 238, 255), (v - 0.85) * 3)
                 data += bytes(col)
         (outdir / ("f%04d.ppm" % k)).write_bytes(bytes(data))
         starts.append(g)
