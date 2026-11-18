@@ -318,9 +318,30 @@ pub enum Halo2Mode {
     Ingot,
 }
 
+/// Which multiopen scheme(s) a generated ingot verifies. One contract per scheme: a verifier for a
+/// single scheme fits under the EIP-170 limit (24,576 bytes of runtime code), both together do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Halo2Scheme {
+    #[default]
+    Shplonk,
+    Gwc,
+    /// Two contracts in one ingot: `<Name>ShplonkVerifier` and `<Name>GwcVerifier`.
+    Both,
+}
+
+impl Halo2Scheme {
+    pub fn has_shplonk(self) -> bool {
+        matches!(self, Halo2Scheme::Shplonk | Halo2Scheme::Both)
+    }
+    pub fn has_gwc(self) -> bool {
+        matches!(self, Halo2Scheme::Gwc | Halo2Scheme::Both)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Halo2EmitOptions {
     pub name: String,
+    pub scheme: Halo2Scheme,
     pub source: String,
     pub fe_zk_path: String,
     pub shplonk: Option<Halo2Fixture>,
@@ -331,6 +352,7 @@ impl Default for Halo2EmitOptions {
     fn default() -> Self {
         Halo2EmitOptions {
             name: "Halo2".into(),
+            scheme: Halo2Scheme::default(),
             source: "vk.json".into(),
             fe_zk_path: "../..".into(),
             shplonk: None,
@@ -353,6 +375,7 @@ pub struct Halo2Layout {
 struct Gen<'a> {
     vk: &'a Value,
     mode: Halo2Mode,
+    scheme: Halo2Scheme,
     lines: Vec<String>,
     omega: BigUint,
     omega_inv: BigUint,
@@ -397,7 +420,7 @@ fn rname(r: i64) -> String {
 }
 
 impl<'a> Gen<'a> {
-    fn new(vk: &'a Halo2Vk, mode: Halo2Mode, digest: &[u8; 32]) -> Self {
+    fn new(vk: &'a Halo2Vk, mode: Halo2Mode, scheme: Halo2Scheme, digest: &[u8; 32]) -> Self {
         let v = &vk.v;
         let omega = hx(&v["omega"]).unwrap();
         let k = v["k"].as_u64().unwrap() as u32;
@@ -405,6 +428,7 @@ impl<'a> Gen<'a> {
         Gen {
             vk: v,
             mode,
+            scheme,
             lines: vec![],
             omega,
             omega_inv,
@@ -599,7 +623,7 @@ impl<'a> Gen<'a> {
         ));
         self.emit(format!("use {root}::field::{{Bn254Fr, Field}}"));
         self.emit(format!("use {common}::{{"));
-        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1,");
+        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1, read_points,\nread_scalars,");
         self.emit("}");
         self.emit("");
         self.emit(
@@ -752,80 +776,51 @@ impl<'a> Gen<'a> {
             }
             inst.push(col);
         }
+        // Proof layout (SPEC section 3): `np` commitments, then the evaluations. Each run is validated
+        // by one loop (`read_points`, `read_scalars`: rules 1 and 2) and absorbed word by word, so
+        // the emitted code does not grow with the number of commitments (EIP-170 code size).
+        let np = self.pt_names.len();
+        let nev = self.ev_names.len();
+        self.unwrap_or(
+            &format!("pts: [G1; {np}]"),
+            "read_points(proof, 0)",
+            "Option::None",
+        );
+        self.unwrap_or(
+            &format!("ev: [Bn254Fr; {nev}]"),
+            &format!("read_scalars(proof, {})", 2 * np),
+            "Option::None",
+        );
         let mut off = 0usize;
-        macro_rules! rd_pt {
-            ($name:expr) => {{
-                let nm: String = $name;
-                self.unwrap_or(
-                    &nm,
-                    &format!("read_g1(proof[{}], proof[{}])", off, off + 1),
-                    "Option::None",
-                );
-                self.emit(format!(
-                    "tr.absorb_point(proof[{}], proof[{}])",
-                    off,
-                    off + 1
-                ));
-                off += 2;
-            }};
-        }
-        macro_rules! rd_sc {
-            ($name:expr) => {{
-                let nm: String = $name;
-                self.unwrap_or(
-                    &nm,
-                    &format!("Bn254Fr::from_canonical(proof[{}])", off),
-                    "Option::None",
-                );
-                self.emit(format!("tr.absorb(proof[{}])", off));
-                off += 1;
-            }};
-        }
-        for c in 0..self.a {
-            rd_pt!(format!("adv{c}"));
-        }
+        self.emit(format!("tr.absorb_words(proof, 0, {})", 2 * self.a));
+        off += 2 * self.a;
         self.emit("let theta = tr.squeeze()");
-        for j in 0..self.l {
-            rd_pt!(format!("lpi{j}"));
-            rd_pt!(format!("lpt{j}"));
-        }
+        self.emit(format!(
+            "tr.absorb_words(proof, {off}, {})",
+            off + 4 * self.l
+        ));
+        off += 4 * self.l;
         self.emit("let beta = tr.squeeze()");
         self.emit("let gamma = tr.squeeze()");
-        for i in 0..self.s {
-            rd_pt!(format!("zc{i}"));
-        }
-        for j in 0..self.l {
-            rd_pt!(format!("lzc{j}"));
-        }
-        rd_pt!("rnd".to_string());
+        let n = 2 * (self.s + self.l + 1);
+        self.emit(format!("tr.absorb_words(proof, {off}, {})", off + n));
+        off += n;
         self.emit("let y = tr.squeeze()");
-        for i in 0..self.hq {
-            rd_pt!(format!("hq{i}"));
-        }
+        self.emit(format!(
+            "tr.absorb_words(proof, {off}, {})",
+            off + 2 * self.hq
+        ));
+        off += 2 * self.hq;
         self.emit("let x = tr.squeeze()");
-        for q in 0..self.aq {
-            rd_sc!(format!("a{q}"));
+        self.emit(format!(
+            "tr.absorb_words(proof, {off}, {})",
+            self.common_words
+        ));
+        assert_eq!(off, 2 * np);
+        let evs = self.ev_names.clone();
+        for (i, nm) in evs.iter().enumerate() {
+            self.emit(format!("let {nm} = ev[{i}]"));
         }
-        for q in 0..self.fq {
-            rd_sc!(format!("f{q}"));
-        }
-        rd_sc!("rand_eval".to_string());
-        for p in 0..self.p {
-            rd_sc!(format!("sg{p}"));
-        }
-        for i in 0..self.s {
-            rd_sc!(format!("pz{i}"));
-            rd_sc!(format!("pzn{i}"));
-            if i < self.s - 1 {
-                rd_sc!(format!("pzl{i}"));
-            }
-        }
-        for j in 0..self.l {
-            for nm in ["lz", "lzn", "la", "lai", "ls"] {
-                rd_sc!(format!("{nm}{j}"));
-            }
-        }
-        assert_eq!(off, self.common_words);
 
         self.emit("// x^n and the Lagrange basis at x: L_i(x) = w^i (x^n - 1) n_inv / (x - w^i).");
         self.emit(format!("let xn = x.pow({})", self.n));
@@ -956,8 +951,7 @@ impl<'a> Gen<'a> {
         self.emit(format!("let expected_h = hacc.mul(inv_d[{}])", need.len()));
         self.emit("Option::Some(Phase1 {");
         self.emit("theta, beta, gamma, y, x, xn, expected_h,");
-        self.emit(format!("pts: [{}],", self.pt_names.join(", ")));
-        self.emit(format!("ev: [{}],", self.ev_names.join(", ")));
+        self.emit("pts, ev,");
         self.emit("})");
         self.emit("}");
         self.emit("");
@@ -1421,8 +1415,12 @@ impl<'a> Gen<'a> {
         self.layout();
         self.header();
         self.phase1();
-        self.shplonk();
-        self.gwc();
+        if self.scheme.has_shplonk() {
+            self.shplonk();
+        }
+        if self.scheme.has_gwc() {
+            self.gwc();
+        }
         let lay = Halo2Layout {
             common_words: self.common_words,
             n_points: self.pt_names.len(),
@@ -1439,29 +1437,87 @@ impl<'a> Gen<'a> {
 /// `super::common`). Byte-identical to `vectors/halo2/emit_fe.py` before `fe fmt`.
 pub fn emit_halo2_module(vk: &Halo2Vk) -> Result<String, VkError> {
     let digest = halo2_key_digest(vk)?;
-    Ok(Gen::new(vk, Halo2Mode::Lib, &digest).run().0)
+    Ok(Gen::new(vk, Halo2Mode::Lib, Halo2Scheme::Both, &digest)
+        .run()
+        .0)
 }
 
-/// Emit a standalone ingot: the same module with `fe_zk::` imports, plus a contract with
-/// `verifyShplonk(uint256[W1],uint256[NI])`, `verifyGwc(uint256[W2],uint256[NI])` and `vkDigest()`,
-/// and (with fixtures) a generated battery of tests.
+/// One verifier contract of an emitted ingot.
+struct Sch {
+    /// `shplonk` or `gwc` (prefix of the generated test names)
+    key: &'static str,
+    /// `SHPLONK` or `GWC` (prefix of the fixture constants)
+    big: &'static str,
+    /// message variant, `VerifyShplonk` or `VerifyGwc`
+    variant: &'static str,
+    /// library function, `verify_shplonk` or `verify_gwc`
+    func: &'static str,
+    /// call helper in the generated tests
+    call: &'static str,
+    words: usize,
+    contract: String,
+    msg: String,
+}
+
+fn schemes(opts: &Halo2EmitOptions, lay: &Halo2Layout) -> Vec<Sch> {
+    let both = opts.scheme == Halo2Scheme::Both;
+    let mut v = vec![];
+    if opts.scheme.has_shplonk() {
+        let contract = if both {
+            format!("{}ShplonkVerifier", opts.name)
+        } else {
+            format!("{}Verifier", opts.name)
+        };
+        v.push(Sch {
+            key: "shplonk",
+            big: "SHPLONK",
+            variant: "VerifyShplonk",
+            func: "verify_shplonk",
+            call: "vs",
+            words: lay.shplonk_words,
+            msg: format!("{contract}Msg"),
+            contract,
+        });
+    }
+    if opts.scheme.has_gwc() {
+        let contract = if both {
+            format!("{}GwcVerifier", opts.name)
+        } else {
+            format!("{}Verifier", opts.name)
+        };
+        v.push(Sch {
+            key: "gwc",
+            big: "GWC",
+            variant: "VerifyGwc",
+            func: "verify_gwc",
+            call: "vg",
+            words: lay.gwc_words,
+            msg: format!("{contract}Msg"),
+            contract,
+        });
+    }
+    v
+}
+
+/// Emit a standalone ingot: the same module with `fe_zk::` imports, plus one contract per scheme
+/// (`opts.scheme`) with `verifyShplonk(uint256[W1],uint256[NI])` or `verifyGwc(uint256[W2],uint256[NI])`
+/// and `vkDigest()`, and (with fixtures for every emitted scheme) a generated battery of tests.
 pub fn emit_halo2_ingot(vk: &Halo2Vk, opts: &Halo2EmitOptions) -> Result<EmittedIngot, VkError> {
     check_name(&opts.name)?;
     let digest = halo2_key_digest(vk)?;
-    let (mut lib, lay) = Gen::new(vk, Halo2Mode::Ingot, &digest).run();
+    let (mut lib, lay) = Gen::new(vk, Halo2Mode::Ingot, opts.scheme, &digest).run();
     let ingot_name = format!("{}_verifier", opts.name.to_lowercase());
-    let contract = format!("{}Verifier", opts.name);
-    let msg = format!("{contract}Msg");
     let fe_toml = format!(
         "[ingot]\nname = \"{ingot_name}\"\nversion = \"0.1.0\"\n\n[dependencies]\nfe_zk = {{ path = \"{}\", allow_unsafe = true }}\n",
         opts.fe_zk_path
     );
-    let (w1, w2, ni) = (lay.shplonk_words, lay.gwc_words, lay.n_instances);
+    let ni = lay.n_instances;
+    let list = schemes(opts, &lay);
     let w = &mut lib;
     writeln!(w).unwrap();
     writeln!(
         w,
-        "// ---- contract ----------------------------------------------------------------"
+        "// ---- contracts ---------------------------------------------------------------"
     )
     .unwrap();
     writeln!(
@@ -1471,59 +1527,80 @@ pub fn emit_halo2_ingot(vk: &Halo2Vk, opts: &Halo2EmitOptions) -> Result<Emitted
     )
     .unwrap();
     writeln!(w, "// flattened instance columns. All checks live in the verify functions above and in fe_zk.").unwrap();
-    writeln!(w, "pub msg {msg} {{").unwrap();
     writeln!(
         w,
-        "    #[selector = sol(\"verifyShplonk(uint256[{w1}],uint256[{ni}])\")]"
+        "// One contract per multiopen scheme: both together exceed the EIP-170 code size limit."
     )
     .unwrap();
-    writeln!(
-        w,
-        "    VerifyShplonk {{ proof: [u256; {w1}], instances: [u256; {ni}] }} -> bool,"
-    )
-    .unwrap();
-    writeln!(
-        w,
-        "    #[selector = sol(\"verifyGwc(uint256[{w2}],uint256[{ni}])\")]"
-    )
-    .unwrap();
-    writeln!(
-        w,
-        "    VerifyGwc {{ proof: [u256; {w2}], instances: [u256; {ni}] }} -> bool,"
-    )
-    .unwrap();
-    writeln!(w, "    #[selector = sol(\"vkDigest()\")]").unwrap();
-    writeln!(w, "    VkDigest -> u256,").unwrap();
-    writeln!(w, "}}").unwrap();
-    writeln!(w).unwrap();
-    writeln!(w, "pub contract {contract} {{").unwrap();
-    writeln!(w, "    recv {msg} {{").unwrap();
-    writeln!(
-        w,
-        "        VerifyShplonk {{ proof, instances }} -> bool uses (call: Call) {{"
-    )
-    .unwrap();
-    writeln!(w, "            verify_shplonk(vk(), proof, instances)").unwrap();
-    writeln!(w, "        }}").unwrap();
-    writeln!(w).unwrap();
-    writeln!(
-        w,
-        "        VerifyGwc {{ proof, instances }} -> bool uses (call: Call) {{"
-    )
-    .unwrap();
-    writeln!(w, "            verify_gwc(vk(), proof, instances)").unwrap();
-    writeln!(w, "        }}").unwrap();
-    writeln!(w).unwrap();
-    writeln!(w, "        VkDigest -> u256 {{").unwrap();
-    writeln!(w, "            VK_DIGEST").unwrap();
-    writeln!(w, "        }}").unwrap();
-    writeln!(w, "    }}").unwrap();
-    writeln!(w, "}}").unwrap();
+    for sc in &list {
+        let (msg, contract, words) = (&sc.msg, &sc.contract, sc.words);
+        let sel = if sc.key == "shplonk" {
+            "verifyShplonk"
+        } else {
+            "verifyGwc"
+        };
+        writeln!(w, "pub msg {msg} {{").unwrap();
+        writeln!(
+            w,
+            "    #[selector = sol(\"{sel}(uint256[{words}],uint256[{ni}])\")]"
+        )
+        .unwrap();
+        writeln!(
+            w,
+            "    {} {{ proof: [u256; {words}], instances: [u256; {ni}] }} -> bool,",
+            sc.variant
+        )
+        .unwrap();
+        writeln!(w, "    #[selector = sol(\"vkDigest()\")]").unwrap();
+        writeln!(w, "    VkDigest -> u256,").unwrap();
+        writeln!(w, "}}").unwrap();
+        writeln!(w).unwrap();
+        writeln!(w, "pub contract {contract} {{").unwrap();
+        writeln!(w, "    recv {msg} {{").unwrap();
+        writeln!(
+            w,
+            "        {} {{ proof, instances }} -> bool uses (call: Call) {{",
+            sc.variant
+        )
+        .unwrap();
+        writeln!(w, "            {}(vk(), proof, instances)", sc.func).unwrap();
+        writeln!(w, "        }}").unwrap();
+        writeln!(w).unwrap();
+        writeln!(w, "        VkDigest -> u256 {{").unwrap();
+        writeln!(w, "            VK_DIGEST").unwrap();
+        writeln!(w, "        }}").unwrap();
+        writeln!(w, "    }}").unwrap();
+        writeln!(w, "}}").unwrap();
+        writeln!(w).unwrap();
+    }
+    while lib.ends_with("\n\n") {
+        lib.pop();
+    }
 
-    let tests_fe = match (&opts.shplonk, &opts.gwc) {
-        (Some(s), Some(g)) => Some(emit_tests(vk, opts, &lay, s, g, &contract, &msg, &digest)?),
-        (None, None) => None,
-        _ => return Err(bad("give both --shplonk and --gwc proofs, or neither")),
+    let fx_of = |k: &str| match k {
+        "shplonk" => opts.shplonk.as_ref(),
+        _ => opts.gwc.as_ref(),
+    };
+    for (k, present, wanted) in [
+        ("shplonk", opts.shplonk.is_some(), opts.scheme.has_shplonk()),
+        ("gwc", opts.gwc.is_some(), opts.scheme.has_gwc()),
+    ] {
+        if present && !wanted {
+            return Err(bad(format!(
+                "a {k} proof was given but scheme {:?} does not emit a {k} verifier",
+                opts.scheme
+            )));
+        }
+    }
+    let given = list.iter().filter(|s| fx_of(s.key).is_some()).count();
+    let tests_fe = if given == list.len() {
+        let items: Vec<(&Sch, &Halo2Fixture)> =
+            list.iter().map(|s| (s, fx_of(s.key).unwrap())).collect();
+        Some(emit_tests(vk, opts, &lay, &items, &digest)?)
+    } else if given == 0 {
+        None
+    } else {
+        return Err(bad("give a proof for every emitted scheme, or none"));
     };
     Ok(EmittedIngot {
         ingot_name,
@@ -1541,28 +1618,27 @@ fn words(name: &str, ws: &[BigUint]) -> String {
     s + "]\n"
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_tests(
     vk: &Halo2Vk,
     opts: &Halo2EmitOptions,
     lay: &Halo2Layout,
-    sh: &Halo2Fixture,
-    gw: &Halo2Fixture,
-    contract: &str,
-    msg: &str,
+    items: &[(&Sch, &Halo2Fixture)],
     digest: &[u8; 32],
 ) -> Result<String, VkError> {
-    let (w1, w2, ni) = (lay.shplonk_words, lay.gwc_words, lay.n_instances);
-    for (n, f, ww) in [("shplonk", sh, w1), ("gwc", gw, w2)] {
-        if f.proof.len() != ww {
+    let ni = lay.n_instances;
+    for (sc, f) in items {
+        if f.proof.len() != sc.words {
             return Err(bad(format!(
-                "{n} proof has {} words, key expects {ww}",
-                f.proof.len()
+                "{} proof has {} words, key expects {}",
+                sc.key,
+                f.proof.len(),
+                sc.words
             )));
         }
         if f.instances.len() != ni {
             return Err(bad(format!(
-                "{n} fixture has {} instances, key expects {ni}",
+                "{} fixture has {} instances, key expects {ni}",
+                sc.key,
                 f.instances.len()
             )));
         }
@@ -1583,7 +1659,7 @@ fn emit_tests(
     .unwrap();
     writeln!(
         w,
-        "//! Fixture: a real halo2-axiom proof per multiopen scheme (from {}) and a battery of",
+        "//! Fixture: a real halo2-axiom proof per emitted multiopen scheme (from {}) and a battery of",
         opts.name
     )
     .unwrap();
@@ -1611,16 +1687,21 @@ fn emit_tests(
     writeln!(
         w,
         "// then the opening points: SHPLONK h1, h2; GWC witness points W_0..W_{}.",
-        lay.gwc_points - 1
+        lay.gwc_points.max(1) - 1
     )
     .unwrap();
     writeln!(w, "const EVAL_START: usize = {}", 2 * lay.n_points).unwrap();
     writeln!(w, "const OPEN_START: usize = {}", lay.common_words).unwrap();
-    w.push_str(&words("SHPLONK_PROOF", &sh.proof));
-    w.push_str(&words("GWC_PROOF", &gw.proof));
-    for (n, f) in [("SHPLONK", sh), ("GWC", gw)] {
+    for (sc, f) in items {
+        w.push_str(&words(&format!("{}_PROOF", sc.big), &f.proof));
         let xs: Vec<String> = f.instances.iter().map(h).collect();
-        writeln!(w, "const {n}_INSTANCES: [u256; {ni}] = [{}]", xs.join(", ")).unwrap();
+        writeln!(
+            w,
+            "const {}_INSTANCES: [u256; {ni}] = [{}]",
+            sc.big,
+            xs.join(", ")
+        )
+        .unwrap();
     }
     writeln!(w).unwrap();
     writeln!(
@@ -1632,33 +1713,40 @@ fn emit_tests(
     writeln!(w, "    if i < EVAL_START {{ i % 2 == 0 }} else {{ i >= OPEN_START && (i - OPEN_START) % 2 == 0 }}").unwrap();
     writeln!(w, "}}").unwrap();
     writeln!(w).unwrap();
-    writeln!(w, "fn deploy() -> Address uses (evm: mut Evm) {{").unwrap();
-    writeln!(
-        w,
-        "    evm.create2<{contract}>(value: Wei::zero(), args: (), salt: 0)"
-    )
-    .unwrap();
-    writeln!(w, "}}").unwrap();
-    writeln!(w).unwrap();
-    for (fnname, variant, ww) in [("vs", "VerifyShplonk", w1), ("vg", "VerifyGwc", w2)] {
+    for (sc, _) in items {
         writeln!(
             w,
-            "fn {fnname}(_ p: Address, _ pr: [u256; {ww}], _ x: [u256; {ni}]) -> bool"
+            "fn deploy_{}() -> Address uses (evm: mut Evm) {{",
+            sc.key
+        )
+        .unwrap();
+        writeln!(
+            w,
+            "    evm.create2<{}>(value: Wei::zero(), args: (), salt: 0)",
+            sc.contract
+        )
+        .unwrap();
+        writeln!(w, "}}").unwrap();
+        writeln!(w).unwrap();
+        writeln!(
+            w,
+            "fn {}(_ p: Address, _ pr: [u256; {}], _ x: [u256; {ni}]) -> bool",
+            sc.call, sc.words
         )
         .unwrap();
         writeln!(w, "uses (evm: mut Evm)").unwrap();
         writeln!(w, "{{").unwrap();
         writeln!(w, "    let r: bool = evm").unwrap();
-        writeln!(w, "        .call(addr: p, gas: 20000000, value: Wei::zero(), message: {msg}::{variant} {{ proof: pr, instances: x }})").unwrap();
+        writeln!(w, "        .call(addr: p, gas: 20000000, value: Wei::zero(), message: {}::{} {{ proof: pr, instances: x }})", sc.msg, sc.variant).unwrap();
         writeln!(w, "    r").unwrap();
         writeln!(w, "}}").unwrap();
         writeln!(w).unwrap();
     }
 
-    let t = |w: &mut String, name: &str, body: &str| {
+    let t = |w: &mut String, deploy: &str, name: &str, body: &str| {
         writeln!(w, "#[test]").unwrap();
         writeln!(w, "fn {name}() uses (evm: mut Evm) {{").unwrap();
-        writeln!(w, "    let p = deploy()").unwrap();
+        writeln!(w, "    let p = {deploy}()").unwrap();
         for l in body.lines() {
             writeln!(w, "    {l}").unwrap();
         }
@@ -1666,38 +1754,51 @@ fn emit_tests(
         writeln!(w).unwrap();
     };
 
-    t(w, "vk_digest_exposed", &format!(
-        "let d: u256 = evm.call(addr: p, gas: 1000000, value: Wei::zero(), message: {msg}::VkDigest {{}})\nassert(d == VK_DIGEST)\nassert(d == 0x{})",
-        hex::encode(digest)));
-    for (sch, f, ww, big) in [("shplonk", "vs", w1, "SHPLONK"), ("gwc", "vg", w2, "GWC")] {
+    let w1 = items
+        .iter()
+        .find(|(s, _)| s.key == "shplonk")
+        .map(|(s, _)| s.words);
+    let w2 = items
+        .iter()
+        .find(|(s, _)| s.key == "gwc")
+        .map(|(s, _)| s.words);
+    for (sc, _) in items {
+        let dep = format!("deploy_{}", sc.key);
+        t(w, &dep, &format!("{}_vk_digest_exposed", sc.key), &format!(
+            "let d: u256 = evm.call(addr: p, gas: 1000000, value: Wei::zero(), message: {}::VkDigest {{}})\nassert(d == VK_DIGEST)\nassert(d == 0x{})",
+            sc.msg, hex::encode(digest)));
+        let (sch, f, ww, big) = (sc.key, sc.call, sc.words, sc.big);
         let pr = format!("{big}_PROOF");
         let ins = format!("{big}_INSTANCES");
-        t(w, &format!("{sch}_valid_proof_accepted"), &format!(
+        t(w, &dep, &format!("{sch}_valid_proof_accepted"), &format!(
             "let g0 = evm.gas()\nlet ok = {f}(p, {pr}, {ins})\nevm.emit(GasUsed {{ what: {}, gas: g0 - evm.gas() }})\nassert(ok)",
             if sch == "shplonk" { 1 } else { 2 }));
         t(
             w,
+            &dep,
             &format!("{sch}_wrong_instance_rejected"),
             &format!("assert(!{f}(p, {pr}, [{ins}[0] + 1]))\nassert(!{f}(p, {pr}, [0]))"),
         );
-        t(w, &format!("{sch}_non_canonical_instance_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_non_canonical_instance_rejected"), &format!(
             "// value + r is the same residue: rejected, never reduced\nassert(!{f}(p, {pr}, [{ins}[0] + R]))\nassert(!{f}(p, {pr}, [R]))\nassert(!{f}(p, {pr}, [0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff]))"));
-        t(w, &format!("{sch}_every_word_plus_one_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_every_word_plus_one_rejected"), &format!(
             "var i: usize = 0\nwhile i < {ww} {{\n    var pr = {pr}\n    pr[i] = pr[i] + 1\n    assert(!{f}(p, pr, {ins}))\n    i += 1\n}}"));
-        t(w, &format!("{sch}_non_canonical_words_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_non_canonical_words_rejected"), &format!(
             "// every word shifted by its modulus (q for coordinates, r for scalars): same residue, not canonical\nvar i: usize = 0\nwhile i < {ww} {{\n    var pr = {pr}\n    if is_point_word(i) {{\n        pr[i] = pr[i] + Q\n    }} else {{\n        pr[i] = pr[i] + R\n    }}\n    assert(!{f}(p, pr, {ins}))\n    i += 1\n}}"));
-        t(w, &format!("{sch}_off_curve_points_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_off_curve_points_rejected"), &format!(
             "var i: usize = 0\nwhile i < {ww} {{\n    if is_x_word(i) {{\n        var pr = {pr}\n        pr[i + 1] = pr[i + 1] + 1\n        assert(!{f}(p, pr, {ins}))\n    }}\n    i += 1\n}}"));
-        t(w, &format!("{sch}_infinity_points_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_infinity_points_rejected"), &format!(
             "// halo2's EvmTranscript rejects the point at infinity\nvar i: usize = 0\nwhile i < {ww} {{\n    if is_x_word(i) {{\n        var pr = {pr}\n        pr[i] = 0\n        pr[i + 1] = 0\n        assert(!{f}(p, pr, {ins}))\n    }}\n    i += 1\n}}"));
-        t(w, &format!("{sch}_negated_points_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_negated_points_rejected"), &format!(
             "var i: usize = 0\nwhile i < {ww} {{\n    if is_x_word(i) {{\n        var pr = {pr}\n        pr[i + 1] = Q - pr[i + 1]\n        assert(!{f}(p, pr, {ins}))\n    }}\n    i += 1\n}}"));
-        t(w, &format!("{sch}_swapped_commitments_rejected"), &format!(
+        t(w, &dep, &format!("{sch}_swapped_commitments_rejected"), &format!(
             "var pr = {pr}\nlet x0 = pr[0]\nlet y0 = pr[1]\npr[0] = pr[2]\npr[1] = pr[3]\npr[2] = x0\npr[3] = y0\nassert(!{f}(p, pr, {ins}))"));
-        t(w, &format!("{sch}_proof_of_other_scheme_rejected"), &format!(
-            "// the other scheme's proof words, resized to this scheme's length, never verify\nvar pr = {pr}\nvar i: usize = 0\nwhile i < {ww} {{\n    pr[i] = {}[i % {}]\n    i += 1\n}}\nassert(!{f}(p, pr, {ins}))",
-            if sch == "shplonk" { "GWC_PROOF" } else { "SHPLONK_PROOF" },
-            if sch == "shplonk" { w2 } else { w1 }));
+        if let (Some(w1), Some(w2)) = (w1, w2) {
+            t(w, &dep, &format!("{sch}_proof_of_other_scheme_rejected"), &format!(
+                "// the other scheme's proof words, resized to this scheme's length, never verify\nvar pr = {pr}\nvar i: usize = 0\nwhile i < {ww} {{\n    pr[i] = {}[i % {}]\n    i += 1\n}}\nassert(!{f}(p, pr, {ins}))",
+                if sch == "shplonk" { "GWC_PROOF" } else { "SHPLONK_PROOF" },
+                if sch == "shplonk" { w2 } else { w1 }));
+        }
     }
 
     writeln!(w, "/// The key constants pass the full checks of the library (canonical, on curve, G2 subgroup),").unwrap();

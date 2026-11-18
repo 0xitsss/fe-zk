@@ -12,7 +12,7 @@ same proof and the same words of calldata the reference verifier expects. Nothin
 - **exec**: gas spent by the top-level call frame (the contract's own execution including every precompile and sub-call; it excludes the 21,000 intrinsic cost and the calldata cost). Measured with an inspector on the frame, so it is exact even when the EIP-7623 floor decides the receipt.
 - **tx**: `gas_used` of the receipt: 21,000 + calldata (4 gas per zero byte, 16 per non-zero byte) + exec, raised to the EIP-7623 floor when that is larger. This is what a user pays for the call (before any refund; there are none here).
 - Every verifier is also run on a copy of the same calldata with one input word changed; the script asserts it is not accepted (revert or `false`) before it reports a number.
-- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `f7ad4ec2973f`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.1.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
+- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `9237b171e4f5`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.1.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
 - Solidity: `Version: 0.8.24+commit.e11b9ed9.Linux.g++`, `--optimize --optimize-runs 200`, default EVM version, the committed `Verifier.sol` of each fixture (snarkjs 0.7.6 `zkey export solidityverifier`, gnark v0.12.0 `ExportSolidity`, snark-verifier 0.2.7 for halo2). Exception: the snark-verifier (halo2) verifiers are compiled **without the optimizer**: with `--optimize` solc 0.8.24 fails with "Stack too deep", and with `--via-ir` the contract's own `mload(0x40) == 0x80` memory-layout check reverts. They pin `pragma solidity 0.8.19`; the script relaxes the pragma to `^0.8.19` in a scratch copy (no code change).
 - Deployed code size is the size of the runtime code stored on chain. EIP-170 limits it to 24,576 bytes.
 
@@ -24,12 +24,12 @@ same proof and the same words of calldata the reference verifier expects. Nothin
 | Groth16 (snarkjs) | multiplier2, N=2 | 199,593 | 195,613 | 1.02x | 225,033 | 221,053 | 1.02x |
 | Groth16 (snarkjs) | membership, N=3 | 207,341 | 202,220 | 1.03x | 233,665 | 228,544 | 1.02x |
 | Groth16 (snarkjs) | life_512, N=2 | 199,593 | 195,613 | 1.02x | 225,777 | 221,797 | 1.02x |
-| PLONK (snarkjs) | multiplier2, N=2 | 290,012 | 259,248 | 1.12x | 323,608 | 292,844 | 1.11x |
-| PLONK (snarkjs) | membership, N=3 | 293,471 | 263,536 | 1.11x | 327,951 | 298,016 | 1.10x |
-| PLONK (gnark v0.12.0) | mul, N=2 | 329,800 | 261,868 | 1.26x | 363,408 | 296,048 | 1.23x |
-| PLONK (gnark v0.12.0) | mulcommit, N=2 | 375,137 | 283,267 | 1.32x | 410,281 | 318,995 | 1.29x |
-| halo2-KZG SHPLONK (snark-verifier) | standard_plonk_lookup, N=1 | 384,734 | 322,590 | 1.19x | 435,014 | 372,806 | 1.17x |
-| halo2-KZG GWC (snark-verifier) | standard_plonk_lookup, N=1 | 416,179 | 349,015 | 1.19x | 468,555 | 401,327 | 1.17x |
+| PLONK (snarkjs) | multiplier2, N=2 | 290,023 | 259,248 | 1.12x | 323,619 | 292,844 | 1.11x |
+| PLONK (snarkjs) | membership, N=3 | 293,482 | 263,536 | 1.11x | 327,962 | 298,016 | 1.10x |
+| PLONK (gnark v0.12.0) | mul, N=2 | 328,857 | 261,868 | 1.26x | 362,465 | 296,048 | 1.22x |
+| PLONK (gnark v0.12.0) | mulcommit, N=2 | 375,106 | 283,267 | 1.32x | 410,250 | 318,995 | 1.29x |
+| halo2-KZG SHPLONK (snark-verifier) | standard_plonk_lookup, N=1 | 391,913 | 322,590 | 1.21x | 442,193 | 372,806 | 1.19x |
+| halo2-KZG GWC (snark-verifier) | standard_plonk_lookup, N=1 | 422,910 | 349,015 | 1.21x | 475,286 | 401,327 | 1.18x |
 
 Calldata sizes (bytes), Fe / Solidity: Groth16 (snarkjs) multiplier: 292/292; Groth16 (snarkjs) multiplier2: 324/324; Groth16 (snarkjs) membership: 356/356; Groth16 (snarkjs) life_512: 324/324; PLONK (snarkjs) multiplier2: 836/836; PLONK (snarkjs) membership: 868/868; PLONK (gnark v0.12.0) mul: 836/964; PLONK (gnark v0.12.0) mulcommit: 932/1060; halo2-KZG SHPLONK (snark-verifier) standard_plonk_lookup: 1860/1856; halo2-KZG GWC (snark-verifier) standard_plonk_lookup: 1988/1984.
 
@@ -37,9 +37,9 @@ Calldata sizes (bytes), Fe / Solidity: Groth16 (snarkjs) multiplier: 292/292; Gr
 
 | Verifier | Case | exec | tx | Note |
 |---|---|---:|---:|---|
-| KZG | single opening | 130,369 | 154,169 | no Solidity reference |
-| KZG | GWC, 3 polynomials at 1 point | 149,081 | 175,929 | no Solidity reference |
-| KZG | SHPLONK, 3 polynomials at 2 points | 182,698 | 211,198 | no Solidity reference |
+| KZG | single opening | 129,753 | 153,553 | no Solidity reference |
+| KZG | GWC, 3 polynomials at 1 point | 147,893 | 174,741 | no Solidity reference |
+| KZG | SHPLONK, 3 polynomials at 2 points | 181,795 | 210,295 | no Solidity reference |
 | FRI/STARK | Plonky3 Fibonacci, KoalaBear, 4 queries (log2 trace 4) | 651,654 | 744,894 | no EVM reference verifier exists |
 
 The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.4.2 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.
@@ -72,28 +72,28 @@ One `step()` call: exec 657, tx 21,897. Deployed `Life` code: 15,296 bytes (the 
 | Groth16 (snarkjs), multiplier2, N=2 | 2,738 | 1,439 | 645,242 | 364,366 |
 | Groth16 (snarkjs), membership, N=3 | 2,945 | 1,537 | 689,926 | 385,541 |
 | Groth16 (snarkjs), life_512, N=2 | 2,738 | 1,439 | 645,254 | 364,378 |
-| PLONK (snarkjs), multiplier2, N=2 | 8,012 | 5,400 | 1,784,809 | 1,220,830 |
-| PLONK (snarkjs), membership, N=3 | 8,393 | 6,050 | 1,867,093 | 1,361,363 |
-| PLONK (gnark v0.12.0), mul, N=2 | 9,922 | 7,215 | 2,197,434 | 1,613,130 |
-| PLONK (gnark v0.12.0), mulcommit, N=2 | 10,871 | 8,427 | 2,402,773 | 1,875,143 |
-| halo2-KZG SHPLONK (snark-verifier), standard_plonk_lookup, N=1 | 25,771 (over EIP-170) | 12,548 | 5,618,490 | 2,764,256 |
-| halo2-KZG GWC (snark-verifier), standard_plonk_lookup, N=1 | 24,500 | 10,806 | 5,345,206 | 2,387,754 |
-| KZG, single opening | 2,283 | n/a | 546,760 | n/a |
-| KZG, GWC, 3 polynomials at 1 point | 3,331 | n/a | 773,211 | n/a |
-| KZG, SHPLONK, 3 polynomials at 2 points | 4,017 | n/a | 921,507 | n/a |
+| PLONK (snarkjs), multiplier2, N=2 | 7,990 | 5,400 | 1,780,002 | 1,220,830 |
+| PLONK (snarkjs), membership, N=3 | 8,371 | 6,050 | 1,862,310 | 1,361,363 |
+| PLONK (gnark v0.12.0), mul, N=2 | 9,436 | 7,215 | 2,092,493 | 1,613,130 |
+| PLONK (gnark v0.12.0), mulcommit, N=2 | 10,752 | 8,427 | 2,377,092 | 1,875,143 |
+| halo2-KZG SHPLONK (snark-verifier), standard_plonk_lookup, N=1 | 23,013 | 12,548 | 5,010,802 | 2,764,256 |
+| halo2-KZG GWC (snark-verifier), standard_plonk_lookup, N=1 | 21,475 | 10,806 | 4,678,968 | 2,387,754 |
+| KZG, single opening | 1,647 | n/a | 409,449 | n/a |
+| KZG, GWC, 3 polynomials at 1 point | 2,721 | n/a | 641,568 | n/a |
+| KZG, SHPLONK, 3 polynomials at 2 points | 3,405 | n/a | 789,286 | n/a |
 | FRI/STARK, Plonky3 Fibonacci, KoalaBear, 4 queries (log2 trace 4) | 25,387 (over EIP-170) | n/a | 5,530,097 | n/a |
 
 Fe bytes include the verifying-key constants and, for the generated Groth16 contracts, nothing else but the call into the library; Solidity bytes are the compiler output of the reference verifier (key constants included).
 
 ## Analysis
 
-- Fe / Solidity execution gas: Groth16 1.01x to 1.03x; snarkjs PLONK 1.11x to 1.12x; gnark PLONK 1.26x to 1.32x; halo2-KZG 1.19x to 1.19x.
+- Fe / Solidity execution gas: Groth16 1.01x to 1.03x; snarkjs PLONK 1.11x to 1.12x; gnark PLONK 1.26x to 1.32x; halo2-KZG 1.21x to 1.21x.
 - Where the cost is: every one of these verifiers is dominated by the EC precompiles (ecAdd 0x06, ecMul 0x07, ecPairing 0x08) and modexp (0x05), priced identically for both languages. What differs is the work around each precompile call. Hand-optimised Solidity/Yul verifiers keep operands in scratch memory and fuse the field arithmetic. The Fe library calls the precompiles through typed wrappers (`G1`, `G2`, `Bn254Fr`): each call allocates a fixed buffer (a per-call cost measured in `docs/DESIGN.md`, "Precompile wrapper gas"), re-checks success and returned length (safety rule 6), and the scalar-field code works on checked canonical elements. Groth16 makes few calls (one `ecMul` and `ecAdd` per input and one 4-pair pairing), so it is closest to Solidity; the PLONK-family verifiers make dozens of calls and sit further above.
-- Verifying keys are compile-time constants: the generated Groth16 contract validates its key (on curve, G2 subgroup) during compilation with `static_assert`, which costs no runtime gas. The wrappers of the other families do the same for every key point. This matters: if the two G2 points of the halo2 key are built at runtime with `G2::from_coords`, the subgroup check runs at every call. That variant costs 2,420,590 exec gas for the SHPLONK proof instead of 384,734, an extra 2,035,856 gas for the key check alone (the contract `Halo2ShplonkRuntimeVk` exists only for this comparison). Every Fe row uses the compile-time path: `PlonkVk::from_consts`, `GnarkVk::from_consts`, `Halo2Vk::from_consts`, `KzgVk::from_consts` with `static_assert` on every point and on the evaluation domain (`plonk_domain_is_valid`, `gnark_domain_is_valid`), as in the generated ingots. The runtime constructors (`::new`) are not used in the numbers.
+- Verifying keys are compile-time constants: the generated Groth16 contract validates its key (on curve, G2 subgroup) during compilation with `static_assert`, which costs no runtime gas. The wrappers of the other families do the same for every key point. This matters: if the two G2 points of the halo2 key are built at runtime with `G2::from_coords`, the subgroup check runs at every call. That variant costs 2,428,929 exec gas for the SHPLONK proof instead of 391,913, an extra 2,037,016 gas for the key check alone (the contract `Halo2ShplonkRuntimeVk` exists only for this comparison). Every Fe row uses the compile-time path: `PlonkVk::from_consts`, `GnarkVk::from_consts`, `Halo2Vk::from_consts`, `KzgVk::from_consts` with `static_assert` on every point and on the evaluation domain (`plonk_domain_is_valid`, `gnark_domain_is_valid`), as in the generated ingots. The runtime constructors (`::new`) are not used in the numbers.
 - Poseidon: one generic implementation over the `Field` trait is unrolled into straight-line code at compile time; against hand-written bytecode it uses less execution gas but more code (see the size table).
 - The checks that Fe adds by construction (canonical inputs, curve membership of every proof point, pairing output exactly 1, fixed input count) are part of the numbers above. A reference verifier may check less: for example snarkjs' Groth16 verifier range-checks the public inputs and leaves point validation to the precompiles. The gas gap is therefore not purely overhead.
 - Where Fe is more expensive for a structural reason: `std` only exposes `Call.raw_staticcall` on a heap `MemBuffer`, so each precompile call pays for a buffer. A `raw_staticcall` taking a pointer and length would remove most of that per-call allocation (`docs/DESIGN.md`).
-- Code size: Fe runtime code is 1.29x to 2.27x the size of the Solidity verifier. Over the EIP-170 limit of 24,576 bytes (not deployable on mainnet as is; revm limits were lifted for this table): halo2-KZG SHPLONK (snark-verifier) standard_plonk_lookup, N=1, FRI/STARK. Contracts at or near the limit leave no room for application logic and would have to be split or shrunk before a real deployment.
+- Code size: Fe runtime code is 1.28x to 1.99x the size of the Solidity verifier. Over the EIP-170 limit of 24,576 bytes (not deployable on mainnet as is; revm limits were lifted for this table): FRI/STARK. Contracts at or near the limit leave no room for application logic and would have to be split or shrunk before a real deployment.
 - Life: on-chain cost grows linearly with N, the proof verification does not. With one `step()` transaction per generation (21,897 tx gas each) the Fe-verified proof is cheaper from about N = 10; with a single `run(board, N)` call (about 530 gas per generation plus 21,706 fixed, fitted on the two measured N) it is cheaper from about N = 385, with the Fe verifier (225,777 tx gas). Proof generation (off chain, minutes) is not included.
 - Limits of this comparison: one fixture per row (gas varies by a few hundred with calldata zero bytes), a synthetic EOA caller (no `msg.value`, no access list), revm spec OSAKA rather than a live chain, and the Fe wrappers' ABI decoding of static arrays is part of Fe's number (the Solidity verifiers decode with `calldataload` directly).
 

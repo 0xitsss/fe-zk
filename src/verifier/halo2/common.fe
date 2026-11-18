@@ -92,6 +92,51 @@ pub fn read_g1(_ x: u256, _ y: u256) -> Option<G1> {
     }
 }
 
+/// `N` consecutive proof commitments `(x, y)` starting at word `off`, each through `read_g1`
+/// (canonical, on the curve, not infinity). `None` if any is rejected. One loop instead of `N`
+/// unrolled copies of the check: the emitted verifiers stay under the EIP-170 code-size limit.
+pub fn read_points<const L: usize, const N: usize>(_ proof: [u256; L], _ off: usize) -> Option<
+    [G1; N],
+> {
+    assert(off + 2 * N <= L)
+    var out = [G1::infinity(); N]
+    var i: usize = 0
+    while i < N {
+        match read_g1(proof[off + 2 * i], proof[off + 2 * i + 1]) {
+            Option::Some(p) => {
+                out[i] = p
+            },
+            Option::None => {
+                return Option::None
+            },
+        }
+        i += 1
+    }
+    Option::Some(out)
+}
+
+/// `N` consecutive proof scalars starting at word `off`, each through `Bn254Fr::from_canonical`
+/// (never reduced). `None` if any is `>= r`.
+pub fn read_scalars<const L: usize, const N: usize>(_ proof: [u256; L], _ off: usize) -> Option<
+    [Bn254Fr; N],
+> {
+    assert(off + N <= L)
+    var out = [Bn254Fr::zero(); N]
+    var i: usize = 0
+    while i < N {
+        match Bn254Fr::from_canonical(proof[off + i]) {
+            Option::Some(v) => {
+                out[i] = v
+            },
+            Option::None => {
+                return Option::None
+            },
+        }
+        i += 1
+    }
+    Option::Some(out)
+}
+
 /// snark-verifier `EvmTranscript` state. The buffer holds the 32-byte big-endian words absorbed
 /// since the last squeeze, prefixed by the previous digest. A squeeze hashes the whole buffer
 /// and the digest becomes the new buffer; there are no labels (SPEC section 2).
@@ -110,6 +155,16 @@ impl Halo2Transcript {
     pub fn absorb_point(mut self, _ x: u256, _ y: u256) {
         self.buf.u256(x)
         self.buf.u256(y)
+    }
+
+    /// Absorb `proof[from..to]` word by word (points and scalars are both 32-byte words).
+    pub fn absorb_words<const L: usize>(mut self, _ proof: [u256; L], _ from: usize, _ to: usize) {
+        assert(to <= L)
+        var i = from
+        while i < to {
+            self.buf.u256(proof[i])
+            i += 1
+        }
     }
 
     /// `keccak256(buf)` (plus a `0x01` byte if `buf` is exactly one word), reduced mod r.

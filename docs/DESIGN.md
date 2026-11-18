@@ -153,9 +153,19 @@ compiler, on top of the generator's own arkworks validation.
 ## halo2-KZG (`src/verifier/halo2/`)
 
 A circuit-independent core (`common.fe`: EvmTranscript, point/scalar reading with validation, batched inversion via
-modexp, final pairing) plus a straight-line per-circuit module emitted by `vectors/halo2/emit_fe.py` from `vk.json`
-(gates, lookups, permutation sets, SHPLONK rotation sets and GWC point groups unrolled). Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 384.7k,
-GWC 416.2k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.19x (wrapper overhead per
+modexp, final pairing) plus a per-circuit module emitted by `fe-zk-gen halo2` (Rust; `vectors/halo2/emit_fe.py` is the byte-identical cross-check) from `vk.json`
+(gate, lookup and permutation expressions, SHPLONK rotation sets and GWC point groups unrolled; the proof commitments and
+evaluations are validated by two loops, `read_points` and `read_scalars`, and absorbed by `absorb_words`).
+
+**Code size (EIP-170).** The first generator unrolled every `match read_g1(..)`/`from_canonical(..)` (about 40 copies of ~15 IR
+instructions) and put both schemes in one contract: 43,102 bytes. Loops for the reads: 31,251; one contract per scheme
+(`--scheme`): SHPLONK 22,918, GWC 21,162 (23,136 / 21,598 after the cheaper-`is_infinity` change below, whose purpose is
+the KZG wrappers). Trade-off: execution gas rose about 1.9% (SHPLONK 384.7k to 391.9k) from loop overhead. `fe build -O 2`
+shrinks only one scheme noticeably (21.7k for SHPLONK alone) and does nothing for the two-scheme contract (42.6k), so the
+split is what makes it deployable. The size regression of the KZG wrapper (1,647 to 2,283 bytes) came from
+`KzgVk::is_degenerate`: `G2::is_infinity` was a short-circuit `&&` chain (branches per word); `(x0|x1|y0|y1) == 0` restores 1,647
+bytes with the check intact. Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 391.9k,
+GWC 422.9k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.21x (wrapper overhead per
 precompile call). The Fe numbers use the compile-time key path (`Halo2Vk::from_consts`). Limits: one circuit shape
 (single phase, one instance column, uncommitted instances); duplicate commitments are rejected by the generator.
 

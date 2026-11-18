@@ -5,7 +5,9 @@
 #   2. fe test of the generated verifier (valid proof + invalid battery + compile-time key checks)
 #   3. fe test of the demo contract (Poseidon Merkle tree, Groth16 membership proof, nullifiers)
 #   4. PLONK (snarkjs) verifier emitted from vectors/plonk/membership and tested
-#   5. halo2-KZG verifier emitted from vectors/halo2/standard_plonk_lookup and tested
+#   5. halo2-KZG verifiers (one contract per multiopen scheme) emitted from
+#      vectors/halo2/standard_plonk_lookup and tested
+#   6. code size table: every generated verifier and example contract must fit EIP-170 (24,576 bytes)
 # Needs: `fe` (26.5.0) and a Rust toolchain on PATH. Set FE=/path/to/fe to override the binary.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -37,7 +39,12 @@ echo "== 5. halo2-KZG: fe-zk-gen halo2 -> generated verifier -> fe test"
 H=vectors/halo2/standard_plonk_lookup
 (cd gen && cargo run -q -p fe-zk-gen -- halo2 \
     --vk "../$H/vk.json" --shplonk "../$H/shplonk.json" --gwc "../$H/gwc.json" \
-    --name Halo2Circuit --out ../examples/halo2/circuit_verifier --fe-zk-path ../../..)
+    --scheme both --name Halo2Circuit --out ../examples/halo2/circuit_verifier --fe-zk-path ../../..)
 (cd examples/halo2/circuit_verifier && "$FE" fmt >/dev/null && "$FE" test)
+
+echo "== 6. deployed code size (EIP-170 limit 24,576 bytes; fails if any contract is over)"
+scripts/code-size.sh examples/membership/verifier examples/membership \
+    examples/plonk/membership_verifier examples/halo2/circuit_verifier \
+    examples/life/verifier examples/life
 
 echo "demo OK"

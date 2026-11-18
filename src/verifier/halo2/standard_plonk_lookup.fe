@@ -13,7 +13,17 @@
 use std::evm::Call
 use ingot::ec::{G1, G2, g1_is_valid, g1_mul, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
-use super::common::{Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1}
+use super::common::{
+    Halo2Transcript,
+    Halo2Vk,
+    batch_inv,
+    final_pairing,
+    fr,
+    mul_add,
+    read_g1,
+    read_points,
+    read_scalars,
+}
 
 /// Number of 32-byte words of a proof for this circuit (fixed by the vk, rule 4).
 pub const COMMON_WORDS: usize = 53
@@ -151,291 +161,55 @@ uses (call: Call)
         },
     }
     tr.absorb(instances[0])
-    let adv0 = match read_g1(proof[0], proof[1]) {
+    let pts: [G1; 13] = match read_points(proof, 0) {
         Option::Some(v) => v,
         Option::None => {
             return Option::None
         },
     }
-    tr.absorb_point(proof[0], proof[1])
-    let adv1 = match read_g1(proof[2], proof[3]) {
+    let ev: [Bn254Fr; 27] = match read_scalars(proof, 26) {
         Option::Some(v) => v,
         Option::None => {
             return Option::None
         },
     }
-    tr.absorb_point(proof[2], proof[3])
-    let adv2 = match read_g1(proof[4], proof[5]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[4], proof[5])
+    tr.absorb_words(proof, 0, 6)
     let theta = tr.squeeze()
-    let lpi0 = match read_g1(proof[6], proof[7]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[6], proof[7])
-    let lpt0 = match read_g1(proof[8], proof[9]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[8], proof[9])
+    tr.absorb_words(proof, 6, 10)
     let beta = tr.squeeze()
     let gamma = tr.squeeze()
-    let zc0 = match read_g1(proof[10], proof[11]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[10], proof[11])
-    let zc1 = match read_g1(proof[12], proof[13]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[12], proof[13])
-    let lzc0 = match read_g1(proof[14], proof[15]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[14], proof[15])
-    let rnd = match read_g1(proof[16], proof[17]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[16], proof[17])
+    tr.absorb_words(proof, 10, 18)
     let y = tr.squeeze()
-    let hq0 = match read_g1(proof[18], proof[19]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[18], proof[19])
-    let hq1 = match read_g1(proof[20], proof[21]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[20], proof[21])
-    let hq2 = match read_g1(proof[22], proof[23]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[22], proof[23])
-    let hq3 = match read_g1(proof[24], proof[25]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb_point(proof[24], proof[25])
+    tr.absorb_words(proof, 18, 26)
     let x = tr.squeeze()
-    let a0 = match Bn254Fr::from_canonical(proof[26]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[26])
-    let a1 = match Bn254Fr::from_canonical(proof[27]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[27])
-    let a2 = match Bn254Fr::from_canonical(proof[28]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[28])
-    let a3 = match Bn254Fr::from_canonical(proof[29]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[29])
-    let f0 = match Bn254Fr::from_canonical(proof[30]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[30])
-    let f1 = match Bn254Fr::from_canonical(proof[31]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[31])
-    let f2 = match Bn254Fr::from_canonical(proof[32]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[32])
-    let f3 = match Bn254Fr::from_canonical(proof[33]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[33])
-    let f4 = match Bn254Fr::from_canonical(proof[34]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[34])
-    let f5 = match Bn254Fr::from_canonical(proof[35]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[35])
-    let f6 = match Bn254Fr::from_canonical(proof[36]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[36])
-    let f7 = match Bn254Fr::from_canonical(proof[37]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[37])
-    let rand_eval = match Bn254Fr::from_canonical(proof[38]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[38])
-    let sg0 = match Bn254Fr::from_canonical(proof[39]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[39])
-    let sg1 = match Bn254Fr::from_canonical(proof[40]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[40])
-    let sg2 = match Bn254Fr::from_canonical(proof[41]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[41])
-    let sg3 = match Bn254Fr::from_canonical(proof[42]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[42])
-    let pz0 = match Bn254Fr::from_canonical(proof[43]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[43])
-    let pzn0 = match Bn254Fr::from_canonical(proof[44]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[44])
-    let pzl0 = match Bn254Fr::from_canonical(proof[45]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[45])
-    let pz1 = match Bn254Fr::from_canonical(proof[46]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[46])
-    let pzn1 = match Bn254Fr::from_canonical(proof[47]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[47])
-    let lz0 = match Bn254Fr::from_canonical(proof[48]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[48])
-    let lzn0 = match Bn254Fr::from_canonical(proof[49]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[49])
-    let la0 = match Bn254Fr::from_canonical(proof[50]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[50])
-    let lai0 = match Bn254Fr::from_canonical(proof[51]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[51])
-    let ls0 = match Bn254Fr::from_canonical(proof[52]) {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    tr.absorb(proof[52])
+    tr.absorb_words(proof, 26, 53)
+    let a0 = ev[0]
+    let a1 = ev[1]
+    let a2 = ev[2]
+    let a3 = ev[3]
+    let f0 = ev[4]
+    let f1 = ev[5]
+    let f2 = ev[6]
+    let f3 = ev[7]
+    let f4 = ev[8]
+    let f5 = ev[9]
+    let f6 = ev[10]
+    let f7 = ev[11]
+    let rand_eval = ev[12]
+    let sg0 = ev[13]
+    let sg1 = ev[14]
+    let sg2 = ev[15]
+    let sg3 = ev[16]
+    let pz0 = ev[17]
+    let pzn0 = ev[18]
+    let pzl0 = ev[19]
+    let pz1 = ev[20]
+    let pzn1 = ev[21]
+    let lz0 = ev[22]
+    let lzn0 = ev[23]
+    let la0 = ev[24]
+    let lai0 = ev[25]
+    let ls0 = ev[26]
     // x^n and the Lagrange basis at x: L_i(x) = w^i (x^n - 1) n_inv / (x - w^i).
     let xn = x.pow(32)
     let xn_m1 = xn.sub(Bn254Fr::one())
@@ -617,45 +391,7 @@ uses (call: Call)
     hacc = hacc.mul(y).add(la0.sub(ls0).mul(la0.sub(lai0)).mul(active))
     let expected_h = hacc.mul(inv_d[7])
     Option::Some(
-        Phase1 {
-            theta,
-            beta,
-            gamma,
-            y,
-            x,
-            xn,
-            expected_h,
-            pts: [adv0, adv1, adv2, lpi0, lpt0, zc0, zc1, lzc0, rnd, hq0, hq1, hq2, hq3],
-            ev: [
-                a0,
-                a1,
-                a2,
-                a3,
-                f0,
-                f1,
-                f2,
-                f3,
-                f4,
-                f5,
-                f6,
-                f7,
-                rand_eval,
-                sg0,
-                sg1,
-                sg2,
-                sg3,
-                pz0,
-                pzn0,
-                pzl0,
-                pz1,
-                pzn1,
-                lz0,
-                lzn0,
-                la0,
-                lai0,
-                ls0,
-            ],
-        },
+        Phase1 { theta, beta, gamma, y, x, xn, expected_h, pts, ev },
     )
 }
 
