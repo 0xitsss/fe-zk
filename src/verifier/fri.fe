@@ -8,6 +8,12 @@
 //!   `SerializingChallenger32` transcript (`fri/challenger.fe`, `fri/merkle.fe`);
 //! - trace of `2^4` rows, 2 columns, 3 public values `(a, b, x)`, one quotient chunk.
 //!
+//! SECURITY: these are demo parameters copied from the fixture, not a secure configuration.
+//! 4 queries at rate 1/4 plus 3 bits of proof of work give only about 11 bits of soundness:
+//! a prover who grinds the transcript forges a proof with probability around 2^-11 per try.
+//! The verifier shows the verification algorithm on EVM; a production deployment needs on the
+//! order of 100 queries (or more proof of work) and must regenerate the fixture accordingly.
+//!
 //! These sizes are baked in as constants (the fixture is one proof shape). The protocol
 //! logic follows `p3_uni_stark::verify`, `TwoAdicFriPcs::verify` and `p3_fri::verify_fri`
 //! step by step; comments name the Plonky3 counterpart. Memory and gas are high: it runs

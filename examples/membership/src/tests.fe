@@ -48,13 +48,19 @@ fn proof_c() -> [u256; 2] {
     ]
 }
 
-fn deploy_with(_ bootstrap_root: u256) -> Address uses (evm: mut Evm) {
+fn deploy_scoped(_ scope: u256, _ bootstrap_root: u256) -> Address
+uses (evm: mut Evm)
+{
     let verifier = evm.create2<MembershipVerifier>(value: Wei::zero(), args: (), salt: 0)
     evm.create2<MembershipGroup>(
         value: Wei::zero(),
-        args: (verifier, bootstrap_root),
+        args: (verifier, scope, bootstrap_root),
         salt: 1,
     )
+}
+
+fn deploy_with(_ bootstrap_root: u256) -> Address uses (evm: mut Evm) {
+    deploy_scoped(EXTERNAL_NULLIFIER, bootstrap_root)
 }
 
 fn deploy() -> Address uses (evm: mut Evm) {
@@ -232,6 +238,33 @@ fn proof_against_other_known_root_rejected() uses (evm: mut Evm) {
             EMPTY_ROOT,
             NULLIFIER_HASH,
             EXTERNAL_NULLIFIER,
+            proof_a(),
+        ),
+    )
+}
+
+/// A valid proof for external nullifier 42 is rejected by a contract whose scope is 43:
+/// callers cannot pick the external nullifier, so a member gets one nullifier per contract.
+#[test]
+fn proof_for_another_scope_rejected() uses (evm: mut Evm) {
+    let g = deploy_scoped(EXTERNAL_NULLIFIER + 1, ROOT)
+    let scope: u256 = evm
+        .call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: GroupMsg::Scope {},
+        )
+    assert(scope == EXTERNAL_NULLIFIER + 1)
+    assert(
+        !prove(g, ROOT, NULLIFIER_HASH, EXTERNAL_NULLIFIER, proof_a()),
+    )
+    assert(
+        !prove(
+            g,
+            ROOT,
+            NULLIFIER_HASH,
+            EXTERNAL_NULLIFIER + 1,
             proof_a(),
         ),
     )

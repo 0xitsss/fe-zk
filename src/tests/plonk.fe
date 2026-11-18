@@ -404,6 +404,13 @@ fn vk_rejects_bad_domain_parameters() {
     assert(
         PlonkVk<2>::new(3, fr(M2_W), fr(0), fr(M2_K2), c, x2).is_none(),
     )
+    // more public inputs (9) than domain points (2^3 = 8): Lagrange points would wrap
+    assert(
+        PlonkVk<9>::new(3, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_none(),
+    )
+    assert(
+        PlonkVk<8>::new(3, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).is_some(),
+    )
     // degenerate [x]_2 and zero public signals
     assert(
         PlonkVk<2>::new(3, fr(M2_W), fr(M2_K1), fr(M2_K2), c, G2::infinity()).is_none(),

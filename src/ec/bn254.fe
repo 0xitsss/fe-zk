@@ -534,6 +534,11 @@ uses (call: Call)
 /// yields `false` instead of reverting. Success flag and returned length are still checked;
 /// "call failed" is mapped to rejection, never to acceptance. The failing call burns only the
 /// capped gas of `pairing_raw`.
+///
+/// `false` therefore means "not accepted", not "proven invalid": a caller that forwards less gas
+/// than the cap also gets `false`. Do not slash or penalise on `false` from this function.
+/// Gas caps are set for current precompile prices (EIP-1108); a repricing above a cap makes
+/// calls fail closed (revert or `false`), never accept.
 pub fn pairing_try_proof<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> bool
 uses (call: Call)
 {

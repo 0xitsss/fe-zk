@@ -8,7 +8,8 @@
 //! * rule 2: `A` and `C` must be on `y^2 = x^3 + 3` (or the explicit infinity `(0, 0)`);
 //! * rule 3: `B` is a `G2Proof` (canonical + on the twist). The subgroup check is completed by the
 //!   pairing precompile (EIP-197), the only consumer of a `G2Proof`. Verifying-key points are
-//!   `G2` / `G1` values built by the generator-validated, `unsafe` `from_validated_coords`;
+//!   `G2` / `G1` constants built with `from_coords_or_infinity` and checked at compile time by
+//!   `static_assert(g1_is_valid(..))` / `static_assert(g2_is_valid(..))` (full subgroup check);
 //! * rule 4: the number of public inputs is the type-level `N` of `Groth16Vk<N>` and of the
 //!   `[u256; N]` argument; there is no dynamic length to drop or append inputs;
 //! * rule 6: every precompile call goes through `call_try`/`call_checked` (success flag and
@@ -30,8 +31,8 @@ use ingot::ec::{G1, G2, G2Proof, g1_add, g1_mul, pairing_try_proof}
 use ingot::field::{Bn254Fr, Field}
 
 /// A Groth16 verifying key with `N` public inputs. `ic0` is the constant term, `ic[i]` pairs with
-/// public input `i`. Points are typed, so a key can only be assembled from checked points (or
-/// from `unsafe` `from_validated_coords`, used by `fe-zk-gen` for keys it validated).
+/// public input `i`. Points are typed, so a key can only be assembled from checked points
+/// (`from_coords` at runtime, or compile-time constants from `from_coords_or_infinity`).
 pub struct Groth16Vk<const N: usize> {
     pub alpha: G1,
     pub beta: G2,
