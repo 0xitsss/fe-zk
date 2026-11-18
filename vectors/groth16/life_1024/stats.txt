@@ -1,0 +1,6 @@
+# Linux x86_64, 16 cores; timings via python resource; peak_rss is the max child RSS of that step; negative tests not re-run for N=1024 (same circuit as the verified N=64/512)
+compile 182.1 s  peak_rss_so_far 1724 MB
+setup 1704.6 s  peak_rss_so_far 14513 MB
+contribute 345.9 s  peak_rss_so_far 1002 MB
+witness 12.9 s  peak_rss_so_far 357 MB
+prove 143.6 s  peak_rss_so_far 15527 MB
