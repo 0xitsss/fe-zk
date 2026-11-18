@@ -43,6 +43,23 @@ impl KzgVk {
         }
         Option::Some(KzgVk { g1, g2, tau_g2 })
     }
+
+    /// Key from compile-time constants: build the points with `G1::from_coords_or_infinity` /
+    /// `G2::from_coords_or_infinity` and pair each with `static_assert(g1_is_valid(..))` /
+    /// `static_assert(g2_is_valid(..))` (the `[tau]G2` subgroup check then costs no gas). A
+    /// degenerate key (any point at infinity) is poisoned to all-infinity and every verify
+    /// function rejects it, so an unusable key can never accept a proof.
+    pub const fn from_consts(_ g1: G1, _ g2: G2, _ tau_g2: G2) -> KzgVk {
+        if g1.is_infinity() || g2.is_infinity() || tau_g2.is_infinity() {
+            return KzgVk { g1: G1::infinity(), g2: G2::infinity(), tau_g2: G2::infinity() }
+        }
+        KzgVk { g1, g2, tau_g2 }
+    }
+
+    /// `true` for a key from `from_consts` that was poisoned.
+    pub const fn is_degenerate(self) -> bool {
+        self.g1.is_infinity() || self.g2.is_infinity() || self.tau_g2.is_infinity()
+    }
 }
 
 fn put_g1(_ buf: mut MemBuffer, _ at: usize, _ p: G1) {
@@ -77,6 +94,9 @@ fn hash_to_fr(_ buf: mut MemBuffer, _ words: usize) -> Bn254Fr {
 pub fn kzg_verify(_ vk: KzgVk, _ c: G1, _ z: Bn254Fr, _ y: Bn254Fr, _ pi: G1) -> bool
 uses (call: Call)
 {
+    if vk.is_degenerate() {
+        return false
+    }
     let yg = g1_mul(vk.g1, y)
     let zpi = g1_mul(pi, z)
     let lhs = g1_add(g1_add(c, yg.neg()), zpi)
@@ -180,7 +200,9 @@ pub fn kzg_verify_shplonk(
 ) -> bool
 uses (call: Call)
 {
-    if z1.eq(z2) { return false }
+    if vk.is_degenerate() || z1.eq(z2) {
+        return false
+    }
     let y = shplonk_challenge_y(vk, cs, z1, z2, evals)
     let u = shplonk_challenge_u(y, h)
     let u1 = u.sub(z1)

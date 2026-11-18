@@ -1,7 +1,7 @@
 //! KZG verifier tests. Fixtures come from arkworks 0.5.0 (`vectors/kzg`, `scripts/regen-kzg.sh`)
 //! with a TEST-ONLY insecure SRS; the constants below are copied from `vectors/kzg/fixtures/kzg.json`.
 //! Gas: `fe test --show-logs` prints the `GasUsed` events of `gas_report`.
-use ingot::ec::{G1, G2}
+use ingot::ec::{G1, G2, g1_is_valid, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
 use ingot::verifier::kzg::{
     KzgVk,
@@ -123,6 +123,70 @@ fn h_pi() -> G1 {
 }
 
 // ---------------------------------------------------------------- vk
+
+// Compile-time key: `[tau]G2` is validated (canonical, on the twist, order-r subgroup) by the
+// compiler, so building the key costs no gas. A bad constant fails with `static assertion failed`.
+const G2_GEN_X0: u256 = 10857046999023057135944570762232829481370756359578518086990519993285655852781
+const G2_GEN_X1: u256 = 11559732032986387107991004021392285783925812861821192530917403151452391805634
+const G2_GEN_Y0: u256 = 8495653923123431417604973247489272438418190587263600148770280649306958101930
+const G2_GEN_Y1: u256 = 4082367875863433681332203403145435568316851327593401208105741076214120093531
+static_assert(g1_is_valid(1, 2))
+static_assert(g2_is_valid(G2_GEN_X0, G2_GEN_X1, G2_GEN_Y0, G2_GEN_Y1))
+static_assert(g2_is_valid(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1))
+const CONST_VK: KzgVk = KzgVk::from_consts(
+    G1::from_coords_or_infinity(1, 2),
+    G2::from_coords_or_infinity(G2_GEN_X0, G2_GEN_X1, G2_GEN_Y0, G2_GEN_Y1),
+    G2::from_coords_or_infinity(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1),
+)
+
+#[test]
+fn const_vk_accepts_all_fixtures() uses (call: Call) {
+    assert(!CONST_VK.is_degenerate())
+    assert(kzg_verify(CONST_VK, s_c(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(
+        kzg_batch_verify_gwc(CONST_VK, b_cs(), fr(B_Z), b_ys(), b_pi()),
+    )
+    assert(
+        kzg_verify_shplonk(
+            CONST_VK,
+            h_cs(),
+            fr(H_Z1),
+            fr(H_Z2),
+            h_evals(),
+            h_h(),
+            h_pi(),
+        ),
+    )
+    // same challenges as the runtime-validated key
+    let y = shplonk_challenge_y(CONST_VK, h_cs(), fr(H_Z1), fr(H_Z2), h_evals())
+    assert(y.to_canonical() == H_Y)
+}
+
+#[test]
+fn const_vk_with_invalid_point_is_poisoned() uses (call: Call) {
+    // `from_coords_or_infinity` maps an invalid [tau]G2 (here: y + 1, off the twist) to infinity,
+    // `from_consts` poisons the key and every verifier rejects, even a valid proof.
+    let bad = KzgVk::from_consts(
+        G1::from_coords_or_infinity(1, 2),
+        G2::from_coords_or_infinity(G2_GEN_X0, G2_GEN_X1, G2_GEN_Y0, G2_GEN_Y1),
+        G2::from_coords_or_infinity(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1 + 1),
+    )
+    assert(bad.is_degenerate())
+    assert(!kzg_verify(bad, s_c(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(
+        !kzg_batch_verify_gwc(bad, b_cs(), fr(B_Z), b_ys(), b_pi()),
+    )
+    assert(
+        !kzg_verify_shplonk(bad, h_cs(), fr(H_Z1), fr(H_Z2), h_evals(), h_h(), h_pi()),
+    )
+    // an off-curve G1 generator likewise
+    let bad1 = KzgVk::from_consts(
+        G1::from_coords_or_infinity(1, 3),
+        G2::generator(),
+        G2::generator(),
+    )
+    assert(bad1.is_degenerate())
+}
 
 #[test]
 fn vk_rejects_infinity() {

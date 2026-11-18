@@ -5,9 +5,10 @@
 //! verifier and its exported Solidity verifier accept the same proofs. Two circuits: `mul`
 //! (`x*y + 7 == z`, public x and z, no commitment) and `mulcommit` (the same plus one BSB22
 //! commitment from `api.Commit`). Gas: `fe test --show-logs` prints `GasUsed` events.
-use ingot::ec::{G1, G2}
+use ingot::ec::{G1, G2, g1_is_valid, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
 use ingot::verifier::gnark_plonk::{
+    gnark_domain_is_valid,
     GnarkChallenges,
     GnarkProof,
     GnarkTrace,
@@ -677,4 +678,81 @@ fn gnark_plonk_gas_report() uses (evm: mut Evm, call: Call) {
     let b = gnark_plonk_verify(k2, p2, gc_pubs())
     evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
     assert(a && b)
+}
+
+// ---------------------------------------------------------------- compile-time key
+
+static_assert(g2_is_valid(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1))
+static_assert(gnark_domain_is_valid(GM_POWER, GM_W, GM_K))
+static_assert(g1_is_valid(GM_QL_X, GM_QL_Y))
+static_assert(g1_is_valid(GM_S3_X, GM_S3_Y))
+
+fn gm_const_vk() -> GnarkVk<2, 0> {
+    GnarkVk<2, 0>::from_consts(
+        GM_POWER,
+        GM_W,
+        GM_K,
+        [
+            G1::from_coords_or_infinity(GM_QL_X, GM_QL_Y),
+            G1::from_coords_or_infinity(GM_QR_X, GM_QR_Y),
+            G1::from_coords_or_infinity(GM_QM_X, GM_QM_Y),
+            G1::from_coords_or_infinity(GM_QO_X, GM_QO_Y),
+            G1::from_coords_or_infinity(GM_QK_X, GM_QK_Y),
+            G1::from_coords_or_infinity(GM_S1_X, GM_S1_Y),
+            G1::from_coords_or_infinity(GM_S2_X, GM_S2_Y),
+            G1::from_coords_or_infinity(GM_S3_X, GM_S3_Y),
+        ],
+        no_points(),
+        no_words(),
+        G2::from_coords_or_infinity(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1),
+    )
+}
+
+#[test]
+fn const_vk_accepts_and_poisoned_vk_rejects() uses (call: Call) {
+    assert(gnark_plonk_verify(gm_const_vk(), gm_p(), gm_pubs()))
+    // bad domain (k = 1 lies in the domain): poisoned key, every proof rejected
+    let c = [
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+        G1::generator(),
+    ]
+    let bad = GnarkVk<2, 0>::from_consts(
+        GM_POWER,
+        GM_W,
+        1,
+        c,
+        no_points(),
+        no_words(),
+        G2::generator(),
+    )
+    assert(!gnark_plonk_verify(bad, gm_p(), gm_pubs()))
+    // a commitment at infinity is refused like `new` does
+    var c2 = c
+    c2[3] = G1::infinity()
+    let bad2 = GnarkVk<2, 0>::from_consts(
+        GM_POWER,
+        GM_W,
+        GM_K,
+        c2,
+        no_points(),
+        no_words(),
+        G2::generator(),
+    )
+    assert(!gnark_plonk_verify(bad2, gm_p(), gm_pubs()))
+}
+
+#[test]
+fn gnark_domain_check_rejects_bad_parameters() {
+    assert(gnark_domain_is_valid(GM_POWER, GM_W, GM_K))
+    assert(!gnark_domain_is_valid(GM_POWER + 1, GM_W, GM_K))
+    assert(!gnark_domain_is_valid(0, GM_W, GM_K))
+    assert(!gnark_domain_is_valid(GM_POWER, 1, GM_K))
+    assert(!gnark_domain_is_valid(GM_POWER, GM_W, 0))
+    assert(!gnark_domain_is_valid(GM_POWER, GM_W, 1))
 }

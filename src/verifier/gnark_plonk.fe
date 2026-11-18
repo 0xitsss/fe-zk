@@ -48,6 +48,7 @@
 //! by `GnarkVk::new`.
 use core::ptr::MemBuffer
 use std::evm::Call
+use std::evm::crypto::mulmod
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::{call_checked, get, put, put_at}
 use ingot::field::{Bn254Fr, Field}
@@ -80,6 +81,37 @@ pub struct GnarkVk<const NP: usize, const NC: usize> {
     x2: G2,
 }
 impl<const NP: usize, const NC: usize> Copy for GnarkVk<NP, NC> {}
+
+const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+/// `b^(2^k) mod r` by `k` squarings.
+const fn fr_pow2k(_ b: u256, _ k: u256) -> u256 {
+    var acc: u256 = b
+    var i: u256 = 0
+    while i < k {
+        acc = mulmod(acc, acc, SCALAR_R)
+        i += 1
+    }
+    acc
+}
+
+/// Whether `(power, w, k)` are valid gnark domain parameters: `1 <= power <= 28`, `w` and `k`
+/// canonical, `k` nonzero, `w` of order exactly `2^power` (`w^(2^(power-1)) = -1`), and `k` gives
+/// three distinct cosets (`k^n != 1`, `k^(2n) != 1`). `const fn`: used by `static_assert` in
+/// generated verifiers and by `GnarkVk::from_consts`.
+pub const fn gnark_domain_is_valid(_ power: u256, _ w: u256, _ k: u256) -> bool {
+    if power == 0 || power > 28 {
+        return false
+    }
+    if w >= SCALAR_R || k >= SCALAR_R || k == 0 {
+        return false
+    }
+    if fr_pow2k(w, power - 1) != SCALAR_R - 1 {
+        return false
+    }
+    let kn = fr_pow2k(k, power)
+    kn != 1 && mulmod(kn, kn, SCALAR_R) != 1
+}
 
 fn finite(_ p: G1) -> bool {
     !p.is_infinity()
@@ -152,6 +184,64 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
                 x2,
             },
         )
+    }
+}
+
+impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
+    /// Key from compile-time constants: build the points with `from_coords_or_infinity` and pair
+    /// them with `static_assert(g1_is_valid(..))`, `static_assert(g2_is_valid(..))` and
+    /// `static_assert(gnark_domain_is_valid(..))`; no gas is spent on the G2 subgroup check. Same
+    /// conditions as `new`; if any fails (bad domain, a commitment at infinity, a bad constraint
+    /// index) the key is poisoned (`[x]_2` = infinity) and `gnark_plonk_verify` rejects every proof.
+    pub fn from_consts(
+        _ power: u256,
+        _ w: u256,
+        _ coset_shift: u256,
+        _ commitments: [G1; 8],
+        _ qcp: [G1; NC],
+        _ cci: [u256; NC],
+        _ x2: G2,
+    ) -> GnarkVk<NP, NC> {
+        var ok = NP > 0
+            && NP <= 1000000
+            && NC <= 1000
+            && gnark_domain_is_valid(power, w, coset_shift)
+        if ok {
+            let n = 1 << power
+            ok = (NP as u256) <= n
+            var i: usize = 0
+            while i < 8 {
+                ok = ok && finite(commitments[i])
+                i += 1
+            }
+            i = 0
+            while i < NC {
+                ok = ok && finite(qcp[i]) && cci[i] < n && (NP as u256) + cci[i] < n
+                i += 1
+            }
+        }
+        let n_fr = Bn254Fr::reduce(1 << power)
+        GnarkVk {
+            power,
+            w: Bn254Fr::reduce(w),
+            size_inv: if ok {
+                n_fr.inv().unwrap()
+            } else {
+                Bn254Fr::one()
+            },
+            coset_shift: Bn254Fr::reduce(coset_shift),
+            ql: commitments[0],
+            qr: commitments[1],
+            qm: commitments[2],
+            qo: commitments[3],
+            qk: commitments[4],
+            s1: commitments[5],
+            s2: commitments[6],
+            s3: commitments[7],
+            qcp,
+            cci,
+            x2: if ok { x2 } else { G2::infinity() },
+        }
     }
 }
 
@@ -662,6 +752,10 @@ pub fn gnark_plonk_verify<const NP: usize, const NC: usize>(
 ) -> bool
 uses (call: Call)
 {
+    // Degenerate key (`[x]_2` = infinity, see `from_consts`): never verifies.
+    if vk.x2.is_infinity() {
+        return false
+    }
     var pubs = [Bn254Fr::zero(); NP]
     var i: usize = 0
     while i < NP {

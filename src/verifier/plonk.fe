@@ -43,10 +43,45 @@
 //! (the circom compiler always emits at least one public signal), `power <= 28`.
 use core::ptr::MemBuffer
 use std::evm::Call
-use std::evm::crypto::keccak256
+use std::evm::crypto::{keccak256, mulmod}
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::put
 use ingot::field::{Bn254Fr, Field}
+
+/// Scalar field modulus `r` (raw word form, for the `const fn` domain checks below).
+const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+/// `b^(2^k) mod r` by `k` squarings.
+const fn fr_pow2k(_ b: u256, _ k: u256) -> u256 {
+    var acc: u256 = b
+    var i: u256 = 0
+    while i < k {
+        acc = mulmod(acc, acc, SCALAR_R)
+        i += 1
+    }
+    acc
+}
+
+/// Whether `(power, w, k1, k2)` are valid evaluation-domain parameters: `1 <= power <= 28`;
+/// all three words are canonical (`< r`) and `k1`, `k2` nonzero; `w` is a primitive
+/// `2^power`-th root of unity (`w^(2^(power-1)) = -1`); and `k1`, `k2` give three distinct cosets
+/// of the domain (`k1^n != 1`, `k2^n != 1`, `(k1/k2)^n != 1`, the last tested as `k1^n != k2^n`
+/// so no inversion is needed). `const fn`: runs in `static_assert` at compile time, so a
+/// generated verifier with a bad domain does not compile; also used by `PlonkVk::from_consts`.
+pub const fn plonk_domain_is_valid(_ power: u256, _ w: u256, _ k1: u256, _ k2: u256) -> bool {
+    if power == 0 || power > 28 {
+        return false
+    }
+    if w >= SCALAR_R || k1 >= SCALAR_R || k2 >= SCALAR_R || k1 == 0 || k2 == 0 {
+        return false
+    }
+    if fr_pow2k(w, power - 1) != SCALAR_R - 1 {
+        return false
+    }
+    let k1n = fr_pow2k(k1, power)
+    let k2n = fr_pow2k(k2, power)
+    k1n != 1 && k2n != 1 && k1n != k2n
+}
 
 /// snarkjs verifying key for `NP` public signals (outputs first, then inputs, circom order).
 /// Private fields: build with `PlonkVk::new`, which validates the domain parameters. The curve
@@ -118,6 +153,41 @@ impl<const NP: usize> PlonkVk<NP> {
                 x2,
             },
         )
+    }
+}
+
+impl<const NP: usize> PlonkVk<NP> {
+    /// Key from compile-time constants. Build the points with `G1::from_coords_or_infinity` /
+    /// `G2::from_coords_or_infinity` (checked in the compiler, no gas) and pair them with
+    /// `static_assert(g1_is_valid(..))`, `static_assert(g2_is_valid(..))` and
+    /// `static_assert(plonk_domain_is_valid(..))`. No gas is spent on validation: the runtime
+    /// cost is five modular reductions. As in the other `*_or_infinity` constructors, invalid
+    /// parameters never yield a usable key: a bad domain (or `NP == 0`) poisons the key by
+    /// setting `[x]_2` to infinity, and `plonk_verify` rejects every proof for such a key.
+    pub fn from_consts(
+        _ power: u256,
+        _ w: u256,
+        _ k1: u256,
+        _ k2: u256,
+        _ commitments: [G1; 8],
+        _ x2: G2,
+    ) -> PlonkVk<NP> {
+        let ok = NP > 0 && NP <= 1000000 && plonk_domain_is_valid(power, w, k1, k2)
+        PlonkVk {
+            power,
+            w: Bn254Fr::reduce(w),
+            k1: Bn254Fr::reduce(k1),
+            k2: Bn254Fr::reduce(k2),
+            qm: commitments[0],
+            ql: commitments[1],
+            qr: commitments[2],
+            qo: commitments[3],
+            qc: commitments[4],
+            s1: commitments[5],
+            s2: commitments[6],
+            s3: commitments[7],
+            x2: if ok { x2 } else { G2::infinity() },
+        }
     }
 }
 
@@ -306,6 +376,10 @@ pub fn plonk_verify<const NP: usize>(
 ) -> bool
 uses (call: Call)
 {
+    // Degenerate key (`[x]_2` = infinity, see `from_consts`): never verifies.
+    if vk.x2.is_infinity() {
+        return false
+    }
     // Rule 1: canonical public inputs.
     var pubs = [Bn254Fr::zero(); NP]
     var i: usize = 0
