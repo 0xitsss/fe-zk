@@ -82,7 +82,9 @@ def main(play_path, prove_path, out_path):
             cap = f'generation {g} · step gas {fmt(fr["step_gas"])} (Fe contract, revm)'
         out.append(f'<g class="f" style="animation-delay:{g * DT:.2f}s">'
                    + grid_path(fr["board"], gx, gy, cs) + text(W // 2, 392, cap, 14, FG, "middle") + "</g>")
-    out.append(text(W // 2, 410, "Fe contract steps the whole board with word-parallel bit operations", 11, DIM, "middle"))
+    # Shown only during the play scene (class "q"), so it never overlaps the final scene's caption.
+    out.append(text(W // 2, 410, "Fe contract steps the whole board with word-parallel bit operations", 11, DIM, "middle")
+               .replace("<text", '<text class="q"', 1))
 
     # scene 2: proof vs on-chain stepping, numbers from PROVE.json
     n = prove["generations"]

@@ -76,7 +76,7 @@
 <g class="f" style="animation-delay:7.44s"><path fill="#3fb950" d="M392 124h17v17h-17zM392 142h17v17h-17zM392 160h17v17h-17zM446 178h17v17h-17zM428 196h17v17h-17zM428 214h17v17h-17zM446 214h17v17h-17zM446 232h17v17h-17z"/><text x="320" y="392" font-size="14" fill="#e6edf3" text-anchor="middle" font-weight="normal">generation 62 · step gas 657 (Fe contract, revm)</text></g>
 <g class="f" style="animation-delay:7.56s"><path fill="#3fb950" d="M374 142h17v17h-17zM392 142h17v17h-17zM410 142h17v17h-17zM428 196h17v17h-17zM428 214h17v17h-17zM446 214h17v17h-17zM428 232h17v17h-17zM446 232h17v17h-17z"/><text x="320" y="392" font-size="14" fill="#e6edf3" text-anchor="middle" font-weight="normal">generation 63 · step gas 657 (Fe contract, revm)</text></g>
 <g class="f" style="animation-delay:7.68s"><path fill="#3fb950" d="M392 124h17v17h-17zM392 142h17v17h-17zM392 160h17v17h-17zM428 196h17v17h-17zM446 196h17v17h-17zM410 214h17v17h-17zM428 232h17v17h-17zM446 232h17v17h-17z"/><text x="320" y="392" font-size="14" fill="#e6edf3" text-anchor="middle" font-weight="normal">generation 64 · step gas 657 (Fe contract, revm)</text></g>
-<text x="320" y="410" font-size="11" fill="#9aa7b4" text-anchor="middle" font-weight="normal">Fe contract steps the whole board with word-parallel bit operations</text>
+<text class="q" x="320" y="410" font-size="11" fill="#9aa7b4" text-anchor="middle" font-weight="normal">Fe contract steps the whole board with word-parallel bit operations</text>
 <g class="z" style="animation-delay:7.80s">
 <rect x="39" y="55" width="145" height="145" rx="3" fill="#1b222c"/>
 <rect x="455" y="55" width="145" height="145" rx="3" fill="#1b222c"/>
