@@ -1,10 +1,10 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use fe_zk_gen::{
     emit_halo2_ingot, emit_halo2_module, emit_ingot, emit_plonk_ingot, halo2_key_digest,
     key_digest, parse_arkworks, parse_arkworks_proof, parse_halo2_proof, parse_halo2_vk,
     parse_plonk_snarkjs, parse_plonk_snarkjs_proof, parse_public, parse_snarkjs,
     parse_snarkjs_proof, plonk_key_digest, EmitOptions, EmittedIngot, Groth16Proof, Groth16Vk,
-    Halo2EmitOptions, PlonkEmitOptions, PlonkFixture, TestFixture, TOOL_VERSION,
+    Halo2EmitOptions, Halo2Scheme, PlonkEmitOptions, PlonkFixture, TestFixture, TOOL_VERSION,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -30,18 +30,30 @@ enum Cmd {
     Halo2(Halo2Args),
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum SchemeArg {
+    Shplonk,
+    Gwc,
+    Both,
+}
+
 #[derive(Args)]
 struct Halo2Args {
     /// vk.json exported by vectors/halo2 (see vectors/halo2/SPEC.md)
     #[arg(long, value_name = "FILE")]
     vk: String,
-    /// SHPLONK proof JSON (proof hex + instances); with --gwc emits tests with real proofs
-    #[arg(long, value_name = "FILE", requires = "gwc")]
+    /// SHPLONK proof JSON (proof hex + instances); tests with real proofs are emitted when every
+    /// emitted scheme has one
+    #[arg(long, value_name = "FILE")]
     shplonk: Option<String>,
     /// GWC proof JSON
-    #[arg(long, value_name = "FILE", requires = "shplonk")]
+    #[arg(long, value_name = "FILE")]
     gwc: Option<String>,
-    /// Name of the verifier (alphanumeric); contract is `<NAME>Verifier`
+    /// Multiopen scheme to emit. One contract per scheme (a verifier for both schemes exceeds the
+    /// EIP-170 code size limit): `both` emits `<NAME>ShplonkVerifier` and `<NAME>GwcVerifier`
+    #[arg(long, value_enum, default_value = "shplonk")]
+    scheme: SchemeArg,
+    /// Name of the verifier (alphanumeric); contract is `<NAME>Verifier` (one scheme)
     #[arg(long, default_value = "Halo2")]
     name: String,
     /// Output directory for a standalone Fe ingot (contract + tests)
@@ -115,6 +127,11 @@ fn run_halo2(a: Halo2Args) -> ExitCode {
         .unwrap_or_else(|| a.vk.clone());
     let opts = Halo2EmitOptions {
         name: a.name.clone(),
+        scheme: match a.scheme {
+            SchemeArg::Shplonk => Halo2Scheme::Shplonk,
+            SchemeArg::Gwc => Halo2Scheme::Gwc,
+            SchemeArg::Both => Halo2Scheme::Both,
+        },
         source,
         fe_zk_path: a.fe_zk_path.clone(),
         shplonk,

@@ -197,7 +197,7 @@ class Gen:
         self.emit("use ingot::ec::{G1, G2, g1_is_valid, g1_mul, g2_is_valid}")
         self.emit("use ingot::field::{Bn254Fr, Field}")
         self.emit("use super::common::{")
-        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1,")
+        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1, read_points,\nread_scalars,")
         self.emit("}")
         self.emit()
         self.emit("/// Number of 32-byte words of a proof for this circuit (fixed by the vk, rule 4).")
@@ -295,53 +295,32 @@ class Gen:
                 col.append("inst_%d_%d" % (c, j))
                 idx += 1
             inst.append(col)
+        # Proof layout (SPEC section 3): np commitments, then the evaluations. Each run is validated
+        # by one loop (read_points, read_scalars: rules 1 and 2) and absorbed word by word, so
+        # the emitted code does not grow with the number of commitments (EIP-170 code size).
+        np_ = len(self.pt_names)
+        nev = len(self.ev_names)
+        self.unwrap("pts: [G1; %d]" % np_, "read_points(proof, 0)", "Option::None")
+        self.unwrap("ev: [Bn254Fr; %d]" % nev, "read_scalars(proof, %d)" % (2 * np_), "Option::None")
         off = 0
-
-        def rd_pt(name):
-            nonlocal off
-            self.unwrap(name, "read_g1(proof[%d], proof[%d])" % (off, off + 1), "Option::None")
-            self.emit("tr.absorb_point(proof[%d], proof[%d])" % (off, off + 1))
-            off += 2
-
-        def rd_sc(name):
-            nonlocal off
-            self.unwrap(name, "Bn254Fr::from_canonical(proof[%d])" % off, "Option::None")
-            self.emit("tr.absorb(proof[%d])" % off)
-            off += 1
-
-        for c in range(self.A):
-            rd_pt("adv%d" % c)
+        self.emit("tr.absorb_words(proof, 0, %d)" % (2 * self.A))
+        off += 2 * self.A
         self.emit("let theta = tr.squeeze()")
-        for j in range(self.L):
-            rd_pt("lpi%d" % j)
-            rd_pt("lpt%d" % j)
+        self.emit("tr.absorb_words(proof, %d, %d)" % (off, off + 4 * self.L))
+        off += 4 * self.L
         self.emit("let beta = tr.squeeze()")
         self.emit("let gamma = tr.squeeze()")
-        for i in range(self.S):
-            rd_pt("zc%d" % i)
-        for j in range(self.L):
-            rd_pt("lzc%d" % j)
-        rd_pt("rnd")
+        n = 2 * (self.S + self.L + 1)
+        self.emit("tr.absorb_words(proof, %d, %d)" % (off, off + n))
+        off += n
         self.emit("let y = tr.squeeze()")
-        for i in range(self.H):
-            rd_pt("hq%d" % i)
+        self.emit("tr.absorb_words(proof, %d, %d)" % (off, off + 2 * self.H))
+        off += 2 * self.H
         self.emit("let x = tr.squeeze()")
-        for q in range(self.Aq):
-            rd_sc("a%d" % q)
-        for q in range(self.Fq):
-            rd_sc("f%d" % q)
-        rd_sc("rand_eval")
-        for p in range(self.P):
-            rd_sc("sg%d" % p)
-        for i in range(self.S):
-            rd_sc("pz%d" % i)
-            rd_sc("pzn%d" % i)
-            if i < self.S - 1:
-                rd_sc("pzl%d" % i)
-        for j in range(self.L):
-            for nm in ("lz", "lzn", "la", "lai", "ls"):
-                rd_sc("%s%d" % (nm, j))
-        assert off == self.common_words
+        self.emit("tr.absorb_words(proof, %d, %d)" % (off, self.common_words))
+        assert off == 2 * np_
+        for i, nm in enumerate(self.ev_names):
+            self.emit("let %s = ev[%d]" % (nm, i))
 
         # ---- domain: x^n, Lagrange basis (SPEC 4, 5) with one batched inversion
         self.emit("// x^n and the Lagrange basis at x: L_i(x) = w^i (x^n - 1) n_inv / (x - w^i).")
@@ -429,8 +408,7 @@ class Gen:
         self.emit("let expected_h = hacc.mul(inv_d[%d])" % len(need))
         self.emit("Option::Some(Phase1 {")
         self.emit("theta, beta, gamma, y, x, xn, expected_h,")
-        self.emit("pts: [%s]," % ", ".join(self.pt_names))
-        self.emit("ev: [%s]," % ", ".join(self.ev_names))
+        self.emit("pts, ev,")
         self.emit("})")
         self.emit("}")
         self.emit()

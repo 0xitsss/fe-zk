@@ -3,7 +3,7 @@
 
 use fe_zk_gen::{
     emit_halo2_ingot, emit_halo2_module, halo2_key_digest, parse_halo2_proof, parse_halo2_vk,
-    Halo2EmitOptions, Halo2Vk,
+    Halo2EmitOptions, Halo2Scheme, Halo2Vk,
 };
 use std::path::PathBuf;
 
@@ -26,6 +26,7 @@ fn vk() -> Halo2Vk {
 fn opts() -> Halo2EmitOptions {
     Halo2EmitOptions {
         name: "Fixture".into(),
+        scheme: Halo2Scheme::Both,
         source: "standard_plonk_lookup".into(),
         fe_zk_path: "../..".into(),
         shplonk: Some(parse_halo2_proof(&read(dir().join("shplonk.json"))).unwrap()),
@@ -123,6 +124,7 @@ fn fixture_size_mismatch_rejected() {
     assert!(emit_halo2_ingot(&vk(), &o).is_err());
     let mut o = opts();
     o.gwc = None;
+    // `Both` without the GWC proof: refused, never half-tested
     assert!(emit_halo2_ingot(&vk(), &o).is_err());
 }
 
@@ -140,17 +142,59 @@ fn every_check_has_a_failing_case_in_generated_tests() {
             "infinity_points_rejected",
             "negated_points_rejected",
             "swapped_commitments_rejected",
+            "proof_of_other_scheme_rejected",
+            "vk_digest_exposed",
         ] {
             assert!(t.contains(&format!("fn {sch}_{n}()")), "{sch}_{n}");
         }
     }
     for n in [
-        "vk_digest_exposed",
         "vk_constants_pass_full_checks",
         "invalid_keys_fail_the_compile_time_checks",
     ] {
         assert!(t.contains(&format!("fn {n}()")), "{n}");
     }
+}
+
+#[test]
+fn one_contract_per_scheme() {
+    // both: two contracts in one ingot, each reaching only its own verify function
+    let both = emit_halo2_ingot(&vk(), &opts()).unwrap();
+    assert!(both
+        .lib_fe
+        .contains("pub contract FixtureShplonkVerifier {"));
+    assert!(both.lib_fe.contains("pub contract FixtureGwcVerifier {"));
+    assert!(!both.lib_fe.contains("pub contract FixtureVerifier {"));
+    // single scheme: only that verifier and contract, tests need only its fixture
+    for (scheme, has, lacks) in [
+        (Halo2Scheme::Shplonk, "verify_shplonk", "verify_gwc"),
+        (Halo2Scheme::Gwc, "verify_gwc", "verify_shplonk"),
+    ] {
+        let mut o = opts();
+        o.scheme = scheme;
+        if scheme == Halo2Scheme::Shplonk {
+            o.gwc = None;
+        } else {
+            o.shplonk = None;
+        }
+        let e = emit_halo2_ingot(&vk(), &o).unwrap();
+        assert!(e.lib_fe.contains("pub contract FixtureVerifier {"));
+        assert!(e.lib_fe.contains(&format!("pub fn {has}(")));
+        assert!(!e.lib_fe.contains(&format!("pub fn {lacks}(")));
+        let t = e.tests_fe.unwrap();
+        assert!(t.contains("_valid_proof_accepted()"));
+        assert!(!t.contains("proof_of_other_scheme"));
+        // a proof for a scheme that is not emitted, or a missing one for an emitted scheme: error
+        let mut bad = o.clone();
+        bad.scheme = if scheme == Halo2Scheme::Shplonk {
+            Halo2Scheme::Gwc
+        } else {
+            Halo2Scheme::Shplonk
+        };
+        assert!(emit_halo2_ingot(&vk(), &bad).is_err());
+    }
+    // default scheme is SHPLONK
+    assert_eq!(Halo2Scheme::default(), Halo2Scheme::Shplonk);
 }
 
 fn fe_test(dir: &std::path::Path) -> (bool, String) {
