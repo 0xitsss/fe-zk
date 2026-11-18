@@ -240,7 +240,7 @@ pub fn vk_json(params: &ParamsKZG<Bn256>, pk: &ProvingKey<G1Affine>) -> Value {
         "gates": gates,
         "lookups": lookups,
         "kzg": {
-            "_doc": "TEST-ONLY INSECURE SRS: s derived from a fixed ChaCha20 seed, trapdoor is public. Never use outside tests.",
+            "_doc": "SRS from the PSE perpetual powers of tau (ppot_0080_05.ptau, sha256 9c1bfc4a2895b9beb1df6e95c96785dc9382bee84d84a0d8c56b1061e09d89d1); converted by vectors/halo2/src/ptau.rs. No party knows tau.",
             "g1": g1_json(&params.get_g()[0]),
             "g2": g2_json(&params.g2()),
             "s_g2": g2_json(&params.s_g2()),

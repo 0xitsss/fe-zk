@@ -305,7 +305,7 @@
     }
   ],
   "kzg": {
-    "_doc": "TEST-ONLY INSECURE SRS: s derived from a fixed ChaCha20 seed, trapdoor is public. Never use outside tests.",
+    "_doc": "SRS from the PSE perpetual powers of tau (ppot_0080_05.ptau, sha256 9c1bfc4a2895b9beb1df6e95c96785dc9382bee84d84a0d8c56b1061e09d89d1); converted by vectors/halo2/src/ptau.rs. No party knows tau.",
     "g1": {
       "x": "0x0000000000000000000000000000000000000000000000000000000000000001",
       "y": "0x0000000000000000000000000000000000000000000000000000000000000002"

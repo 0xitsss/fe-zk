@@ -1,5 +1,5 @@
 //! GENERATED FILE, do not edit. Tool: fe-zk-gen 0.1.0.
-//! vk digest (sha256 of canonical vk.json): c6780a04519aabb319a3fcc36a1d7f9ff167ebfe0e50b4bb8735efb5cd1be8a1
+//! vk digest (sha256 of canonical vk.json): 11450c9e44382d2de861d58dbf488435d3192de78c5fe1f2a9a323e2ac7b7afa
 //! Circuit: k=5, 3 advice / 8 fixed / 1 instance columns, 1 lookup(s), 2 permutation set(s),
 //! 4 quotient chunks. halo2-KZG verifier for BN254 with the snark-verifier EvmTranscript.
 //! Algorithm and field order: vectors/halo2/SPEC.md. Shared code: halo2/common.fe.
@@ -29,7 +29,7 @@ use super::common::{
 pub const COMMON_WORDS: usize = 53
 pub const NUM_INSTANCES: usize = 1
 pub const TRANSCRIPT_REPR: u256 = 0x2ba4939012e6090198e66dc87fcd5a13f5d4277fe57fb16846d4528e5d64a0cb
-pub const VK_DIGEST: u256 = 0xc6780a04519aabb319a3fcc36a1d7f9ff167ebfe0e50b4bb8735efb5cd1be8a1
+pub const VK_DIGEST: u256 = 0x11450c9e44382d2de861d58dbf488435d3192de78c5fe1f2a9a323e2ac7b7afa
 
 const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 // SRS and key constants, validated by fe-zk-gen and re-validated by the Fe compiler below.
