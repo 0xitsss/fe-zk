@@ -31,3 +31,5 @@ node_modules/
 __pycache__/
 # fe-zk-gen integration test scratch dirs
 .emit-*-tmp/
+__pycache__/
+*.pyc
