@@ -209,22 +209,27 @@ def write_ppm(path, rows, alive=(0x3F, 0xB9, 0x50), dead=(0x16, 0x1B, 0x22)):
     Path(path).write_bytes(bytes(data))
 
 
+def bits_to_rows(h):
+    v = int(h, 16)  # bit index = row * 16 + col
+    return [[(v >> (r * 16 + c)) & 1 for c in range(16)] for r in range(16)]
+
+
 def life_frames(gens, pattern="rpentomino"):
+    """One life-cli run with --frames-json: boards and step gas as returned by the Fe contract in revm."""
+    import json
     fdir = TMP / "frames"
     shutil.rmtree(fdir, ignore_errors=True)
     fdir.mkdir(parents=True)
+    jpath = TMP / "life_play.json"
+    rc, out = capture("life_play", [LIFE, "--pattern", pattern, "--gens", str(gens), "--no-anim", "--frames-json", str(jpath)])
+    if rc:
+        sys.exit("life-cli failed:\n" + out)
+    d = json.loads(jpath.read_text())
     meta = []
-    for k in range(gens + 1):
-        rc, out = capture("life_gen_%03d" % k, [LIFE, "--pattern", pattern, "--gens", str(k), "--no-anim"])
-        if rc:
-            sys.exit("life-cli failed for gens=%d:\n%s" % (k, out))
-        lines = out.splitlines()
-        rows = parse_board(lines)
-        m = re.search(r"gen\s+(\d+)\s+alive\s+(\d+)(?:\s+step gas (\d+))?", out)
-        if rows is None or not m:
-            sys.exit("cannot parse life-cli output for gens=%d:\n%s" % (k, out))
+    for k, f in enumerate(d["frames"]):
+        rows = bits_to_rows(f["board"])
         write_ppm(fdir / ("f%03d.ppm" % k), rows)
-        meta.append((int(m.group(1)), int(m.group(2)), m.group(3)))
+        meta.append((f["generation"], sum(map(sum, rows)), f["step_gas"]))
     return fdir, meta
 
 
@@ -245,7 +250,7 @@ def render_life_anim(gens, rate=8, min_dur=10.0):
     notes = [
         ("Life.step(board): word-parallel bitwise adders,", C_TXT),
         ("no per-cell loops, no storage.", C_TXT),
-        ("Boards below come from running the compiled", C_DIM),
+        ("Boards on the left come from running the compiled", C_DIM),
         ("Fe contract bytecode in revm, one call per", C_DIM),
         ("generation (life-cli --pattern rpentomino).", C_DIM),
     ]
@@ -288,13 +293,13 @@ def md_table(text, heading):
 
 def gas_lines():
     text = (ROOT / "docs/GAS.md").read_text()
-    out = ["%-60s %9s %9s %7s" % ("same proof, same revm: exec gas", "Fe", "Solidity", "Fe/Sol"), ""]
+    out = ["%-68s %9s %9s %7s" % ("same proof, same revm: exec gas", "Fe", "Solidity", "Fe/Sol"), ""]
     for r in md_table(text, "Verifier gas, same proof"):
-        out.append("%-60s %9s %9s %7s" % ((r[0] + " " + r[1])[:60], r[2], r[3], r[4]))
+        out.append("%-68s %9s %9s %7s" % (re.sub(r", N=\d+", "", r[0] + " " + r[1])[:68], r[2], r[3], r[4]))
     out.append("")
-    out.append("%-60s %9s %9s %7s" % ("Poseidon (circomlibjs contract vs Fe)", "Fe", "circomlib", "Fe/ref"))
+    out.append("%-68s %9s %9s %7s" % ("Poseidon (circomlibjs contract vs Fe)", "Fe", "circomlib", "Fe/ref"))
     for r in md_table(text, "Poseidon hash"):
-        out.append("%-60s %9s %9s %7s" % ("Poseidon, %s inputs" % r[0], r[1], r[2], r[3]))
+        out.append("%-68s %9s %9s %7s" % ("Poseidon, %s inputs" % r[0], r[1], r[2], r[3]))
     for r in md_table(text, "Game of Life"):
         if r[0] == "512":
             out.append("")
@@ -313,7 +318,8 @@ def safety_lines():
         row = next((l for l in body.splitlines() if l.startswith("|") and "`" in l), "")
         cells = [c.strip() for c in row.strip("|").split("|")]
         where = re.findall(r"`([^`]+)`", cells[0])[0] if cells and re.findall(r"`([^`]+)`", cells[0]) else "-"
-        test = re.findall(r"`([^`]+)`", cells[2])[0] if len(cells) > 2 and re.findall(r"`([^`]+)`", cells[2]) else "-"
+        toks = re.findall(r"`([^`]+)`", cells[2]) if len(cells) > 2 else []
+        test = next((t for t in toks if "/" not in t), toks[0] if toks else "-")
         title = re.split(r"[:,]| are | of every| every", title)[0].strip()
         out.append("%-3s %-37s %-33s %s" % (n, title[:37], where[:33], test))
     return out
@@ -480,27 +486,34 @@ def main():
         i = next(i for i, l in enumerate(src) if pat in l)
         return src[i:i + n]
 
-    ql = ["$ cat examples/quickstart/fe.toml    # [dependencies]"] + toml + [""]
+    def dedent(ls):
+        k = min(len(l) - len(l.lstrip()) for l in ls if l.strip())
+        return [l[k:] for l in ls]
+
+    ql = ["$ cat examples/quickstart/fe.toml    # [dependencies]"] + toml
     ql += ["// examples/quickstart/src/lib.fe"]
-    ql += [src[i] for i, l in enumerate(src) if l.startswith("use ")]
+    ql += [l for l in src if l.startswith("use ") and "std::" not in l]
     ql += grab("pub fn horner", 9)
-    ql += grab("poseidon_2(v, s)", 1)
-    ql += grab("Check { a, b, c, input }", 7)
+    ql += dedent(grab("poseidon_2(v, s)", 1))
+    ql += dedent(grab("store\n", 1) if False else [src[next(i for i, l in enumerate(src) if "Check { a, b, c, input }" in l) + 1 + j] for j in range(5)])
     scenes.append(render_text(Scene("s05a_quick", "Use it in your own Fe code: examples/quickstart", ql, per_line=0.2)))
     rc, out_q = capture("fe_test_quickstart", [FE, "test"], cwd=q)
     qt = ["$ cd examples/quickstart && fe test"] + [l for l in out_q.splitlines() if l.strip()][-8:]
     scenes.append(render_text(Scene("s05b_quicktest", "Valid proof accepted, tampered rejected, Poseidon = circomlibjs, one generic helper, two fields", qt)))
 
     # 6. Life
-    log("scene 6: life (65 runs of life-cli)")
+    log("scene 6: life (life-cli --frames-json)")
     anim, meta = render_life_anim(64)
     scenes.append(anim)
-    rc, out_l = capture("life_prove", [LIFE, "--prove"])
+    import json
+    pj = TMP / "life_prove.json"
+    rc, out_l = capture("life_prove", [LIFE, "--prove", "--frames-json", str(pj)])
     assert rc == 0, out_l
     lines = out_l.splitlines()
     idx_end = next(i for i, l in enumerate(lines) if l.startswith("end board"))
-    start_rows = parse_board(lines[:idx_end])
-    end_rows = parse_board(lines[idx_end:])
+    pd = json.loads(pj.read_text())
+    start_rows = bits_to_rows(pd["start_board"])
+    end_rows = bits_to_rows(pd["end_board"])
     write_ppm(TMP / "prove_start.ppm", start_rows)
     write_ppm(TMP / "prove_end.ppm", end_rows)
     gens = re.search(r"proven generations (\d+)", out_l).group(1)
