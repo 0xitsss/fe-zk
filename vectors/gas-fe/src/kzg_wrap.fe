@@ -1,0 +1,77 @@
+//! KZG opening-check wrappers over the test-only SRS of vectors/kzg (tau_g2 in `fx_kzg.fe`).
+//! Inputs are checked canonical / on curve by the typed constructors (a bad input reverts).
+use fe_zk::ec::{G1, G2, g2_is_valid}
+use fe_zk::field::{Bn254Fr, Field}
+use fe_zk::verifier::kzg::{KzgVk, kzg_batch_verify_gwc, kzg_verify, kzg_verify_shplonk}
+use std::evm::Call
+use ingot::fx_kzg::*
+
+// tau_g2 is a compile-time constant (CTFE-validated); the group generators come from the library.
+const TAU_G2: G2 = G2::from_coords_or_infinity(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1)
+static_assert(g2_is_valid(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1))
+static_assert(!TAU_G2.is_infinity())
+
+fn vk() -> KzgVk {
+    KzgVk::new(G1::generator(), G2::generator(), TAU_G2).unwrap()
+}
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+fn g1(_ x: u256, _ y: u256) -> G1 {
+    G1::from_coords(x, y).unwrap()
+}
+
+msg KzgSingleMsg {
+    #[selector = sol("verify(uint256[2],uint256,uint256,uint256[2])")]
+    Verify { c: [u256; 2], z: u256, y: u256, pi: [u256; 2] } -> bool,
+}
+
+pub contract KzgSingle {
+    recv KzgSingleMsg {
+        Verify { c, z, y, pi } -> bool uses (call: Call) {
+            kzg_verify(vk(), g1(c[0], c[1]), fr(z), fr(y), g1(pi[0], pi[1]))
+        }
+    }
+}
+
+msg KzgGwcMsg {
+    #[selector = sol("verify(uint256[2][3],uint256,uint256[3],uint256[2])")]
+    Verify { cs: [[u256; 2]; 3], z: u256, ys: [u256; 3], pi: [u256; 2] } -> bool,
+}
+
+pub contract KzgGwc {
+    recv KzgGwcMsg {
+        Verify { cs, z, ys, pi } -> bool uses (call: Call) {
+            kzg_batch_verify_gwc(
+                vk(),
+                [g1(cs[0][0], cs[0][1]), g1(cs[1][0], cs[1][1]), g1(cs[2][0], cs[2][1])],
+                fr(z),
+                [fr(ys[0]), fr(ys[1]), fr(ys[2])],
+                g1(pi[0], pi[1]),
+            )
+        }
+    }
+}
+
+msg KzgShplonkMsg {
+    #[selector = sol("verify(uint256[2][3],uint256,uint256,uint256[4],uint256[2],uint256[2])")]
+    Verify { cs: [[u256; 2]; 3], z1: u256, z2: u256, evals: [u256; 4], h: [u256; 2], pi: [u256; 2] } -> bool,
+}
+
+pub contract KzgShplonk {
+    recv KzgShplonkMsg {
+        Verify { cs, z1, z2, evals, h, pi } -> bool uses (call: Call) {
+            kzg_verify_shplonk(
+                vk(),
+                [g1(cs[0][0], cs[0][1]), g1(cs[1][0], cs[1][1]), g1(cs[2][0], cs[2][1])],
+                fr(z1),
+                fr(z2),
+                [fr(evals[0]), fr(evals[1]), fr(evals[2]), fr(evals[3])],
+                g1(h[0], h[1]),
+                g1(pi[0], pi[1]),
+            )
+        }
+    }
+}

@@ -1,0 +1,33 @@
+//! Poseidon (circomlib-compatible, BN254) wrappers: 2 inputs (t = 3) and 3 inputs (t = 4).
+use fe_zk::field::{Bn254Fr, Field}
+use fe_zk::hash::{poseidon_2, poseidon_3}
+
+fn fr(_ v: u256) -> Bn254Fr {
+    Bn254Fr::from_canonical(v).unwrap()
+}
+
+msg Poseidon2Msg {
+    #[selector = sol("poseidon(uint256[2])")]
+    Hash { x: [u256; 2] } -> u256,
+}
+
+pub contract Poseidon2In {
+    recv Poseidon2Msg {
+        Hash { x } -> u256 {
+            poseidon_2(fr(x[0]), fr(x[1])).to_canonical()
+        }
+    }
+}
+
+msg Poseidon3Msg {
+    #[selector = sol("poseidon(uint256[3])")]
+    Hash { x: [u256; 3] } -> u256,
+}
+
+pub contract Poseidon3In {
+    recv Poseidon3Msg {
+        Hash { x } -> u256 {
+            poseidon_3(fr(x[0]), fr(x[1]), fr(x[2])).to_canonical()
+        }
+    }
+}
