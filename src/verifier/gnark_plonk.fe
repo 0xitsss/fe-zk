@@ -1,0 +1,697 @@
+//! PLONK verifier over BN254 with KZG for gnark proofs and keys (gnark v0.12.0, gnark-crypto
+//! v0.15.0, `backend/plonk/bn254`), with the sha256 Fiat-Shamir transcript of gnark's own
+//! exported Solidity verifier (`vk.ExportSolidity`). It follows that contract step by step; the
+//! proof layout is `proof.MarshalSolidity()`. Optional BSB22 commitments (`api.Commit`, `NC` of
+//! them) are supported. Notation: `r` scalar field order, `n = 2^power` the domain size, `w` its
+//! generator, `k` the coset shift, `[x]_2` the SRS G2 point, `zu = Z(w zeta)`.
+//!
+//! ```text
+//! gamma = sha256("gamma" S1 S2 S3 Ql Qr Qm Qo Qk Qcp_1..Qcp_NC pub_1..pub_NP L R O)      (raw 256-bit)
+//! beta  = sha256("beta" gamma_raw)
+//! alpha = sha256("alpha" beta_raw Bsb_1..Bsb_NC Z)
+//! zeta  = sha256("zeta" alpha_raw H0 H1 H2)           each challenge = raw digest mod r, the next
+//!                                                     challenge chains on the RAW digest
+//! PI(zeta) = sum_i pub_i L_i(zeta) + sum_j H2F(Bsb_j) L_{NP + cci_j}(zeta)      L_i = w^i/n Zh/(zeta-w^i)
+//! opening_lin = -(PI - alpha^2 L_0 + alpha (l + beta s1 + gamma)(r + beta s2 + gamma)(o + gamma) zu)
+//! s1c = alpha beta zu (l + beta s1 + gamma)(r + beta s2 + gamma)
+//! s2c = alpha^2 L_0 - alpha (l + beta zeta + gamma)(r + beta k zeta + gamma)(o + beta k^2 zeta + gamma)
+//! Lin = l Ql + r Qr + l r Qm + o Qo + Qk + sum_j qcp_j Bsb_j + s1c S3 + s2c Z
+//!       - Zh(zeta) (H0 + zeta^(n+2) H1 + zeta^(2(n+2)) H2)
+//! gk = sha256("gamma" zeta Lin L R O S1 S2 Qcp_j opening_lin l r o s1 s2 qcp_j zu)
+//! D  = Lin + gk L + gk^2 R + gk^3 O + gk^4 S1 + gk^5 S2 + sum_j gk^(6+j) Qcp_j       (folded digest)
+//! v  = opening_lin + gk l + gk^2 r + gk^3 o + gk^4 s1 + gk^5 s2 + sum_j gk^(6+j) qcp_j
+//! rnd = sha256(D, W_zeta, Z, W_zetaw, zeta, gk)          (as the Solidity verifier; gnark's Go
+//!                                                         verifier draws it at random)
+//! e(D + rnd Z - [v + rnd zu]_1 + zeta W_zeta + rnd zeta w W_zetaw, [1]_2)
+//!   * e(-(W_zeta + rnd W_zetaw), [x]_2) == 1
+//! H2F(P) = expand_message_xmd(sha256, "BSB22-Plonk", x || y, 48 bytes) mod r
+//! ```
+//!
+//! Safety rules, enforced by types:
+//! - Rule 1/2: `GnarkProof` can only be built by `GnarkProof::from_words`: every point is a `G1`
+//!   (canonical coordinates, on the curve; the point at infinity is rejected because gnark's
+//!   byte encoding of it, with a flag bit, is not representable in the Solidity layout) and every
+//!   evaluation is a canonical `Bn254Fr`. Public inputs must be `< r` (never reduced).
+//! - Rule 3: `[x]_2` is a fully checked `G2` (on curve, in the subgroup); the G1 and G2 SRS
+//!   generators are the canonical ones (gnark's keys always use them).
+//! - Rule 4: the number of public inputs `NP` and of BSB22 commitments `NC` are const generics of
+//!   `GnarkVk<NP, NC>`, so the verifier takes exactly `[u256; NP]` and `NC` openings and
+//!   commitments; a different count does not type-check.
+//! - Rule 5: gamma binds the whole key (all 8 + NC commitments) and the public inputs, then L, R, O;
+//!   every later challenge chains on the previous raw digest and binds every other commitment and
+//!   evaluation, as in gnark. The domain constants `n, w, k` are not hashed (neither in gnark).
+//! - Rule 6: precompile failures revert (`ingot::ec`, and `sha256` below, which also checks the
+//!   returned length); the pairing word must be 0 or 1.
+//!
+//! Verification is read-only: `uses (call: Call)` and no storage. Limitations: `NP >= 1`,
+//! `power <= 28`; keys with a commitment at infinity (e.g. an all-zero selector) are rejected
+//! by `GnarkVk::new`.
+use core::ptr::MemBuffer
+use std::evm::Call
+use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
+use ingot::ec::precompile::{call_checked, get, put, put_at}
+use ingot::field::{Bn254Fr, Field}
+
+/// "BSB22-Plonk", the hash-to-field domain separation tag.
+const DST: u256 = 0x42534232322d506c6f6e6b
+const NAME_GAMMA: u256 = 0x67616d6d61 << 216
+const NAME_BETA: u256 = 0x62657461 << 224
+const NAME_ALPHA: u256 = 0x616c706861 << 216
+const NAME_ZETA: u256 = 0x7a657461 << 224
+
+/// gnark verifying key for `NP` public inputs and `NC` BSB22 commitments. Private fields: build
+/// with `GnarkVk::new`, which validates the domain parameters. The curve points are validated by
+/// their types.
+pub struct GnarkVk<const NP: usize, const NC: usize> {
+    power: u256,
+    w: Bn254Fr,
+    size_inv: Bn254Fr,
+    coset_shift: Bn254Fr,
+    ql: G1,
+    qr: G1,
+    qm: G1,
+    qo: G1,
+    qk: G1,
+    s1: G1,
+    s2: G1,
+    s3: G1,
+    qcp: [G1; NC],
+    cci: [u256; NC],
+    x2: G2,
+}
+impl<const NP: usize, const NC: usize> Copy for GnarkVk<NP, NC> {}
+
+fn finite(_ p: G1) -> bool {
+    !p.is_infinity()
+}
+
+impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
+    /// `commitments` is `[Ql, Qr, Qm, Qo, Qk, S1, S2, S3]`; `qcp[j]` and `cci[j]` are the j-th
+    /// BSB22 selector commitment and its constraint index (`VK_INDEX_COMMIT_API_j`).
+    /// `None` if: `NP == 0`; `power` is 0 or above 28; `w` is not of order exactly `2^power`;
+    /// `k` does not give three distinct cosets (`k^n` and `k^(2n)` must differ from 1);
+    /// `NP + cci_j >= n`; any key commitment or `[x]_2` is the point at infinity.
+    pub fn new(
+        _ power: u256,
+        _ w: Bn254Fr,
+        _ coset_shift: Bn254Fr,
+        _ commitments: [G1; 8],
+        _ qcp: [G1; NC],
+        _ cci: [u256; NC],
+        _ x2: G2,
+    ) -> Option<GnarkVk<NP, NC>> {
+        if NP == 0 || NP > 1000000 || NC > 1000 || power == 0 || power > 28 {
+            return Option::None
+        }
+        if x2.is_infinity() {
+            return Option::None
+        }
+        var i: usize = 0
+        while i < 8 {
+            if !finite(commitments[i]) {
+                return Option::None
+            }
+            i += 1
+        }
+        let n = 1 << power
+        if (NP as u256) > n {
+            return Option::None
+        }
+        i = 0
+        while i < NC {
+            if !finite(qcp[i]) || cci[i] >= n || (NP as u256) + cci[i] >= n {
+                return Option::None
+            }
+            i += 1
+        }
+        // w^(n/2) = -1: w has order exactly n (a power of two).
+        let one = Bn254Fr::one()
+        if !w.pow(n >> 1).eq(one.neg()) {
+            return Option::None
+        }
+        let kn = coset_shift.pow(n)
+        if coset_shift.is_zero() || kn.eq(one) || kn.square().eq(one) {
+            return Option::None
+        }
+        Option::Some(
+            GnarkVk {
+                power,
+                w,
+                size_inv: Bn254Fr::reduce(n).inv().unwrap(),
+                coset_shift,
+                ql: commitments[0],
+                qr: commitments[1],
+                qm: commitments[2],
+                qo: commitments[3],
+                qk: commitments[4],
+                s1: commitments[5],
+                s2: commitments[6],
+                s3: commitments[7],
+                qcp,
+                cci,
+                x2,
+            },
+        )
+    }
+}
+
+/// A gnark PLONK proof with `NC` BSB22 commitments. Private fields: build with
+/// `GnarkProof::from_words`.
+pub struct GnarkProof<const NC: usize> {
+    l: G1,
+    r: G1,
+    o: G1,
+    h0: G1,
+    h1: G1,
+    h2: G1,
+    z: G1,
+    w_zeta: G1,
+    w_zeta_omega: G1,
+    eval_l: Bn254Fr,
+    eval_r: Bn254Fr,
+    eval_o: Bn254Fr,
+    eval_s1: Bn254Fr,
+    eval_s2: Bn254Fr,
+    eval_zu: Bn254Fr,
+    qcp_eval: [Bn254Fr; NC],
+    bsb: [G1; NC],
+}
+impl<const NC: usize> Copy for GnarkProof<NC> {}
+
+fn proof_point(_ w: [u256; 24], _ i: usize) -> Option<G1> {
+    match G1::from_coords(w[2 * i], w[2 * i + 1]) {
+        Option::Some(p) => {
+            if p.is_infinity() {
+                Option::None
+            } else {
+                Option::Some(p)
+            }
+        },
+        Option::None => Option::None,
+    }
+}
+
+impl<const NC: usize> GnarkProof<NC> {
+    /// `fixed` is the first 24 words of `MarshalSolidity()`: `L, R, O` (x, y each), `H0, H1, H2`,
+    /// `l, r, o, s1, s2` at zeta, `Z`, `Z(w zeta)`, `W_zeta`, `W_zeta_omega`. `qcp_at_zeta` are the
+    /// `NC` selector openings and `bsb` the `NC` BSB22 commitments (x, y), the words that follow.
+    /// `None` if any point is not a canonical on-curve non-infinity point or any evaluation is
+    /// `>= r`.
+    pub fn from_words(
+        _ fixed: [u256; 24],
+        _ qcp_at_zeta: [u256; NC],
+        _ bsb: [[u256; 2]; NC],
+    ) -> Option<GnarkProof<NC>> {
+        // fixed layout: 0..5 LRO, 6..11 H, 12..16 evals, 17..18 Z, 19 zu, 20..21 W, 22..23 Ww
+        let l = proof_point(fixed, 0)
+        let r = proof_point(fixed, 1)
+        let o = proof_point(fixed, 2)
+        let h0 = proof_point(fixed, 3)
+        let h1 = proof_point(fixed, 4)
+        let h2 = proof_point(fixed, 5)
+        let el = Bn254Fr::from_canonical(fixed[12])
+        let er = Bn254Fr::from_canonical(fixed[13])
+        let eo = Bn254Fr::from_canonical(fixed[14])
+        let es1 = Bn254Fr::from_canonical(fixed[15])
+        let es2 = Bn254Fr::from_canonical(fixed[16])
+        let z = G1::from_coords(fixed[17], fixed[18])
+        let ezu = Bn254Fr::from_canonical(fixed[19])
+        let wz = G1::from_coords(fixed[20], fixed[21])
+        let wzw = G1::from_coords(fixed[22], fixed[23])
+        if l.is_none() || r.is_none() || o.is_none() || h0.is_none() || h1.is_none() {
+            return Option::None
+        }
+        if h2.is_none() || z.is_none() || wz.is_none() || wzw.is_none() {
+            return Option::None
+        }
+        if z.unwrap().is_infinity() || wz.unwrap().is_infinity() || wzw.unwrap().is_infinity() {
+            return Option::None
+        }
+        if el.is_none() || er.is_none() || eo.is_none() {
+            return Option::None
+        }
+        if es1.is_none() || es2.is_none() || ezu.is_none() {
+            return Option::None
+        }
+        var qe = [Bn254Fr::zero(); NC]
+        var bs = [G1::generator(); NC]
+        var i: usize = 0
+        while i < NC {
+            match Bn254Fr::from_canonical(qcp_at_zeta[i]) {
+                Option::Some(f) => {
+                    qe[i] = f
+                },
+                Option::None => {
+                    return Option::None
+                },
+            }
+            match G1::from_coords(bsb[i][0], bsb[i][1]) {
+                Option::Some(p) => {
+                    if p.is_infinity() {
+                        return Option::None
+                    }
+                    bs[i] = p
+                },
+                Option::None => {
+                    return Option::None
+                },
+            }
+            i += 1
+        }
+        Option::Some(
+            GnarkProof {
+                l: l.unwrap(),
+                r: r.unwrap(),
+                o: o.unwrap(),
+                h0: h0.unwrap(),
+                h1: h1.unwrap(),
+                h2: h2.unwrap(),
+                z: z.unwrap(),
+                w_zeta: wz.unwrap(),
+                w_zeta_omega: wzw.unwrap(),
+                eval_l: el.unwrap(),
+                eval_r: er.unwrap(),
+                eval_o: eo.unwrap(),
+                eval_s1: es1.unwrap(),
+                eval_s2: es2.unwrap(),
+                eval_zu: ezu.unwrap(),
+                qcp_eval: qe,
+                bsb: bs,
+            },
+        )
+    }
+}
+
+/// `sha256` (precompile 0x02) of the first `len` bytes of `buf`. Reverts if the call fails or
+/// does not return 32 bytes. The gas cap is just above the precompile price `60 + 12 * words`.
+fn sha256(_ buf: mut MemBuffer, _ len: usize) -> u256 uses (call: Call) {
+    var out = MemBuffer::with_capacity(32)
+    call_checked(
+        2,
+        200 + 12 * (((len + 31) / 32) as u256),
+        mut buf,
+        len,
+        mut out,
+        32,
+    )
+    get(out, 0)
+}
+
+/// Writes word `v` at byte offset `off`, returns the next offset.
+fn w(_ buf: mut MemBuffer, _ off: u256, _ v: u256) -> u256 {
+    put_at(mut buf, off, v)
+    off + 32
+}
+
+fn w_g1(_ buf: mut MemBuffer, _ off: u256, _ p: G1) -> u256 {
+    put_at(mut buf, off, p.x())
+    put_at(mut buf, off + 32, p.y())
+    off + 64
+}
+
+/// `H2F`: gnark-crypto `hash_to_field` with DST "BSB22-Plonk" (expand_message_xmd, sha256,
+/// 48 output bytes, interpreted big endian and reduced mod r) of the 64-byte point encoding.
+pub fn hash_to_fr(_ p: G1) -> Bn254Fr uses (call: Call) {
+    // b0 = sha256(0^64 || x || y || 0x00 0x30 0x00 || DST || len(DST))
+    var b = MemBuffer::with_capacity(160)
+    put(mut b, 0, 0)
+    put(mut b, 1, 0)
+    put_at(mut b, 64, p.x())
+    put_at(mut b, 96, p.y())
+    put_at(mut b, 128, ((0x3000 << 96) | (DST << 8) | 11) << 136)
+    let b0 = sha256(mut b, 143)
+    // b1 = sha256(b0 || 0x01 || DST || len(DST))
+    var c = MemBuffer::with_capacity(96)
+    put(mut c, 0, b0)
+    put_at(mut c, 32, ((1 << 96) | (DST << 8) | 11) << 152)
+    let b1 = sha256(mut c, 45)
+    // b2 = sha256((b0 xor b1) || 0x02 || DST || len(DST))
+    var d = MemBuffer::with_capacity(96)
+    put(mut d, 0, b0 ^ b1)
+    put_at(mut d, 32, ((2 << 96) | (DST << 8) | 11) << 152)
+    let b2 = sha256(mut d, 45)
+    // 48 bytes = b1 (32 bytes) || first 16 bytes of b2
+    Bn254Fr::reduce(b1).mul(Bn254Fr::reduce(1 << 128)).add(Bn254Fr::reduce(b2 >> 128))
+}
+
+/// Every intermediate value of a verification, public so that tests can compare each with
+/// gnark's Go replay. `ok` is the final pairing result.
+pub struct GnarkTrace {
+    pub gamma: Bn254Fr,
+    pub beta: Bn254Fr,
+    pub alpha: Bn254Fr,
+    pub zeta: Bn254Fr,
+    pub gamma_kzg: Bn254Fr,
+    pub random: Bn254Fr,
+    pub pi: Bn254Fr,
+    pub opening_lin: Bn254Fr,
+    pub folded_value: Bn254Fr,
+    pub lin: G1,
+    pub folded_digest: G1,
+    pub ok: bool,
+}
+impl Copy for GnarkTrace {}
+
+/// The four first challenges `gamma, beta, alpha, zeta` (reduced) and the raw 256-bit digests
+/// they chain on.
+pub struct GnarkChallenges {
+    pub gamma: Bn254Fr,
+    pub beta: Bn254Fr,
+    pub alpha: Bn254Fr,
+    pub zeta: Bn254Fr,
+    pub gamma_raw: u256,
+    pub beta_raw: u256,
+    pub alpha_raw: u256,
+    pub zeta_raw: u256,
+}
+impl Copy for GnarkChallenges {}
+
+/// gamma, beta, alpha, zeta exactly as gnark computes them (see the module comment).
+pub fn gnark_challenges<const NP: usize, const NC: usize>(
+    _ vk: GnarkVk<NP, NC>,
+    _ pubs: [Bn254Fr; NP],
+    _ p: GnarkProof<NC>,
+) -> GnarkChallenges
+uses (call: Call)
+{
+    // gamma
+    let words = 22 + 2 * NC + NP
+    var buf = MemBuffer::with_capacity(5 + words * 32 + 32)
+    put_at(mut buf, 0, NAME_GAMMA)
+    var off: u256 = 5
+    off = w_g1(mut buf, off, vk.s1)
+    off = w_g1(mut buf, off, vk.s2)
+    off = w_g1(mut buf, off, vk.s3)
+    off = w_g1(mut buf, off, vk.ql)
+    off = w_g1(mut buf, off, vk.qr)
+    off = w_g1(mut buf, off, vk.qm)
+    off = w_g1(mut buf, off, vk.qo)
+    off = w_g1(mut buf, off, vk.qk)
+    var i: usize = 0
+    while i < NC {
+        off = w_g1(mut buf, off, vk.qcp[i])
+        i += 1
+    }
+    i = 0
+    while i < NP {
+        off = w(mut buf, off, pubs[i].to_canonical())
+        i += 1
+    }
+    off = w_g1(mut buf, off, p.l)
+    off = w_g1(mut buf, off, p.r)
+    off = w_g1(mut buf, off, p.o)
+    let gamma_raw = sha256(mut buf, 5 + words * 32)
+    // beta
+    var b1 = MemBuffer::with_capacity(64)
+    put_at(mut b1, 0, NAME_BETA)
+    put_at(mut b1, 4, gamma_raw)
+    let beta_raw = sha256(mut b1, 36)
+    // alpha
+    var b2 = MemBuffer::with_capacity(5 + (3 + 2 * NC) * 32 + 32)
+    put_at(mut b2, 0, NAME_ALPHA)
+    off = w(mut b2, 5, beta_raw)
+    i = 0
+    while i < NC {
+        off = w_g1(mut b2, off, p.bsb[i])
+        i += 1
+    }
+    off = w_g1(mut b2, off, p.z)
+    let alpha_raw = sha256(mut b2, 5 + (3 + 2 * NC) * 32)
+    // zeta
+    var b3 = MemBuffer::with_capacity(4 + 7 * 32 + 32)
+    put_at(mut b3, 0, NAME_ZETA)
+    off = w(mut b3, 4, alpha_raw)
+    off = w_g1(mut b3, off, p.h0)
+    off = w_g1(mut b3, off, p.h1)
+    off = w_g1(mut b3, off, p.h2)
+    let zeta_raw = sha256(mut b3, 4 + 7 * 32)
+    GnarkChallenges {
+        gamma: Bn254Fr::reduce(gamma_raw),
+        beta: Bn254Fr::reduce(beta_raw),
+        alpha: Bn254Fr::reduce(alpha_raw),
+        zeta: Bn254Fr::reduce(zeta_raw),
+        gamma_raw,
+        beta_raw,
+        alpha_raw,
+        zeta_raw,
+    }
+}
+
+/// `acc + [s] p`.
+fn acc_mul(_ acc: G1, _ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
+    g1_add(acc, g1_mul(p, s))
+}
+
+/// Runs the whole verification on canonical public inputs and returns every intermediate value.
+/// `trace.ok` is `false` (and the other fields are zero or generator placeholders) if zeta lies
+/// in the evaluation domain (a Lagrange denominator is zero); the proof is then not valid.
+pub fn gnark_trace<const NP: usize, const NC: usize>(
+    _ vk: GnarkVk<NP, NC>,
+    _ p: GnarkProof<NC>,
+    _ pubs: [Bn254Fr; NP],
+) -> GnarkTrace
+uses (call: Call)
+{
+    let ch = gnark_challenges(vk, pubs, p)
+    let zero = Bn254Fr::zero()
+    let one = Bn254Fr::one()
+    let gen = G1::generator()
+    let beta = ch.beta
+    let gamma = ch.gamma
+    let alpha = ch.alpha
+    let zeta = ch.zeta
+    let failed = GnarkTrace {
+        gamma,
+        beta,
+        alpha,
+        zeta,
+        gamma_kzg: zero,
+        random: zero,
+        pi: zero,
+        opening_lin: zero,
+        folded_value: zero,
+        lin: gen,
+        folded_digest: gen,
+        ok: false,
+    }
+
+    // zeta^n - 1
+    let n = 1 << vk.power
+    let zeta_n = zeta.pow(n)
+    let zh = zeta_n.sub(one)
+
+    // Lagrange L_0..L_{NP-1} at zeta with one batched inversion of (zeta - w^i).
+    var dens = [zero; NP]
+    var prefix = [zero; NP]
+    var wpow = [zero; NP]
+    var wi = one
+    var acc = one
+    var i: usize = 0
+    while i < NP {
+        let d = zeta.sub(wi)
+        dens[i] = d
+        prefix[i] = acc
+        wpow[i] = wi
+        acc = acc.mul(d)
+        wi = wi.mul(vk.w)
+        i += 1
+    }
+    if acc.is_zero() {
+        return failed
+    }
+    var inv_acc = acc.inv().unwrap()
+    var lag = [zero; NP]
+    let zn = zh.mul(vk.size_inv)
+    i = NP
+    while i > 0 {
+        i -= 1
+        let d_inv = inv_acc.mul(prefix[i])
+        inv_acc = inv_acc.mul(dens[i])
+        lag[i] = d_inv.mul(zn).mul(wpow[i])
+    }
+
+    // PI(zeta)
+    var pi = zero
+    i = 0
+    while i < NP {
+        pi = pi.add(lag[i].mul(pubs[i]))
+        i += 1
+    }
+    var j: usize = 0
+    while j < NC {
+        let wj = vk.w.pow((NP as u256) + vk.cci[j])
+        let den = zeta.sub(wj)
+        if den.is_zero() {
+            return failed
+        }
+        let lj = wj.mul(vk.size_inv).mul(den.inv().unwrap()).mul(zh)
+        pi = pi.add(hash_to_fr(p.bsb[j]).mul(lj))
+        j += 1
+    }
+
+    let el = p.eval_l
+    let er = p.eval_r
+    let eo = p.eval_o
+    let a2l0 = alpha.square().mul(lag[0])
+
+    // value of the linearised polynomial at zeta
+    let t_l = el.add(beta.mul(p.eval_s1)).add(gamma)
+    let t_r = er.add(beta.mul(p.eval_s2)).add(gamma)
+    let t_o = eo.add(gamma)
+    let opening_lin = t_l.mul(t_r).mul(t_o).mul(alpha).mul(p.eval_zu).add(pi).sub(a2l0).neg()
+
+    // commitment of the linearised polynomial
+    let s1c = t_l.mul(t_r).mul(beta).mul(alpha).mul(p.eval_zu)
+    let bz = beta.mul(zeta)
+    let u_l = el.add(bz).add(gamma)
+    let u_r = er.add(bz.mul(vk.coset_shift)).add(gamma)
+    let u_o = eo.add(bz.mul(vk.coset_shift.square())).add(gamma)
+    let s2c = a2l0.sub(u_l.mul(u_r).mul(u_o).mul(alpha))
+    // - Zh (H0 + zeta^(n+2) H1 + zeta^(2(n+2)) H2)
+    let zn2 = zeta_n.mul(zeta.square())
+    var h = g1_add(p.h1, g1_mul(p.h2, zn2))
+    h = g1_add(p.h0, g1_mul(h, zn2))
+    var lin = g1_add(vk.qk, g1_mul(vk.ql, el))
+    lin = acc_mul(lin, vk.qr, er)
+    lin = acc_mul(lin, vk.qm, el.mul(er))
+    lin = acc_mul(lin, vk.qo, eo)
+    j = 0
+    while j < NC {
+        lin = acc_mul(lin, p.bsb[j], p.qcp_eval[j])
+        j += 1
+    }
+    lin = acc_mul(lin, vk.s3, s1c)
+    lin = acc_mul(lin, p.z, s2c)
+    lin = g1_add(lin, g1_mul(h, zh).neg())
+
+    // gamma_kzg
+    let gwords = 20 + 3 * NC
+    var gb = MemBuffer::with_capacity(5 + gwords * 32 + 32)
+    put_at(mut gb, 0, NAME_GAMMA)
+    var off = w(mut gb, 5, zeta.to_canonical())
+    off = w_g1(mut gb, off, lin)
+    off = w_g1(mut gb, off, p.l)
+    off = w_g1(mut gb, off, p.r)
+    off = w_g1(mut gb, off, p.o)
+    off = w_g1(mut gb, off, vk.s1)
+    off = w_g1(mut gb, off, vk.s2)
+    j = 0
+    while j < NC {
+        off = w_g1(mut gb, off, vk.qcp[j])
+        j += 1
+    }
+    off = w(mut gb, off, opening_lin.to_canonical())
+    off = w(mut gb, off, el.to_canonical())
+    off = w(mut gb, off, er.to_canonical())
+    off = w(mut gb, off, eo.to_canonical())
+    off = w(mut gb, off, p.eval_s1.to_canonical())
+    off = w(mut gb, off, p.eval_s2.to_canonical())
+    j = 0
+    while j < NC {
+        off = w(mut gb, off, p.qcp_eval[j].to_canonical())
+        j += 1
+    }
+    off = w(mut gb, off, p.eval_zu.to_canonical())
+    let gk = Bn254Fr::reduce(sha256(mut gb, 5 + gwords * 32))
+
+    // fold the openings at zeta: digests lin, L, R, O, S1, S2, Qcp_j with powers gk^0, gk^1, ...
+    var fd = lin
+    var fv = opening_lin
+    var g = gk
+    fd = acc_mul(fd, p.l, g)
+    fv = fv.add(el.mul(g))
+    g = g.mul(gk)
+    fd = acc_mul(fd, p.r, g)
+    fv = fv.add(er.mul(g))
+    g = g.mul(gk)
+    fd = acc_mul(fd, p.o, g)
+    fv = fv.add(eo.mul(g))
+    g = g.mul(gk)
+    fd = acc_mul(fd, vk.s1, g)
+    fv = fv.add(p.eval_s1.mul(g))
+    g = g.mul(gk)
+    fd = acc_mul(fd, vk.s2, g)
+    fv = fv.add(p.eval_s2.mul(g))
+    j = 0
+    while j < NC {
+        g = g.mul(gk)
+        fd = acc_mul(fd, vk.qcp[j], g)
+        fv = fv.add(p.qcp_eval[j].mul(g))
+        j += 1
+    }
+
+    // random combination of the two openings (as the Solidity verifier)
+    var rb = MemBuffer::with_capacity(10 * 32 + 32)
+    off = w_g1(mut rb, 0, fd)
+    off = w_g1(mut rb, off, p.w_zeta)
+    off = w_g1(mut rb, off, p.z)
+    off = w_g1(mut rb, off, p.w_zeta_omega)
+    off = w(mut rb, off, zeta.to_canonical())
+    off = w(mut rb, off, gk.to_canonical())
+    let rnd = Bn254Fr::reduce(sha256(mut rb, 10 * 32))
+
+    // e(D + rnd Z - [v + rnd zu]_1 + zeta W + rnd zeta w Ww, [1]_2) * e(-(W + rnd Ww), [x]_2) == 1
+    var dtot = acc_mul(fd, p.z, rnd)
+    dtot = g1_add(dtot, g1_mul(gen, fv.add(rnd.mul(p.eval_zu))).neg())
+    dtot = acc_mul(dtot, p.w_zeta, zeta)
+    dtot = acc_mul(dtot, p.w_zeta_omega, rnd.mul(zeta).mul(vk.w))
+    let quot = acc_mul(p.w_zeta, p.w_zeta_omega, rnd).neg()
+    let ok = pairing_check([dtot, quot], [G2::generator(), vk.x2])
+    GnarkTrace {
+        gamma,
+        beta,
+        alpha,
+        zeta,
+        gamma_kzg: gk,
+        random: rnd,
+        pi,
+        opening_lin,
+        folded_value: fv,
+        lin,
+        folded_digest: fd,
+        ok,
+    }
+}
+
+/// Verifies `proof` for public inputs `pubs_raw` against `vk`. `false` if any public input is
+/// `>= r` (never reduced) or the pairing check fails. Reverts only if a precompile call fails.
+pub fn gnark_plonk_verify<const NP: usize, const NC: usize>(
+    _ vk: GnarkVk<NP, NC>,
+    _ proof: GnarkProof<NC>,
+    _ pubs_raw: [u256; NP],
+) -> bool
+uses (call: Call)
+{
+    var pubs = [Bn254Fr::zero(); NP]
+    var i: usize = 0
+    while i < NP {
+        match Bn254Fr::from_canonical(pubs_raw[i]) {
+            Option::Some(f) => {
+                pubs[i] = f
+            },
+            Option::None => {
+                return false
+            },
+        }
+        i += 1
+    }
+    gnark_trace(vk, proof, pubs).ok
+}
+
+/// One call from the raw `MarshalSolidity()` words: `fixed` (24 words), the `NC` selector
+/// openings and the `NC` BSB22 commitments. `false` if the proof words are not canonical on-curve
+/// data, a public input is not canonical, or the proof does not verify.
+pub fn gnark_plonk_verify_words<const NP: usize, const NC: usize>(
+    _ vk: GnarkVk<NP, NC>,
+    _ fixed: [u256; 24],
+    _ qcp_at_zeta: [u256; NC],
+    _ bsb: [[u256; 2]; NC],
+    _ pubs: [u256; NP],
+) -> bool
+uses (call: Call)
+{
+    match GnarkProof<NC>::from_words(fixed, qcp_at_zeta, bsb) {
+        Option::Some(p) => gnark_plonk_verify(vk, p, pubs),
+        Option::None => false,
+    }
+}

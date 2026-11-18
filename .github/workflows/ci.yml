@@ -35,3 +35,12 @@ jobs:
         run: |
           cargo test --release
           cargo run --release -- --pattern glider --gens 64 --no-anim --check --bin ../out/Life.bin
+      - name: fe-zk-gen
+        working-directory: gen
+        run: cargo test
+      # Emits the membership verifier with fe-zk-gen, checks it is unchanged, and runs the
+      # generated verifier's tests and the demo contract's tests.
+      - name: Membership demo
+        run: |
+          scripts/demo.sh
+          git diff --exit-code examples/membership

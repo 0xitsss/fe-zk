@@ -28,3 +28,4 @@ node_modules/
 # Local agent tooling
 .claude/worktrees/
 .serena/
+__pycache__/
