@@ -4,7 +4,7 @@
 # Verifier.sol r1cs-info.txt input.json boards.json stats.txt
 # usage: scripts/life-prove.sh <pattern: glider|blinker|rpentomino|random> <N> [seed]
 # Needs: scripts/setup-tools.sh run first (circom, node, snarkjs in vectors/js). Python 3.
-# Env: CIRCOM (circom binary), CACHE (default vectors/cache; ptau/zkey/wasm live here and are never
+# Env: OUT (fixture dir, default vectors/groth16/life_<N>), CIRCOM (circom binary), CACHE (default vectors/cache; ptau/zkey/wasm live here and are never
 #      committed; ptau files are 0.15 - 2.4 GB), NO_NEG=1 skips the negative tests.
 # Test-only setup: phase-2 entropy is a fixed public string, so the keys are INSECURE by design.
 set -euo pipefail
@@ -17,7 +17,7 @@ CIRCOM="${CIRCOM:-$ZK_TOOLS_DIR/bin/circom}"
 JS="$ROOT/vectors/js"
 SNARKJS="$JS/node_modules/.bin/snarkjs"
 CACHE="${CACHE:-$ROOT/vectors/cache}"
-OUT="$ROOT/vectors/groth16/life_$N"
+OUT="${OUT:-$ROOT/vectors/groth16/life_$N}"
 W="$CACHE/life_$N"
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=14000}"
 

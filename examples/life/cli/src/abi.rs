@@ -25,6 +25,15 @@ pub fn encode_run(board: U256, n: u64) -> Vec<u8> {
     d
 }
 
+/// Calldata for a message whose arguments are all static 32-byte words (flattened arrays included).
+pub fn encode_words(signature: &str, words: &[U256]) -> Vec<u8> {
+    let mut d = selector(signature).to_vec();
+    for w in words {
+        d.extend_from_slice(&word(*w));
+    }
+    d
+}
+
 /// Decode a single `uint256` return value.
 pub fn decode_word(data: &[u8]) -> Result<U256, String> {
     if data.len() != 32 {
