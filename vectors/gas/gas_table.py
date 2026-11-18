@@ -223,10 +223,10 @@ def main():
         s = measure(ctx, s_bin, None, "".join(raw), "".join(tamper(raw, 0)), expect_bool=False)
         rows.append((f"halo2-KZG {kind.upper()} (snark-verifier)", "standard_plonk_lookup, N=1", f, s))
 
-    # ---- halo2 SHPLONK with the library's own runtime-validated vk()
+    # ---- halo2 SHPLONK with a runtime-validated key (G2::from_coords at every call)
     inst, words = halo2_fixture("shplonk")
     raw = inst + words
-    libvk = measure(ctx, fe("Halo2ShplonkLibVk"), "verify(uint256[1],uint256[57])", "".join(raw), "".join(tamper(raw, 0)))
+    libvk = measure(ctx, fe("Halo2ShplonkRuntimeVk"), "verify(uint256[1],uint256[57])", "".join(raw), "".join(tamper(raw, 0)))
     shplonk_row = [r for r in rows if r[0].startswith("halo2-KZG SHPLONK")][0][2]
 
     # ---- KZG (Fe only)
@@ -277,7 +277,11 @@ def main():
 
     # ---- Life
     start = "0000000000000000000000000100018003000000000000000000000000000000"
-    life_bin = os.path.join(a.work, "life", "Life.bin")
+    # `Life` has `init(verifier: Address)`; the pure step/run messages never use it, so deploy with the zero address
+    # (one ABI-encoded constructor word appended to the creation code).
+    life_bin = os.path.join(a.work, "life", "Life_zero_verifier.bin")
+    with open(os.path.join(a.work, "life", "Life.bin")) as src, open(life_bin, "w") as dst:
+        dst.write(src.read().strip() + "00" * 32)
     life = {}
     for ngen in (64, 512):
         fx = f"life_{ngen}"
@@ -357,7 +361,7 @@ def main():
         f, s = g16_results[f"life_{n}"]
         P(f"| {n} | {fmt(l['steps']['exec'])} | {fmt(l['steps']['tx'])} | {fmt(l['run']['exec'])} | {fmt(l['run']['tx'])} | {fmt(f['exec'])} | {fmt(f['tx'])} | {fmt(s['exec'])} | {fmt(s['tx'])} |")
     P("")
-    P(f"One `step()` call: exec {fmt(life['step1']['exec'])}, tx {fmt(life['step1']['tx'])}. Deployed `Life` code: {fmt(life[64]['code'])} bytes.\n")
+    P(f"One `step()` call: exec {fmt(life['step1']['exec'])}, tx {fmt(life['step1']['tx'])}. Deployed `Life` code: {fmt(life[64]["code"])} bytes (the whole contract, including the zk-path messages and the Poseidon commitment code; deployed with the zero address as verifier, which the pure `step` and `run` messages do not use).\n")
 
     P("## Deployed code size and deployment gas\n")
     P("| Contract | Fe bytes | Solidity bytes | Fe deploy gas | Solidity deploy gas |")
@@ -381,7 +385,7 @@ def main():
     P("## Analysis\n")
     P(f"- Fe / Solidity execution gas: Groth16 {rng(g_ratios)}; snarkjs PLONK {rng(p_ratios)}; gnark PLONK {rng(gn_ratios)}; halo2-KZG {rng(h_ratios)}.")
     P("- Where the cost is: every one of these verifiers is dominated by the EC precompiles (ecAdd 0x06, ecMul 0x07, ecPairing 0x08) and modexp (0x05), priced identically for both languages. What differs is the work around each precompile call. Hand-optimised Solidity/Yul verifiers keep operands in scratch memory and fuse the field arithmetic. The Fe library calls the precompiles through typed wrappers (`G1`, `G2`, `Bn254Fr`): each call allocates a fixed buffer (a per-call cost measured in `docs/DESIGN.md`, \"Precompile wrapper gas\"), re-checks success and returned length (safety rule 6), and the scalar-field code works on checked canonical elements. Groth16 makes few calls (one `ecMul` and `ecAdd` per input and one 4-pair pairing), so it is closest to Solidity; the PLONK-family verifiers make dozens of calls and sit further above.")
-    P(f"- Verifying keys are compile-time constants: the generated Groth16 contract validates its key (on curve, G2 subgroup) during compilation with `static_assert`, which costs no runtime gas. The wrappers of the other families do the same for every key point. This matters: the library's own `halo2::standard_plonk_lookup::vk()` builds its two G2 points with `G2::from_coords`, which runs the subgroup check at every call. A contract using it as is costs {fmt(libvk['exec'])} exec gas for the SHPLONK proof instead of {fmt(shplonk_row['exec'])}, an extra {fmt(libvk['exec'] - shplonk_row['exec'])} gas for the key check alone (the contract `Halo2ShplonkLibVk` exists only for this comparison). `PlonkVk::new` and `GnarkVk::new` also run their (cheap) root-of-unity checks at call time; they are included in the PLONK numbers.")
+    P(f"- Verifying keys are compile-time constants: the generated Groth16 contract validates its key (on curve, G2 subgroup) during compilation with `static_assert`, which costs no runtime gas. The wrappers of the other families do the same for every key point. This matters: if the two G2 points of the halo2 key are built at runtime with `G2::from_coords`, the subgroup check runs at every call. That variant costs {fmt(libvk['exec'])} exec gas for the SHPLONK proof instead of {fmt(shplonk_row['exec'])}, an extra {fmt(libvk['exec'] - shplonk_row['exec'])} gas for the key check alone (the contract `Halo2ShplonkRuntimeVk` exists only for this comparison). Every Fe row uses the compile-time path: `PlonkVk::from_consts`, `GnarkVk::from_consts`, `Halo2Vk::from_consts`, `KzgVk::from_consts` with `static_assert` on every point and on the evaluation domain (`plonk_domain_is_valid`, `gnark_domain_is_valid`), as in the generated ingots. The runtime constructors (`::new`) are not used in the numbers.")
     P("- Poseidon: one generic implementation over the `Field` trait is unrolled into straight-line code at compile time; against hand-written bytecode it uses less execution gas but more code (see the size table).")
     P("- The checks that Fe adds by construction (canonical inputs, curve membership of every proof point, pairing output exactly 1, fixed input count) are part of the numbers above. A reference verifier may check less: for example snarkjs' Groth16 verifier range-checks the public inputs and leaves point validation to the precompiles. The gas gap is therefore not purely overhead.")
     P("- Where Fe is more expensive for a structural reason: `std` only exposes `Call.raw_staticcall` on a heap `MemBuffer`, so each precompile call pays for a buffer. A `raw_staticcall` taking a pointer and length would remove most of that per-call allocation (`docs/DESIGN.md`).")

@@ -1,12 +1,12 @@
 //! snarkjs PLONK verifier wrappers (multiplier2: 2 public inputs, membership: 3).
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::field::{Bn254Fr, Field}
-use fe_zk::verifier::plonk::{PlonkVk, plonk_verify_words}
+use fe_zk::verifier::plonk::{PlonkVk, plonk_domain_is_valid, plonk_verify_words}
 use std::evm::Call
 use ingot::fx_plonk::*
 
-// Key points are compile-time constants (CTFE-validated, as in the fe-zk-gen output): no on-curve or
-// subgroup check runs at call time.
+// Key points and domain are compile-time constants (CTFE-validated with static_assert, as in the
+// fe-zk-gen output) and the key is built with `PlonkVk::from_consts`: no on-curve, subgroup or
+// root-of-unity check runs at call time.
 const M2_QM: G1 = G1::from_coords_or_infinity(M2_QM_X, M2_QM_Y)
 const M2_QL: G1 = G1::from_coords_or_infinity(M2_QL_X, M2_QL_Y)
 const M2_QR: G1 = G1::from_coords_or_infinity(M2_QR_X, M2_QR_Y)
@@ -26,6 +26,7 @@ static_assert(g1_is_valid(M2_S2_X, M2_S2_Y))
 static_assert(g1_is_valid(M2_S3_X, M2_S3_Y))
 static_assert(g2_is_valid(M2_X2_X0, M2_X2_X1, M2_X2_Y0, M2_X2_Y1))
 static_assert(!M2_X2.is_infinity())
+static_assert(plonk_domain_is_valid(M2_POWER, M2_W, M2_K1, M2_K2))
 const MB_QM: G1 = G1::from_coords_or_infinity(MB_QM_X, MB_QM_Y)
 const MB_QL: G1 = G1::from_coords_or_infinity(MB_QL_X, MB_QL_Y)
 const MB_QR: G1 = G1::from_coords_or_infinity(MB_QR_X, MB_QR_Y)
@@ -45,10 +46,7 @@ static_assert(g1_is_valid(MB_S2_X, MB_S2_Y))
 static_assert(g1_is_valid(MB_S3_X, MB_S3_Y))
 static_assert(g2_is_valid(MB_X2_X0, MB_X2_X1, MB_X2_Y0, MB_X2_Y1))
 static_assert(!MB_X2.is_infinity())
-
-fn fr(_ v: u256) -> Bn254Fr {
-    Bn254Fr::from_canonical(v).unwrap()
-}
+static_assert(plonk_domain_is_valid(MB_POWER, MB_W, MB_K1, MB_K2))
 
 fn m2_vk() -> PlonkVk<2> {
     let c = [
@@ -62,7 +60,7 @@ fn m2_vk() -> PlonkVk<2> {
         M2_S3,
     ]
     let x2 = M2_X2
-    PlonkVk<2>::new(M2_POWER, fr(M2_W), fr(M2_K1), fr(M2_K2), c, x2).unwrap()
+    PlonkVk<2>::from_consts(M2_POWER, M2_W, M2_K1, M2_K2, c, x2)
 }
 
 fn mb_vk() -> PlonkVk<3> {
@@ -77,7 +75,7 @@ fn mb_vk() -> PlonkVk<3> {
         MB_S3,
     ]
     let x2 = MB_X2
-    PlonkVk<3>::new(MB_POWER, fr(MB_W), fr(MB_K1), fr(MB_K2), c, x2).unwrap()
+    PlonkVk<3>::from_consts(MB_POWER, MB_W, MB_K1, MB_K2, c, x2)
 }
 
 msg PlonkMultiplier2Msg {

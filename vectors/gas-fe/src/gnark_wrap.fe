@@ -2,13 +2,13 @@
 //! gnark's `MarshalSolidity()` proof split into the fixed 24 words, the commitment-selector
 //! openings and the BSB22 commitments, followed by the 2 public inputs.
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::field::{Bn254Fr, Field}
-use fe_zk::verifier::gnark_plonk::{GnarkVk, gnark_plonk_verify_words}
+use fe_zk::verifier::gnark_plonk::{GnarkVk, gnark_domain_is_valid, gnark_plonk_verify_words}
 use std::evm::Call
 use ingot::fx_gnark::*
 
-// Key points are compile-time constants (CTFE-validated, as in the fe-zk-gen output): no on-curve or
-// subgroup check runs at call time.
+// Key points and domain are compile-time constants (CTFE-validated with static_assert, as in the
+// fe-zk-gen output) and the key is built with `GnarkVk::from_consts`: no on-curve, subgroup or
+// root-of-unity check runs at call time.
 const GM_QL: G1 = G1::from_coords_or_infinity(GM_QL_X, GM_QL_Y)
 const GM_QR: G1 = G1::from_coords_or_infinity(GM_QR_X, GM_QR_Y)
 const GM_QM: G1 = G1::from_coords_or_infinity(GM_QM_X, GM_QM_Y)
@@ -28,6 +28,7 @@ static_assert(g1_is_valid(GM_S2_X, GM_S2_Y))
 static_assert(g1_is_valid(GM_S3_X, GM_S3_Y))
 static_assert(g2_is_valid(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1))
 static_assert(!GM_X2.is_infinity())
+static_assert(gnark_domain_is_valid(GM_POWER, GM_W, GM_K))
 const GC_QL: G1 = G1::from_coords_or_infinity(GC_QL_X, GC_QL_Y)
 const GC_QR: G1 = G1::from_coords_or_infinity(GC_QR_X, GC_QR_Y)
 const GC_QM: G1 = G1::from_coords_or_infinity(GC_QM_X, GC_QM_Y)
@@ -49,10 +50,7 @@ static_assert(g1_is_valid(GC_S3_X, GC_S3_Y))
 static_assert(g1_is_valid(GC_QCP0_X, GC_QCP0_Y))
 static_assert(g2_is_valid(GC_X2_X0, GC_X2_X1, GC_X2_Y0, GC_X2_Y1))
 static_assert(!GC_X2.is_infinity())
-
-fn fr(_ v: u256) -> Bn254Fr {
-    Bn254Fr::from_canonical(v).unwrap()
-}
+static_assert(gnark_domain_is_valid(GC_POWER, GC_W, GC_K))
 
 fn gm_vk() -> GnarkVk<2, 0> {
     let c = [
@@ -67,7 +65,7 @@ fn gm_vk() -> GnarkVk<2, 0> {
     ]
     let no_points: [G1; 0] = []
     let x2 = GM_X2
-    GnarkVk<2, 0>::new(GM_POWER, fr(GM_W), fr(GM_K), c, no_points, gm_cci(), x2).unwrap()
+    GnarkVk<2, 0>::from_consts(GM_POWER, GM_W, GM_K, c, no_points, gm_cci(), x2)
 }
 
 fn gc_vk() -> GnarkVk<2, 1> {
@@ -83,7 +81,7 @@ fn gc_vk() -> GnarkVk<2, 1> {
     ]
     let q = [GC_QCP0]
     let x2 = GC_X2
-    GnarkVk<2, 1>::new(GC_POWER, fr(GC_W), fr(GC_K), c, q, gc_cci(), x2).unwrap()
+    GnarkVk<2, 1>::from_consts(GC_POWER, GC_W, GC_K, c, q, gc_cci(), x2)
 }
 
 msg GnarkMulMsg {
