@@ -56,7 +56,7 @@ Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool 
 |---|---|---|---|---|---|---|
 | Groth16 | snarkjs, arkworks | [`groth16.fe`](src/verifier/groth16.fe) | `fe-zk-gen groth16` | `vectors/groth16` | `src/tests/groth16.fe` | 191,620 / 188,926 (N=1); 207,341 / 202,220 (N=3) |
 | PLONK | snarkjs 0.7.6 | [`plonk.fe`](src/verifier/plonk.fe) | `fe-zk-gen plonk` | `vectors/plonk` | `src/tests/plonk.fe` | 293,471 / 263,536 (N=3) |
-| PLONK | gnark v0.12.0 | [`gnark_plonk.fe`](src/verifier/gnark_plonk.fe) | none (typed constants) | `vectors/gnark` | `src/tests/gnark_plonk.fe` | 329,800 / 261,868 |
+| PLONK | gnark v0.12.0 | [`gnark_plonk.fe`](src/verifier/gnark_plonk.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark_plonk.fe` | 329,800 / 261,868 |
 | halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 391,913 / 322,590 (SHPLONK) |
 | KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,369 single opening, no reference |
 | FRI/STARK | Plonky3 `uni-stark` Fibonacci | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe` | 651,654, no reference exists |
@@ -335,19 +335,22 @@ and the assumptions:
   through `fe-zk-gen` into `examples/real_semaphore/verifier` (Semaphore's own Solidity verifier accepts the same proof
   in revm). Still test-only: **the Groth16 phase 2 of our own demo circuits** (`multiplier*`, `membership`, `life_*`)
   is a single contribution with a public entropy string, so the delta toxic waste is known and those keys are insecure
-  even though phase 1 is the real ceremony; the arkworks Groth16 setup uses a fixed RNG seed; the gnark PLONK SRS comes
-  from gnark's unsafe test generator (known tau). Do not deploy any of the demo keys; deploy your own ceremony's key.
+  even though phase 1 is the real ceremony; the arkworks Groth16 setup uses a fixed RNG seed. The gnark PLONK fixtures are no longer on a
+  known-tau SRS: `vectors/gnark` converts the real PSE `ppot_0080_05` (sha256 pinned) to gnark's canonical and Lagrange
+  SRS instead of using `unsafekzg`. Do not deploy any of the demo keys; deploy your own ceremony's key.
 - **Malleability.** Groth16 proofs are malleable (rule 8); the examples never use a proof or its hash as an id.
 - **Membership demo.** The tree is permissionless (anyone can insert) and has 1024 leaves; a deployment can bootstrap
   a root of an earlier tree (`bootstrap_root`) that the contract cannot verify. Proofs are not bound to `msg.sender`,
   so a front-runner can submit someone's proof first and burn the nullifier (the proof still verifies for the
   intended statement). The external nullifier is fixed per contract (the scope).
-- **gnark keys.** gnark keys with an all-zero (infinity) selector commitment are refused. This is a liveness
-  limitation, not a soundness one.
+- **gnark keys.** gnark keys with an all-zero (infinity) selector commitment are refused (the generator refuses them
+  too). This is a liveness limitation, not a soundness one. The generated contract returns `false` for a wrong proof or
+  input length where gnark's Solidity verifier reverts.
 - **Game of Life.** The stored board is public (the demo shows succinctness, not privacy); `N` = 512 is fixed by the
   key; the circuit setup needs a 2^20 ptau and 9 GB of RAM to prove.
 - **Generated code style.** The emitters write valid but not `fe fmt`-clean code; `scripts/demo.sh` runs `fe fmt` on
-  the output. The generator reads no gnark keys (no `--gnark` option); gnark PLONK is covered by the library verifier only.
+  the output. The gnark generator reads the JSON that `vectors/gnark` exports (key fields as 0x words), not gnark's
+  binary `vk` serialisation.
 - **BLS12-381.** The EIP-2537 wrappers and the point-evaluation wrapper are tested on the test EVM (Prague/Osaka); no
   verifier is built on them yet beyond the KZG tests.
 - **Not audited.** No external review. See `docs/SAFETY.md` for what is enforced and tested.
@@ -424,3 +427,8 @@ trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforc
 ## License
 
 Apache-2.0 (see `LICENSE`).
+
+## Project policy
+
+[SECURITY.md](SECURITY.md) (reporting, scope, threat model, not audited), [CHANGELOG.md](CHANGELOG.md),
+[docs/API.md](docs/API.md) (generated public API of the `fe_zk` ingot).

@@ -75,6 +75,21 @@ fn every_emitted_verifier_fits_eip170() {
         dirs.push(d);
     }
 
+    for n in ["mul", "mulcommit"] {
+        let vk = fe_zk_gen::parse_gnark_vk(&read(&format!("gnark/{n}/fixture.json"))).unwrap();
+        let e = fe_zk_gen::emit_gnark_ingot(
+            &vk,
+            &fe_zk_gen::GnarkEmitOptions {
+                fe_zk_path: "../..".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = base.join(format!("gnark_{n}"));
+        write_ingot(&d, &e);
+        dirs.push(d);
+    }
+
     let hvk = parse_halo2_vk(&read("halo2/standard_plonk_lookup/vk.json")).unwrap();
     for (n, scheme) in [
         ("shplonk", Halo2Scheme::Shplonk),

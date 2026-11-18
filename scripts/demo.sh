@@ -8,6 +8,7 @@
 #   5. halo2-KZG verifiers (one contract per multiopen scheme) emitted from
 #      vectors/halo2/standard_plonk_lookup and tested
 #   5b. real-world Semaphore v4 key (public ceremony) emitted from vectors/groth16/real_semaphore_d10 and tested
+#   5c. gnark PLONK verifier (ABI of gnark's Solidity verifier) emitted from vectors/gnark/mul and tested
 #   6. code size table: every generated verifier and example contract must fit EIP-170 (24,576 bytes)
 # Needs: `fe` (26.5.0) and a Rust toolchain on PATH. Set FE=/path/to/fe to override the binary.
 set -euo pipefail
@@ -51,9 +52,16 @@ R=vectors/groth16/real_semaphore_d10
     --name RealSemaphore --out ../examples/real_semaphore/verifier --fe-zk-path ../../..)
 (cd examples/real_semaphore/verifier && "$FE" fmt >/dev/null && "$FE" test)
 
+echo "== 5c. gnark PLONK (real ceremony SRS): fe-zk-gen gnark -> generated verifier -> fe test"
+GN=vectors/gnark/mul/fixture.json
+(cd gen && cargo run -q -p fe-zk-gen -- gnark \
+    --vk "../$GN" --proof "../$GN" --public "../$GN" \
+    --name GnarkMul --out ../examples/gnark/mul_verifier --fe-zk-path ../../..)
+(cd examples/gnark/mul_verifier && "$FE" fmt >/dev/null && "$FE" test)
+
 echo "== 6. deployed code size (EIP-170 limit 24,576 bytes; fails if any contract is over)"
 scripts/code-size.sh examples/membership/verifier examples/membership \
     examples/plonk/membership_verifier examples/halo2/circuit_verifier \
-    examples/real_semaphore/verifier examples/life/verifier examples/life
+    examples/real_semaphore/verifier examples/gnark/mul_verifier examples/life/verifier examples/life
 
 echo "demo OK"

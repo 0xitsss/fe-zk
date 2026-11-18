@@ -205,6 +205,14 @@ Gas (`docs/GAS.md`, execution, revm): `mul` 329.8k vs gnark Solidity 261.9k (1.2
 The gnark verifier is the furthest above Solidity; its transcript runs on the sha256 precompile, so it pays the
 per-call wrapper overhead (see "Precompile wrapper gas") on every challenge as well.
 
+`fe-zk-gen gnark` (`gen/fe-zk-gen/src/gnark.rs`) emits a contract with gnark's own Solidity ABI,
+`Verify(bytes,uint256[])`. Fe's `Bytes` and `Vec<u256>` message fields decode the dynamic arguments;
+`gnark_plonk_verify_bytes` rejects any length other than the key's fixed `24 + 3 NC` proof words and `NP` inputs before
+reading a word (safety rule 4: the dynamic ABI must not let a caller drop or append an input). The key is compile-time
+constants checked by `static_assert` and `GnarkVk::from_consts`. The gnark fixtures use the real PSE `ppot_0080_05`
+SRS (`vectors/gnark/ptau.go` converts ptau to gnark's canonical and Lagrange SRS, checking the generators, the pairing
+ratio of every consecutive power and that the Lagrange points sum to the generator).
+
 ## Setup provenance: real ceremony material where the protocol allows it
 
 A universal SRS needs no per-circuit ceremony, so the halo2-KZG fixtures (`ppot_0080_05` converted to halo2
