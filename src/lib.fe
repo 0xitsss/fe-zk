@@ -51,6 +51,7 @@ pub use verifier::{
     Halo2Vk,
     KzgVk,
     gnark_plonk_verify,
+    gnark_plonk_verify_bytes,
     PlonkProof,
     PlonkVk,
     kzg_batch_verify_gwc,

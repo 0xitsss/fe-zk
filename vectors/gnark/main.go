@@ -6,8 +6,9 @@
 //   - <name>/fixture.json: vk words, proof words (gnark MarshalSolidity layout, 32-byte
 //     words), public inputs and the Fiat-Shamir challenges recomputed independently here.
 //
-// The KZG SRS comes from gnark's test/unsafekzg (known toxic waste). TEST ONLY: proofs made
-// with it prove nothing.
+// The KZG SRS is the real Perpetual Powers of Tau ceremony (PSE ppot_0080_05, sha256 pinned in
+// ptau.go; nobody knows tau), converted to gnark's canonical + Lagrange form by srsFromPtau.
+// Usage: go run . <out dir> <path to ppot_0080_05.ptau>
 package main
 
 import (
@@ -29,7 +30,6 @@ import (
 	plonkbn254 "github.com/consensys/gnark/backend/plonk/bn254"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/scs"
-	"github.com/consensys/gnark/test/unsafekzg"
 )
 
 // Mul: x * y + 7 == z with public x, z and secret y.
@@ -296,11 +296,11 @@ func replay(vk *plonkbn254.VerifyingKey, proof *plonkbn254.Proof, pub fr.Vector)
 	}
 }
 
-func run(name string, circuit frontend.Circuit, assign frontend.Circuit, outDir string) {
+func run(name string, circuit frontend.Circuit, assign frontend.Circuit, outDir, ptauPath string) {
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, circuit)
 	must(err)
-	srs, srsLag, err := unsafekzg.NewSRS(ccs)
-	must(err)
+	n := ecc.NextPowerOfTwo(uint64(ccs.GetNbConstraints() + ccs.GetNbPublicVariables()))
+	srs, srsLag := srsFromPtau(ptauPath, n)
 	pk, vkI, err := plonk.Setup(ccs, srs, srsLag)
 	must(err)
 	w, err := frontend.NewWitness(assign, ecc.BN254.ScalarField())
@@ -336,7 +336,7 @@ func run(name string, circuit frontend.Circuit, assign frontend.Circuit, outDir 
 	out := map[string]any{
 		"name":                 name,
 		"gnark_version":        "v0.12.0",
-		"srs":                  "gnark test/unsafekzg (known toxic waste, TEST ONLY)",
+		"srs":                  "PSE perpetual powers of tau ppot_0080_05 (real ceremony, sha256 " + PtauSHA256 + ")",
 		"size":                 vk.Size,
 		"size_inv":             frHex(&sizeInv),
 		"generator":            frHex(&gen),
@@ -369,7 +369,7 @@ func must(err error) {
 }
 
 func main() {
-	out := os.Args[1]
-	run("mul", &Mul{}, &Mul{X: 3, Y: 5, Z: 22}, filepath.Join(out, "mul"))
-	run("mulcommit", &MulCommit{}, &MulCommit{X: 3, Y: 5, Z: 22}, filepath.Join(out, "mulcommit"))
+	out, ptau := os.Args[1], os.Args[2]
+	run("mul", &Mul{}, &Mul{X: 3, Y: 5, Z: 22}, filepath.Join(out, "mul"), ptau)
+	run("mulcommit", &MulCommit{}, &MulCommit{X: 3, Y: 5, Z: 22}, filepath.Join(out, "mulcommit"), ptau)
 }

@@ -30,5 +30,6 @@ pub use gnark_plonk::{
     GnarkVk,
     gnark_domain_is_valid,
     gnark_plonk_verify,
+    gnark_plonk_verify_bytes,
     gnark_plonk_verify_words,
 }

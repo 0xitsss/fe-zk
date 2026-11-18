@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fe_zk_gen::{
+    emit_gnark_ingot, gnark_key_digest, parse_gnark_proof_words, parse_gnark_public, parse_gnark_vk,
+    GnarkEmitOptions, GnarkFixture,
     emit_halo2_ingot, emit_halo2_module, emit_ingot, emit_plonk_ingot, halo2_key_digest,
     key_digest, parse_arkworks, parse_arkworks_proof, parse_halo2_proof, parse_halo2_vk,
     parse_plonk_snarkjs, parse_plonk_snarkjs_proof, parse_public, parse_snarkjs,
@@ -28,6 +30,8 @@ enum Cmd {
     Plonk(PlonkArgs),
     /// halo2-KZG (halo2-axiom, EvmTranscript) over BN254, SHPLONK and GWC
     Halo2(Halo2Args),
+    /// PLONK (gnark v0.12.0) over BN254 with KZG, ABI of gnark's Solidity verifier
+    Gnark(GnarkArgs),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -138,6 +142,101 @@ fn run_halo2(a: Halo2Args) -> ExitCode {
         gwc,
     };
     let ing = match emit_halo2_ingot(&vk, &opts) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = write_ingot(out, &ing) {
+        eprintln!("error: {out}: {e}");
+        return ExitCode::from(2);
+    }
+    println!("  emitted       : {out} (ingot {})", ing.ingot_name);
+    ExitCode::SUCCESS
+}
+
+#[derive(Args)]
+struct GnarkArgs {
+    /// gnark key JSON as exported by vectors/gnark (fixture.json: size, generator, coset_shift,
+    /// nb_public, s, ql..qk, qcp, commit_constraint_ix, g1, g2, g2_x)
+    #[arg(long, value_name = "FILE")]
+    vk: String,
+    /// JSON with `proof_words` (gnark MarshalSolidity() words, 0x hex); emits a test with a real
+    /// proof (fixture.json itself works)
+    #[arg(long, value_name = "FILE", requires = "public")]
+    proof: Option<String>,
+    /// JSON array (or object with `public`) of the public inputs of the proof
+    #[arg(long, value_name = "FILE", requires = "proof")]
+    public: Option<String>,
+    /// Name of the verifier (alphanumeric); contract is `<NAME>Verifier`
+    #[arg(long, default_value = "Gnark")]
+    name: String,
+    /// Output directory for the Fe ingot; without it the key is only validated
+    #[arg(long, value_name = "DIR")]
+    out: Option<String>,
+    /// Path to the fe_zk ingot as written into fe.toml (relative to the output dir)
+    #[arg(long, value_name = "PATH", default_value = "../..")]
+    fe_zk_path: String,
+}
+
+fn run_gnark(a: GnarkArgs) -> ExitCode {
+    let vk = match read(&a.vk).and_then(|j| parse_gnark_vk(&j).map_err(|e| e.to_string())) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let digest = match gnark_key_digest(&vk) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: invalid verifying key: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    println!("fe-zk-gen {TOOL_VERSION}: plonk/bn254 key from gnark: VALID");
+    println!("  public inputs : {}", vk.n_public);
+    println!("  BSB22 commits : {}", vk.n_commit());
+    println!("  domain        : 2^{}", vk.power());
+    println!("  key digest    : 0x{}", hex::encode(digest));
+    let Some(out) = &a.out else {
+        return ExitCode::SUCCESS;
+    };
+    let fixture = match (&a.proof, &a.public) {
+        (Some(pp), Some(pu)) => {
+            let f = read(pp)
+                .and_then(|j| parse_gnark_proof_words(&j).map_err(|e| e.to_string()))
+                .and_then(|proof_words| {
+                    read(pu)
+                        .and_then(|j| parse_gnark_public(&j).map_err(|e| e.to_string()))
+                        .map(|public| GnarkFixture {
+                            proof_words,
+                            public,
+                        })
+                });
+            match f {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        _ => None,
+    };
+    let source = Path::new(&a.vk)
+        .parent()
+        .and_then(|d| d.file_name())
+        .map(|s| format!("{}/fixture.json", s.to_string_lossy()))
+        .unwrap_or_else(|| a.vk.clone());
+    let opts = GnarkEmitOptions {
+        name: a.name.clone(),
+        source,
+        fe_zk_path: a.fe_zk_path.clone(),
+        fixture,
+    };
+    let ing = match emit_gnark_ingot(&vk, &opts) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("error: {e}");
@@ -319,6 +418,7 @@ fn main() -> ExitCode {
         Cmd::Groth16(a) => a,
         Cmd::Plonk(a) => return run_plonk(a),
         Cmd::Halo2(a) => return run_halo2(a),
+        Cmd::Gnark(a) => return run_gnark(a),
     };
     let (vk, src, src_path) = match load(&args) {
         Ok(x) => x,

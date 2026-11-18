@@ -46,10 +46,13 @@ Phase 1 is the real perpetual ceremony. The phase-2 contribution of our own circ
 test fixtures. The production Semaphore key is under "Real-world keys". Circom setups and proofs are randomised, so every
 regeneration changes verification_key.json and proof.json (and any digest that pins them).
 
-## Real ceremony SRS (halo2-KZG and KZG)
+## Real ceremony SRS (halo2-KZG, KZG and gnark PLONK)
 
 `vectors/halo2/standard_plonk_lookup/` and `vectors/kzg/fixtures/kzg.json` are built on the **PSE Perpetual Powers of
-Tau** (the same ppot used above), not on a seeded or known-tau SRS.
+Tau** (the same ppot used above), not on a seeded or known-tau SRS. `vectors/gnark` uses the same file: `vectors/gnark/ptau.go` (Go) converts it to gnark v0.12.0's
+canonical SRS (n+3 powers) and Lagrange SRS (n points, `kzg.ToLagrangeG1`) instead of `test/unsafekzg`, after checking the
+sha256, every coordinate and point, the generators, the pairing ratio of every consecutive G1 power against `[tau]G2` and
+that the Lagrange points sum to the generator. `scripts/regen-gnark-fixtures.sh` downloads and pins it.
 
 | item | value |
 |---|---|

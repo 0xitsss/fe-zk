@@ -52,6 +52,7 @@ use std::evm::crypto::mulmod
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::{call_checked, get, put, put_at}
 use ingot::field::{Bn254Fr, Field}
+use std::abi::{Bytes, Vec}
 
 /// "BSB22-Plonk", the hash-to-field domain separation tag.
 const DST: u256 = 0x42534232322d506c6f6e6b
@@ -292,6 +293,24 @@ impl<const NC: usize> GnarkProof<NC> {
         _ qcp_at_zeta: [u256; NC],
         _ bsb: [[u256; 2]; NC],
     ) -> Option<GnarkProof<NC>> {
+        var bx = [0; NC]
+        var by = [0; NC]
+        var j: usize = 0
+        while j < NC {
+            bx[j] = bsb[j][0]
+            by[j] = bsb[j][1]
+            j += 1
+        }
+        GnarkProof<NC>::from_columns(fixed, qcp_at_zeta, bx, by)
+    }
+
+    /// As `from_words`, with the BSB22 commitments as an x column and a y column.
+    pub fn from_columns(
+        _ fixed: [u256; 24],
+        _ qcp_at_zeta: [u256; NC],
+        _ bsb_x: [u256; NC],
+        _ bsb_y: [u256; NC],
+    ) -> Option<GnarkProof<NC>> {
         // fixed layout: 0..5 LRO, 6..11 H, 12..16 evals, 17..18 Z, 19 zu, 20..21 W, 22..23 Ww
         let l = proof_point(fixed, 0)
         let r = proof_point(fixed, 1)
@@ -335,7 +354,7 @@ impl<const NC: usize> GnarkProof<NC> {
                     return Option::None
                 },
             }
-            match G1::from_coords(bsb[i][0], bsb[i][1]) {
+            match G1::from_coords(bsb_x[i], bsb_y[i]) {
                 Option::Some(p) => {
                     if p.is_infinity() {
                         return Option::None
@@ -786,6 +805,48 @@ uses (call: Call)
 {
     match GnarkProof<NC>::from_words(fixed, qcp_at_zeta, bsb) {
         Option::Some(p) => gnark_plonk_verify(vk, p, pubs),
+        Option::None => false,
+    }
+}
+
+/// gnark Solidity ABI adapter: `Verify(bytes proof, uint256[] public_inputs)`. The proof must be
+/// exactly `(24 + 3 NC)` words (`MarshalSolidity()`) and `public_inputs` exactly `NP` entries:
+/// any other length is rejected (`false`, never truncated or padded; safety rule 4), which gnark's
+/// Solidity verifier does with a revert. The word layout is that of `gnark_plonk_verify_words`.
+pub fn gnark_plonk_verify_bytes<const NP: usize, const NC: usize>(
+    _ vk: GnarkVk<NP, NC>,
+    _ proof: Bytes,
+    _ pubs: Vec<u256>,
+) -> bool
+uses (call: Call)
+{
+    if proof.len() != (24 + 3 * NC) * 32 || pubs.len() != NP {
+        return false
+    }
+    var fixed = [0; 24]
+    var i: usize = 0
+    while i < 24 {
+        fixed[i] = proof.word_at(i * 32)
+        i += 1
+    }
+    var qe = [0; NC]
+    var bx = [0; NC]
+    var by = [0; NC]
+    i = 0
+    while i < NC {
+        qe[i] = proof.word_at((24 + i) * 32)
+        bx[i] = proof.word_at((24 + NC + 2 * i) * 32)
+        by[i] = proof.word_at((25 + NC + 2 * i) * 32)
+        i += 1
+    }
+    var pi = [0; NP]
+    i = 0
+    while i < NP {
+        pi[i] = pubs.get(i)
+        i += 1
+    }
+    match GnarkProof<NC>::from_columns(fixed, qe, bx, by) {
+        Option::Some(p) => gnark_plonk_verify(vk, p, pi),
         Option::None => false,
     }
 }

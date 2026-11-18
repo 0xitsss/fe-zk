@@ -6,7 +6,7 @@ emits a safe Fe verifier. See CLAUDE.md sections 2 and 3 (rule 9).
 Status: Groth16 (snarkjs, arkworks), PLONK (snarkjs) and halo2-KZG are implemented: parsing, validation,
 digest, emission of a Fe ingot (contract plus tests with a real proof and an invalid battery) and the CLI. The
 Groth16 sections below describe the shared model; `fe-zk-gen plonk --help` and `fe-zk-gen halo2 --help` list the
-other options. No gnark input format is read.
+other options. `fe-zk-gen gnark` reads the key JSON exported by `vectors/gnark` (see "gnark" below).
 
 ## Usage
 
@@ -49,6 +49,30 @@ pinned by tests against the EIP-197 generator and against snarkjs' own `Verifier
   G2: x.c0,x.c1,y.c0,y.c1); top two bits of the last byte are flags (0x40 infinity, 0x80
   y-negative, ignored for finite points). The fixture proof is `{"a","b","c"}` in the same
   encoding and `public.json` lists decimal public inputs.
+
+## gnark (PLONK, gnark v0.12.0)
+
+```
+cargo run -p fe-zk-gen -- gnark --vk ../vectors/gnark/mul/fixture.json \
+    --proof ../vectors/gnark/mul/fixture.json --public ../vectors/gnark/mul/fixture.json \
+    --name GnarkMul --out ../examples/gnark/mul_verifier --fe-zk-path ../../..
+```
+
+`--vk` is the JSON written by `vectors/gnark` (`fixture.json`): `size`, `size_inv`, `generator`, `coset_shift`,
+`nb_public`, `s` (3 points), `ql qr qm qo qk`, `qcp` (BSB22 selector commitments), `commit_constraint_ix`, `g1`, `g2`,
+`g2_x`; points are `[x, y]` and G2 is `[x.real, x.imag, y.real, y.imag]`, all `0x` words. `--proof` reads
+`proof_words` (gnark `MarshalSolidity()`), `--public` a JSON array or an object with `public`; both optional (without
+them no tests are emitted). Validation (`GnarkVk::validate`, ark-bn254): `nb_public >= 1`, `size` a power of two
+(`<= 2^28`), `size_inv * size = 1`, `generator` of order exactly `size`, `coset_shift` nonzero with `k^n != 1` and
+`k^(2n) != 1`, NC (`qcp`) equal to the number of constraint indices, each `index < size` and `nb_public + index < size`,
+every commitment canonical, on the curve, in the subgroup and not at infinity, `g1`/`g2` the BN254 generators,
+`[x]_2` on the twist, in the subgroup, not the identity. Digest: `keccak256` of the tag `fe-zk/gnark-plonk/bn254/vk/v1`,
+then 32-byte words `nb_public, power, NC, generator, coset_shift`, `Ql Qr Qm Qo Qk S1 S2 S3` and the `NC` `qcp` points
+(x, y), the `NC` constraint indices, `[x]_2` (x.real, x.imag, y.real, y.imag).
+The contract has the ABI of gnark's Solidity verifier, `Verify(bytes proof, uint256[] public_inputs) returns (bool)`
+(selector checked against `solc --hashes` of `vectors/gnark/*/Verifier.sol` in `tests/gnark.rs`), plus `vkDigest()`. It
+forwards to `gnark_plonk_verify_bytes`, which returns `false` unless the proof is exactly `24 + 3 NC` words and
+`public_inputs` has exactly `nb_public` entries.
 
 ## Key digest
 
