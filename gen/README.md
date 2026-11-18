@@ -3,8 +3,10 @@
 Rust CLI + library that reads a zk verifying key, **validates it**, fingerprints it and (later)
 emits a safe Fe verifier. See CLAUDE.md sections 2 and 3 (rule 9).
 
-Status: parsing, validation, digest and CLI skeleton are done. `emit_fe` is a stub that returns
-`VkError::NotImplemented` (TODO: emission task).
+Status: Groth16 (snarkjs, arkworks), PLONK (snarkjs) and halo2-KZG are implemented: parsing, validation,
+digest, emission of a Fe ingot (contract plus tests with a real proof and an invalid battery) and the CLI. The
+Groth16 sections below describe the shared model; `fe-zk-gen plonk --help` and `fe-zk-gen halo2 --help` list the
+other options. No gnark input format is read.
 
 ## Usage
 
