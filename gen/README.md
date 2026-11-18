@@ -10,6 +10,9 @@ other options. `fe-zk-gen gnark` reads the key JSON exported by `vectors/gnark` 
 
 ## Usage
 
+Step-by-step recipes for every proof system (snarkjs, arkworks, gnark, halo2), the generated ABIs, deployment and
+troubleshooting: [docs/USAGE.md](../docs/USAGE.md).
+
 ```
 cd gen
 cargo run -p fe-zk-gen -- groth16 --snarkjs ../vectors/groth16/multiplier/verification_key.json
