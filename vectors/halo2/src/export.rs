@@ -29,8 +29,6 @@ use serde_json::{json, Value};
 use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
 
 pub const K: u32 = 5;
-/// TEST-ONLY, INSECURE SRS: trapdoor derived from this fixed seed. Never use for real proofs.
-pub const SRS_SEED: u64 = 0xfe2c;
 
 pub fn hex_fr(x: &Fr) -> String {
     let mut b = x.to_repr();
@@ -54,8 +52,9 @@ pub fn g2_json(p: &G2Affine) -> Value {
     json!({"x": fq2_json(c.x()), "y": fq2_json(c.y())})
 }
 
+/// REAL SRS: halo2 params of size 2^K converted from the PSE perpetual powers of tau (see `ptau.rs`).
 pub fn setup_params() -> ParamsKZG<Bn256> {
-    ParamsKZG::<Bn256>::setup(K, ChaCha20Rng::seed_from_u64(SRS_SEED))
+    crate::ptau::params_from_ptau(&crate::ptau::ensure_ptau(), K)
 }
 
 pub fn keygen(params: &ParamsKZG<Bn256>) -> ProvingKey<G1Affine> {

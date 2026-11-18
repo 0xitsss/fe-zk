@@ -1,0 +1,13 @@
+{
+  "name": "fe-zk-semaphore-real-vectors",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generates a valid Semaphore v4 proof against the real ceremony zkey (not shipped).",
+  "type": "module",
+  "dependencies": {
+    "@semaphore-protocol/group": "4.14.5",
+    "@semaphore-protocol/identity": "4.14.5",
+    "ethers": "6.13.5",
+    "snarkjs": "0.7.6"
+  }
+}

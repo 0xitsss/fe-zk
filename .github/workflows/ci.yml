@@ -31,6 +31,18 @@ jobs:
       - name: fe-zk-gen
         working-directory: gen
         run: cargo test
+      # Differential smoke test (docs/TESTING.md): every Fe verifier vs its reference verifier (snarkjs,
+      # gnark, snark-verifier Solidity under solc 0.8.24; ark-groth16 natively) on the committed proofs and
+      # a few hundred mutations of each, in revm. Fails on any unexplained verdict difference.
+      - name: Differential test (quick)
+        run: |
+          curl -fsSL -o "$HOME/solc" https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux
+          # sha256 from https://binaries.soliditylang.org/linux-amd64/list.json (v0.8.24+commit.e11b9ed9)
+          echo "fb03a29a517452b9f12bcf459ef37d0a543765bb3bbc911e70a87d6a37c30d5f  $HOME/solc" | sha256sum -c -
+          chmod +x "$HOME/solc"
+          mkdir -p "$HOME/bin" && mv "$HOME/solc" "$HOME/bin/solc" && export PATH="$HOME/bin:$PATH"
+          solc --version
+          scripts/difftest.sh --quick
       # Emits the membership verifier with fe-zk-gen, checks it is unchanged, and runs the
       # generated verifier's tests and the demo contract's tests.
       - name: Membership demo

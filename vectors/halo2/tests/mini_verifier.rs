@@ -125,3 +125,63 @@ fn fresh_witnesses_and_vk_stability() {
         }
     }
 }
+
+/// Converted ptau params are consistent: g[0] = G, the tauG1 chain has one common tau
+/// (e([tau^{i+1}]G, H) = e([tau^i]G, [tau]H)), e([tau]G1, G2) == e(G1, [tau]G2), and g_lagrange is the group iFFT of g
+/// (commit_lagrange of the evaluations of X equals g[1]; of the constant 1 equals G).
+#[test]
+fn ptau_params_consistent() {
+    use halo2_base::halo2_proofs::{
+        arithmetic::Field,
+        halo2curves::{
+            bn256::{Bn256, G1Affine, G2Affine},
+            group::Curve,
+            pairing::Engine,
+        },
+        poly::{
+            commitment::{Blind, Params, ParamsProver},
+            EvaluationDomain,
+        },
+    };
+    let params = fe_zk_halo2_vectors::ptau::params_from_ptau(&fe_zk_halo2_vectors::ptau::ensure_ptau(), K);
+    let g = params.get_g();
+    assert_eq!(g.len(), 1 << K);
+    assert_eq!(g[0], G1Affine::generator());
+    assert_eq!(params.g2(), G2Affine::generator());
+    assert_ne!(params.s_g2(), params.g2());
+    assert_eq!(
+        Bn256::pairing(&g[1], &G2Affine::generator()),
+        Bn256::pairing(&G1Affine::generator(), &params.s_g2())
+    );
+    for i in 0..g.len() - 1 {
+        assert_eq!(Bn256::pairing(&g[i + 1], &params.g2()), Bn256::pairing(&g[i], &params.s_g2()), "power {i}");
+    }
+    let domain = EvaluationDomain::<Fr>::new(2, K);
+    let mut ones = domain.empty_lagrange();
+    for v in ones.iter_mut() {
+        *v = Fr::ONE;
+    }
+    assert_eq!(params.commit_lagrange(&ones, Blind::default()).to_affine(), g[0]);
+    let mut x = domain.empty_lagrange();
+    let mut w = Fr::ONE;
+    for v in x.iter_mut() {
+        *v = w;
+        w *= domain.get_omega();
+    }
+    assert_eq!(params.commit_lagrange(&x, Blind::default()).to_affine(), g[1]);
+}
+
+/// Provenance cross-check (ignored by default; needs a second, independently downloaded ppot file):
+/// `FE_ZK_PTAU_CROSS=/path/ppot_0080_17.ptau cargo test --release -- --ignored ptau_prefix`.
+/// The first 2^6 G1 powers and 2^5 G2 powers of ppot_0080_05 must equal the prefix of the larger file.
+#[test]
+#[ignore]
+fn ptau_prefix_matches_larger_file() {
+    use fe_zk_halo2_vectors::ptau::{ensure_ptau, read_ptau};
+    let other = std::env::var("FE_ZK_PTAU_CROSS").expect("set FE_ZK_PTAU_CROSS");
+    let a = read_ptau(&ensure_ptau(), 1 << 6, 1 << 5);
+    let b = read_ptau(std::path::Path::new(&other), a.tau_g1.len(), a.tau_g2.len());
+    assert!(b.power > a.power);
+    assert_eq!(a.tau_g1, b.tau_g1);
+    assert_eq!(a.tau_g2, b.tau_g2);
+}

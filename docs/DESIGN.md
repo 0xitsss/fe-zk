@@ -205,6 +205,20 @@ Gas (`docs/GAS.md`, execution, revm): `mul` 329.8k vs gnark Solidity 261.9k (1.2
 The gnark verifier is the furthest above Solidity; its transcript runs on the sha256 precompile, so it pays the
 per-call wrapper overhead (see "Precompile wrapper gas") on every challenge as well.
 
+## Setup provenance: real ceremony material where the protocol allows it
+
+A universal SRS needs no per-circuit ceremony, so the halo2-KZG fixtures (`ppot_0080_05` converted to halo2
+`ParamsKZG` by `vectors/halo2/src/ptau.rs`: monomial powers verbatim, Lagrange basis by halo2's own `g_to_lagrange`) and
+the KZG fixtures (commit and quotient proof as MSMs over the ceremony points) use the PSE Perpetual Powers of Tau, as do
+the snarkjs PLONK fixtures. The verifiers are unchanged by this: a verifier only sees `g`, `g2`, `s_g2` / `[tau]G2` as key
+constants. Groth16 is the exception: phase 2 is circuit-specific, so our own demo circuits (single contributor, public
+entropy) are still test keys, while `vectors/groth16/real_semaphore_d10` is a production key (Semaphore v4 ceremony)
+that exercises the generator on keys it did not make. Detail, hashes and checks: `vectors/README.md`. The conversion
+test (`ptau_params_consistent`) checks a common tau along the whole power chain and the Lagrange basis, because a
+wrong Montgomery decode or ordering would otherwise only show up as failing pairings. One practical finding:
+`halo2-axiom` 0.5.3 `ParamsKZG::from_parts` is an instance method (it needs an existing `ParamsKZG` as receiver), so
+the converter builds a throw-away receiver and overwrites every field.
+
 ## Compile-time keys for every verifier family
 
 Emitted key points are `pub const` words checked by `static_assert(g1_is_valid(..))` / `static_assert(g2_is_valid(..))`;
