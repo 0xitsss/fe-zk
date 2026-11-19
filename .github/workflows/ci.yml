@@ -84,6 +84,11 @@ jobs:
       - name: Tornado withdraw verifier (real mainnet proofs)
         working-directory: examples/tornado/verifier
         run: fe test
+      - name: Format check of the ingots outside the root (semaphore, anon examples, tornado)
+        run: |
+          for d in semaphore examples/anon_vote examples/anon_claim examples/anon_signal examples/tornado/verifier; do
+            (cd "$d" && fe fmt --check)
+          done
 
   # Game of Life: Fe tests, on-chain stepping checked against a per-cell reference in revm,
   # and one Groth16 proof of 512 generations verified by the generated Fe verifier.
