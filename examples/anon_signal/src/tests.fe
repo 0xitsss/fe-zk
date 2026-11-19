@@ -175,6 +175,19 @@ fn signal_flow() uses (evm: mut Evm) {
 }
 
 #[test]
+fn non_canonical_nullifier_cannot_replay_a_signal() uses (evm: mut Evm) {
+    // nullifier + r is the same field element: the verifier must reject it (safety rule 1)
+    let p = setup()
+    assert(
+        post(p, T99, H1, DEPTH, ROOT, NUL_A_T99_H1, pts_a_t99_h1()),
+    )
+    assert(
+        !post(p, T99, H1, DEPTH, ROOT, NUL_A_T99_H1 + R, pts_a_t99_h1()),
+    )
+    assert(!spent(p, T99, NUL_A_T99_H1 + R))
+}
+
+#[test]
 fn same_topic_twice_rejected_other_topic_accepted() uses (evm: mut Evm) {
     let p = setup()
     assert(

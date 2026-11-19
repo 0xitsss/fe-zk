@@ -177,6 +177,16 @@ fn same_member_twice_rejected() uses (evm: mut Evm) {
 }
 
 #[test]
+fn non_canonical_nullifier_cannot_replay_a_vote() uses (evm: mut Evm) {
+    // nullifier + r is the same field element: the registry would see a fresh key, so the verifier
+    // must reject the non-canonical word (safety rule 1) instead of reducing it
+    let p = setup()
+    assert(vote(p, MSG_A_OPTION1, DEPTH, ROOT, NUL_A_OPTION1, pts_a_option1()))
+    assert(!vote(p, MSG_A_OPTION1, DEPTH, ROOT, NUL_A_OPTION1 + R, pts_a_option1()))
+    assert(tally(p, 1) == 1)
+}
+
+#[test]
 fn front_run_with_other_option_rejected() uses (evm: mut Evm) {
     let p = setup()
     // an attacker copies A's pending proof (option 1) and swaps the option
@@ -354,6 +364,15 @@ fn second_claim_by_same_member_rejected() uses (evm: mut Evm) {
 }
 
 #[test]
+fn non_canonical_nullifier_cannot_replay_a_claim() uses (evm: mut Evm) {
+    // nullifier + r is the same field element: the verifier must reject it (safety rule 1)
+    let p = setup()
+    assert(claim(p, R1, DEPTH, ROOT, NUL_A_TO_R1, pts_a_to_r1()))
+    assert(!claim(p, R1, DEPTH, ROOT, NUL_A_TO_R1 + R, pts_a_to_r1()))
+    assert(claims(p) == 1)
+}
+
+#[test]
 fn changed_recipient_rejected() uses (evm: mut Evm) {
     let p = setup()
     // a front-runner redirects A's claim to their own address
@@ -482,6 +501,15 @@ fn signal_flow() uses (evm: mut Evm) {
     // another member, same topic
     assert(post(p, T99, H2, DEPTH, ROOT, NUL_B_T99_H2, pts_b_t99_h2()))
     assert(NUL_B_T99_H2 != NUL_A_T99_H1)
+}
+
+#[test]
+fn non_canonical_nullifier_cannot_replay_a_signal() uses (evm: mut Evm) {
+    // nullifier + r is the same field element: the verifier must reject it (safety rule 1)
+    let p = setup()
+    assert(post(p, T99, H1, DEPTH, ROOT, NUL_A_T99_H1, pts_a_t99_h1()))
+    assert(!post(p, T99, H1, DEPTH, ROOT, NUL_A_T99_H1 + R, pts_a_t99_h1()))
+    assert(!spent(p, T99, NUL_A_T99_H1 + R))
 }
 
 #[test]

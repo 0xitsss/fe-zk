@@ -261,6 +261,34 @@ fn same_member_twice_rejected() uses (evm: mut Evm) {
 }
 
 #[test]
+fn non_canonical_nullifier_cannot_replay_a_vote() uses (evm: mut Evm) {
+    // nullifier + r is the same field element: the registry would see a fresh key, so the verifier
+    // must reject the non-canonical word (safety rule 1) instead of reducing it
+    let p = setup()
+    assert(
+        vote(
+            p,
+            MSG_A_OPTION1,
+            DEPTH,
+            ROOT,
+            NUL_A_OPTION1,
+            pts_a_option1(),
+        ),
+    )
+    assert(
+        !vote(
+            p,
+            MSG_A_OPTION1,
+            DEPTH,
+            ROOT,
+            NUL_A_OPTION1 + R,
+            pts_a_option1(),
+        ),
+    )
+    assert(tally(p, 1) == 1)
+}
+
+#[test]
 fn front_run_with_other_option_rejected() uses (evm: mut Evm) {
     let p = setup()
     // an attacker copies A's pending proof (option 1) and swaps the option

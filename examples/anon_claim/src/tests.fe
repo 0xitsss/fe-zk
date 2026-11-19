@@ -215,6 +215,15 @@ fn second_claim_by_same_member_rejected() uses (evm: mut Evm) {
 }
 
 #[test]
+fn non_canonical_nullifier_cannot_replay_a_claim() uses (evm: mut Evm) {
+    // nullifier + r is the same field element: the verifier must reject it (safety rule 1)
+    let p = setup()
+    assert(claim(p, R1, DEPTH, ROOT, NUL_A_TO_R1, pts_a_to_r1()))
+    assert(!claim(p, R1, DEPTH, ROOT, NUL_A_TO_R1 + R, pts_a_to_r1()))
+    assert(claims(p) == 1)
+}
+
+#[test]
 fn changed_recipient_rejected() uses (evm: mut Evm) {
     let p = setup()
     // a front-runner redirects A's claim to their own address
