@@ -5,7 +5,7 @@ or wants to use the field, curve and hash layer directly. Everything here was ru
 executed end to end on a copy of the repository, and every Fe and Rust snippet below is a file that compiled
 and passed `fe test` or `cargo run`. The last section ("What was run, and what was not") lists the exceptions.
 
-Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.1.0`, circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go),
+Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.2.0`, circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go),
 arkworks 0.5.0, Plonky3 0.4.2, Foundry (`anvil`, `cast`) 1.8.3.
 
 fe-zk has **not been audited**; read [Integration safety checklist](#6-integration-safety-checklist) before you
@@ -193,7 +193,7 @@ cargo run -q -p fe-zk-gen -- groth16 --snarkjs ../../my-project/circuit/verifica
 ```
 
 ```
-fe-zk-gen 0.1.0: groth16/bn254 key from snarkjs: VALID
+fe-zk-gen 0.2.0: groth16/bn254 key from snarkjs: VALID
   public inputs : 2
   IC points     : 3
   key digest    : 0xaef353092ee900d4a37ecfd0a1e7ef266791053734ac739609ccca3e3aaf9f9e
