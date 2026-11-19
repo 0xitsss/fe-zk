@@ -1,5 +1,5 @@
 //! gnark PLONK verifier tests. Fixtures: gnark v0.12.0 keys and proofs (`vectors/gnark`,
-//! `scripts/regen-gnark-fixtures.sh`), transcribed into `gnark_plonk_fixtures.fe` by
+//! `scripts/regen-gnark-fixtures.sh`), transcribed into `gnark_fixtures.fe` by
 //! `scripts/gen-gnark-fe-fixtures.py`. Reference challenges and intermediate values come from a Go
 //! replay of gnark's `verify.go` (same library calls) in `vectors/gnark/main.go`; gnark's own Go
 //! verifier and its exported Solidity verifier accept the same proofs. Two circuits: `mul`
@@ -9,7 +9,7 @@ use ingot::ec::{G1, G2, g1_is_valid, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
 use ingot::verifier::gnark
 use ingot::verifier::gnark::hash_to_fr
-use super::gnark_plonk_fixtures::*
+use super::gnark_fixtures::*
 use std::abi::{bytes_from_words, bytes_from_words_prefix, dyn_array_from}
 use std::evm::{Call, Ctx, Evm}
 
@@ -120,7 +120,7 @@ fn gc_p_from(_ fixed: [u256; 24], _ qe: [u256; 1], _ bsb: [[u256; 2]; 1]) -> gna
 }
 
 /// Raw words in, one bool out: `from_words` rejects non-canonical or off-curve proof data.
-fn verify_words<const NP: usize, const NC: usize>(
+fn verify_parts<const NP: usize, const NC: usize>(
     _ vk: gnark::Vk<NP, NC>,
     _ fixed: [u256; 24],
     _ qcp_at_zeta: [u256; NC],
@@ -135,7 +135,7 @@ uses (call: Call, ctx: Ctx)
     }
 }
 
-fn gc_verify_words(
+fn gc_verify_parts(
     _ fixed: [u256; 24],
     _ qe: [u256; 1],
     _ bsb: [[u256; 2]; 1],
@@ -143,7 +143,7 @@ fn gc_verify_words(
 ) -> bool
 uses (call: Call, ctx: Ctx)
 {
-    verify_words(gc_vk(), fixed, qe, bsb, pubs)
+    verify_parts(gc_vk(), fixed, qe, bsb, pubs)
 }
 
 // Word index (x; y is the next word) of each point in the first 24 proof words:
@@ -200,7 +200,7 @@ fn gnark_accepts_mul() uses (call: Call, ctx: Ctx) {
     assert(gnark::verify(gm_vk(), gm_p(), gm_pubs()))
     let b: [[u256; 2]; 0] = []
     assert(
-        verify_words(gm_vk(), gm_fixed(), no_words(), b, gm_pubs()),
+        verify_parts(gm_vk(), gm_fixed(), no_words(), b, gm_pubs()),
     )
 }
 
@@ -208,7 +208,7 @@ fn gnark_accepts_mul() uses (call: Call, ctx: Ctx) {
 fn gnark_accepts_mulcommit() uses (call: Call, ctx: Ctx) {
     assert(gnark::verify(gc_vk(), gc_p(), gc_pubs()))
     assert(
-        gc_verify_words(gc_fixed(), gc_qcp_at_zeta(), gc_bsb(), gc_pubs()),
+        gc_verify_parts(gc_fixed(), gc_qcp_at_zeta(), gc_bsb(), gc_pubs()),
     )
 }
 
@@ -415,7 +415,7 @@ fn gnark_rejects_tampered_commitment() uses (call: Call, ctx: Ctx) {
     var i: usize = 0
     while i < 9 {
         assert(
-            !gc_verify_words(
+            !gc_verify_parts(
                 replace_point(gc_fixed(), i),
                 gc_qcp_at_zeta(),
                 gc_bsb(),
@@ -424,7 +424,7 @@ fn gnark_rejects_tampered_commitment() uses (call: Call, ctx: Ctx) {
         )
         let b: [[u256; 2]; 0] = []
         assert(
-            !verify_words(
+            !verify_parts(
                 gm_vk(),
                 replace_point(gm_fixed(), i),
                 no_words(),
@@ -435,7 +435,7 @@ fn gnark_rejects_tampered_commitment() uses (call: Call, ctx: Ctx) {
         i += 1
     }
     assert(
-        !gc_verify_words(gc_fixed(), gc_qcp_at_zeta(), [[1, 2]], gc_pubs()),
+        !gc_verify_parts(gc_fixed(), gc_qcp_at_zeta(), [[1, 2]], gc_pubs()),
     )
 }
 
@@ -462,7 +462,7 @@ fn gnark_rejects_tampered_evaluation() uses (call: Call, ctx: Ctx) {
     var i: usize = 0
     while i < 6 {
         assert(
-            !gc_verify_words(
+            !gc_verify_parts(
                 bump_eval(gc_fixed(), i),
                 gc_qcp_at_zeta(),
                 gc_bsb(),
@@ -471,7 +471,7 @@ fn gnark_rejects_tampered_evaluation() uses (call: Call, ctx: Ctx) {
         )
         let b: [[u256; 2]; 0] = []
         assert(
-            !verify_words(
+            !verify_parts(
                 gm_vk(),
                 bump_eval(gm_fixed(), i),
                 no_words(),
@@ -483,7 +483,7 @@ fn gnark_rejects_tampered_evaluation() uses (call: Call, ctx: Ctx) {
     }
     let q = gc_qcp_at_zeta()
     assert(
-        !gc_verify_words(gc_fixed(), [(q[0] + 1) % R], gc_bsb(), gc_pubs()),
+        !gc_verify_parts(gc_fixed(), [(q[0] + 1) % R], gc_bsb(), gc_pubs()),
     )
 }
 
@@ -555,7 +555,7 @@ uses (call: Call, ctx: Ctx)
         assert(
             gnark::Proof<1>::from_words(w, gc_qcp_at_zeta(), gc_bsb()).is_none(),
         )
-        assert(!gc_verify_words(w, gc_qcp_at_zeta(), gc_bsb(), gc_pubs()))
+        assert(!gc_verify_parts(w, gc_qcp_at_zeta(), gc_bsb(), gc_pubs()))
         // x + q, y + q: the same point with non-canonical coordinates
         var v = gc_fixed()
         v[ix] = v[ix] + Q
@@ -600,10 +600,10 @@ fn gnark_rejects_proof_of_other_circuit() uses (call: Call, ctx: Ctx) {
     // the mulcommit proof against the mul key (dropping the commitment) and the reverse
     let b: [[u256; 2]; 0] = []
     assert(
-        !verify_words(gm_vk(), gc_fixed(), no_words(), b, gc_pubs()),
+        !verify_parts(gm_vk(), gc_fixed(), no_words(), b, gc_pubs()),
     )
     assert(
-        !gc_verify_words(gm_fixed(), gc_qcp_at_zeta(), gc_bsb(), gm_pubs()),
+        !gc_verify_parts(gm_fixed(), gc_qcp_at_zeta(), gc_bsb(), gm_pubs()),
     )
 }
 
@@ -678,7 +678,7 @@ fn gnark_vk_x2_must_be_a_checked_g2() {
 // ---------------------------------------------------------------- gas
 
 #[test]
-fn gnark_plonk_gas_report() uses (evm: mut Evm, call: Call, ctx: Ctx) {
+fn gnark_gas_report() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     // keys, proofs and public inputs are built first: key validation (G2 subgroup check) is a
     // one-time deployment cost, not part of a verification
     let k1 = gm_vk()
@@ -790,7 +790,7 @@ fn gc_words() -> [u256; 27] {
 }
 
 #[test]
-fn verify_bytes_accepts_gnark_proofs() uses (call: Call, ctx: Ctx) {
+fn verify_calldata_accepts_gnark_proofs() uses (call: Call, ctx: Ctx) {
     assert(
         gnark::verify_calldata(
             gm_vk(),
@@ -808,7 +808,7 @@ fn verify_bytes_accepts_gnark_proofs() uses (call: Call, ctx: Ctx) {
 }
 
 #[test]
-fn verify_bytes_rejects_wrong_lengths() uses (call: Call, ctx: Ctx) {
+fn verify_calldata_rejects_wrong_lengths() uses (call: Call, ctx: Ctx) {
     // proof one word too long / too short, one byte too long / too short
     let f = gm_fixed()
     var long = [0; 25]
@@ -880,7 +880,7 @@ fn verify_bytes_rejects_wrong_lengths() uses (call: Call, ctx: Ctx) {
 }
 
 #[test]
-fn verify_bytes_rejects_tampered_and_non_canonical()
+fn verify_calldata_rejects_tampered_and_non_canonical()
 uses (call: Call, ctx: Ctx)
 {
     let p = gm_pubs()

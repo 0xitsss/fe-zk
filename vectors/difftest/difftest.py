@@ -437,7 +437,7 @@ class Prep:
                 os.remove(path)
         tom = open(os.path.join(d, "fe.toml")).read().replace('path = "../.."', f'path = "{os.path.relpath(ROOT, d)}"')
         open(os.path.join(d, "fe.toml"), "w").write(tom)
-        shutil.copy(os.path.join(ROOT, "src/tests/gnark_plonk_fixtures.fe"), os.path.join(d, "src/fx_gnark.fe"))
+        shutil.copy(os.path.join(ROOT, "src/tests/gnark_fixtures.fe"), os.path.join(d, "src/fx_gnark.fe"))
         t = open(os.path.join(ROOT, "src/verifier/halo2/standard_plonk_lookup.fe")).read()
         src = ["SRS_G2_X0", "SRS_G2_X1", "SRS_G2_Y0", "SRS_G2_Y1", "SRS_S_G2_X0", "SRS_S_G2_X1", "SRS_S_G2_Y0", "SRS_S_G2_Y1"]
         hx = [re.search(r"const " + n + r": u256 = (0x[0-9a-f]{64})", t).group(1) for n in src]

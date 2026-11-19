@@ -85,7 +85,7 @@ fn gc_vk() -> gnark::Vk<2, 1> {
 }
 
 /// Raw words in, one bool out: `from_words` rejects non-canonical or off-curve proof data.
-fn verify_words<const NP: usize, const NC: usize>(
+fn verify_parts<const NP: usize, const NC: usize>(
     _ vk: gnark::Vk<NP, NC>,
     _ fixed: [u256; 24],
     _ qcp_at_zeta: [u256; NC],
@@ -109,7 +109,7 @@ pub contract GnarkMul {
     recv GnarkMulMsg {
         Verify { fixed, pubs } -> bool uses (call: Call, ctx: Ctx) {
             let qe: [u256; 0] = []
-            verify_words(gm_vk(), fixed, qe, gm_bsb(), pubs)
+            verify_parts(gm_vk(), fixed, qe, gm_bsb(), pubs)
         }
     }
 }
@@ -122,7 +122,7 @@ msg GnarkMulcommitMsg {
 pub contract GnarkMulcommit {
     recv GnarkMulcommitMsg {
         Verify { fixed, qe, bsb, pubs } -> bool uses (call: Call, ctx: Ctx) {
-            verify_words(gc_vk(), fixed, qe, bsb, pubs)
+            verify_parts(gc_vk(), fixed, qe, bsb, pubs)
         }
     }
 }

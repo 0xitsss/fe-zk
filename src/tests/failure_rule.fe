@@ -12,8 +12,8 @@
 use ingot::ec::{G1, G2, G2Proof}
 use ingot::field::{Bn254Fr, Field}
 use ingot::verifier::{gnark, groth16, plonk}
-use super::gnark_plonk::gm_vk
-use super::gnark_plonk_fixtures::{gm_fixed, gm_pubs}
+use super::gnark::gm_vk
+use super::gnark_fixtures::{gm_fixed, gm_pubs}
 use super::groth16::vk_multiplier
 use super::plonk::m2_vk
 use super::plonk_fixtures::{m2_proof, m2_pubs}

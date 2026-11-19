@@ -6,8 +6,8 @@
 # gnark's canonical + Lagrange SRS and checks it (generators, pairing ratio of every consecutive G1 power, sum
 # of Lagrange points = generator). The ptau is downloaded to vectors/cache (never committed) or $FE_ZK_PTAU.
 # Proofs are randomised (blinding), so regenerating changes every value; the Fe tests in
-# src/tests/gnark_plonk_fixtures.fe must be regenerated too:
-#   python3 -I scripts/gen-gnark-fe-fixtures.py > src/tests/gnark_plonk_fixtures.fe && fe fmt src/tests/gnark_plonk_fixtures.fe
+# src/tests/gnark_fixtures.fe must be regenerated too:
+#   python3 -I scripts/gen-gnark-fe-fixtures.py > src/tests/gnark_fixtures.fe && fe fmt src/tests/gnark_fixtures.fe
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HERE="$ROOT/vectors/gnark"

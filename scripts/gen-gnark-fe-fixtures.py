@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Emit src/tests/gnark_plonk_fixtures.fe (Fe constants) from vectors/gnark/<name>/fixture.json.
+"""Emit src/tests/gnark_fixtures.fe (Fe constants) from vectors/gnark/<name>/fixture.json.
 
 Pure transcription of what the Go generator (vectors/gnark/main.go, gnark v0.12.0) wrote, no
 computation, except `log2(size)`. Run after scripts/regen-gnark-fixtures.sh.
-Usage: python3 -I scripts/gen-gnark-fe-fixtures.py > src/tests/gnark_plonk_fixtures.fe
+Usage: python3 -I scripts/gen-gnark-fe-fixtures.py > src/tests/gnark_fixtures.fe
 """
 import json, os
 

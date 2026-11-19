@@ -30,7 +30,7 @@ GEN="$CARGO_TARGET_DIR/release/fe-zk-gen"
 echo "== 2. fixtures for the Fe wrapper ingot (vectors/gas-fe)"
 GF=vectors/gas-fe
 cp src/tests/plonk_fixtures.fe "$GF/src/fx_plonk.fe"
-cp src/tests/gnark_plonk_fixtures.fe "$GF/src/fx_gnark.fe"
+cp src/tests/gnark_fixtures.fe "$GF/src/fx_gnark.fe"
 python3 -I - <<'PY'
 import json, re
 d = json.load(open("vectors/kzg/fixtures/kzg.json"))
