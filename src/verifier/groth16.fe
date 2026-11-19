@@ -17,9 +17,10 @@
 //!
 //! Failure policy: `verify` / `verify_calldata` return `false` for every invalid input, including a
 //! `B` outside the subgroup (the pairing call fails, the failure is mapped to `false`), like
-//! snarkjs' Solidity verifier. They revert if the remaining gas is below the cap of a precompile call plus `GAS_MARGIN`
-//! (a precompile that ran out of gas would look like a rejected input), or if a precompile violates
-//! its output contract.
+//! snarkjs' Solidity verifier. They revert if the remaining gas is below the cap of a precompile
+//! call plus `GAS_MARGIN` (a precompile that ran out of gas would look like a rejected input), or
+//! if a precompile violates its output contract. A degenerate (poisoned) key makes `verify` return
+//! `false` before any gas check or precompile call.
 //!
 //! Purity: everything here is `uses (call: Call, ctx: Ctx)` only (static calls to precompiles); no storage,
 //! no logs, no value.

@@ -4,6 +4,11 @@
 //! Each system has a pair of tests through a deployed wrapper contract: too little gas reverts
 //! (the call does not succeed), enough gas with a tampered proof returns `false`, and enough gas
 //! with the valid proof returns `true`.
+//!
+//! Mutation sensitivity: the groth16 tests are the ones that fail without the gas guard (a
+//! starved pairing call is mapped to `false`, which would turn a revert into a "rejected" proof).
+//! The plonk and gnark low-gas and just-short tests also pass without the guard, because their
+//! strict `pairing_check` reverts on a failed call anyway; they pin the revert behaviour, not the guard.
 use ingot::verifier::{gnark, groth16, plonk}
 use super::gnark_plonk::gm_vk
 use super::gnark_plonk_fixtures::{gm_fixed, gm_pubs}
@@ -162,6 +167,12 @@ fn gnark_invalid_with_gas_is_false() uses (evm: mut Evm) {
     assert(ok)
 }
 
+// `used` is the gas of a successful call, far above 40_000; asserted so the subtraction cannot wrap.
+fn just_short(_ used: u256) -> u256 {
+    assert(used > 40000)
+    used - 40000
+}
+
 // "Just short": the caller gives 40_000 gas less than the valid call uses, so the final pairing
 // would run out of gas inside the precompile. Without the gas check that comes back as `false`
 // (a valid proof "rejected"); with it the call reverts.
@@ -171,7 +182,7 @@ fn groth16_just_short_of_gas_reverts() uses (evm: mut Evm) {
     let g0 = evm.gas()
     assert(groth16_call(w, 3000000, ga()).success())
     let used = g0 - evm.gas()
-    assert(!groth16_call(w, used - 40000, ga()).success())
+    assert(!groth16_call(w, just_short(used), ga()).success())
 }
 
 #[test]
@@ -180,7 +191,7 @@ fn plonk_just_short_of_gas_reverts() uses (evm: mut Evm) {
     let g0 = evm.gas()
     assert(plonk_call(w, 3000000, m2_proof()).success())
     let used = g0 - evm.gas()
-    assert(!plonk_call(w, used - 40000, m2_proof()).success())
+    assert(!plonk_call(w, just_short(used), m2_proof()).success())
 }
 
 #[test]
@@ -189,5 +200,5 @@ fn gnark_just_short_of_gas_reverts() uses (evm: mut Evm) {
     let g0 = evm.gas()
     assert(gnark_call(w, 3000000, gm_fixed()).success())
     let used = g0 - evm.gas()
-    assert(!gnark_call(w, used - 40000, gm_fixed()).success())
+    assert(!gnark_call(w, just_short(used), gm_fixed()).success())
 }
