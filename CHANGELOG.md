@@ -3,6 +3,54 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses semantic versioning.
 
+## [0.2.0] - 2026-11-19
+
+Fe 26.5.0. A cleaner verifier API, a building kit for anonymous actions, and a Tornado Cash verifier demo.
+
+### Added
+- `fe_zk::anon`: `LeanImt` (insert-only LeanIMT, roots equal to `@semaphore-protocol/group` 4.x), `Nullifiers`
+  (spent nullifiers per scope) and `hash_to_field` (Semaphore's `_hash`).
+- `semaphore/` ingot (`fe_zk_semaphore`): `verify_proof`, `verify_proof_low` (depth 1..5), `verify_proof_high`
+  (depth 6..10) and `key_digest`, with the keys of the public Semaphore ceremony (depth 1..10) emitted by
+  `fe-zk-gen`; tested with real proofs of the official SDK and cross-checked against Semaphore's own
+  `SemaphoreVerifier.sol` (`scripts/check-semaphore-sol.sh`).
+- Examples `examples/anon_vote`, `examples/anon_claim`, `examples/anon_signal` (groups up to 32 members), and
+  `examples/tornado`: the Tornado Cash classic `withdraw` verifier, accepting real mainnet proofs (verifier only, not a mixer).
+- `fe-zk-gen groth16 --lib-module FILE [--module-name IDENT]`: emits only the verifying key (constants, compile-time
+  checks, `pub fn vk()`), no contract.
+- Failure rule: verifiers revert when the remaining gas is below the cap of the next precompile call plus
+  `GAS_MARGIN` (5,000), so a starved call can no longer look like an invalid proof (`src/ec/precompile.fe`
+  `require_gas`, `src/tests/failure_rule.fe`).
+- `docs/USAGE.md` starts with "Anonymous membership in one evening"; `docs/SAFETY.md` has sections for the failure
+  rule, `anon`, Semaphore and Tornado; `docs/API.md` lists `anon` and the Semaphore ingot.
+- CI split into four jobs (`test`, `crosscheck`, `demos`, `life`).
+
+### Changed (breaking)
+One module per proof system, `use fe_zk::groth16` then `groth16::verify(..)`. Old name to new name:
+
+| Old | New |
+|---|---|
+| `Groth16Vk<N>` (struct literal) | `groth16::Vk<N>` via `Vk::from_coords` (`Option`) or `Vk::from_consts` |
+| `groth16_verify` | `groth16::verify` |
+| `groth16_verify_raw` | `groth16::verify_calldata` |
+| `PlonkVk`, `PlonkVk::new` | `plonk::Vk`, `plonk::Vk::from_coords` (`from_consts` unchanged) |
+| `PlonkProof`, `plonk_verify` | `plonk::Proof`, `plonk::verify` |
+| `plonk_verify_words` | `plonk::verify_calldata` |
+| `GnarkVk`, `GnarkProof` | `gnark::Vk`, `gnark::Proof` |
+| `gnark_plonk_verify`, `gnark_plonk_verify_bytes` | `gnark::verify`, `gnark::verify_calldata` |
+| `src/verifier/gnark_plonk.fe` | `src/verifier/gnark.fe` |
+| `KzgVk`, `KzgVk::new` | `kzg::Vk`, `kzg::Vk::from_coords` |
+| `kzg_verify`, `kzg_batch_verify_gwc`, `kzg_verify_shplonk` | `kzg::verify`, `kzg::verify_gwc`, `kzg::verify_shplonk` |
+| `Halo2Vk`, `Halo2Vk::new` | `halo2::Vk`, `halo2::Vk::from_coords` |
+| `Groth16Proof` | `groth16::Proof` (`b` is a `G2Proof`) |
+
+- Every function that reaches a precompile (verifiers, `g1_add`, `pairing_check`, ...) now declares
+  `uses (call: Call, ctx: Ctx)`; callers add `ctx`.
+- A degenerate key (`alpha`, `beta`, `gamma` or `delta` at infinity): `Vk::from_coords` returns `None`,
+  `Vk::from_consts` yields a key whose `verify` returns `false`.
+- Generated verifiers call the new entry points; ABIs, selectors and key digests are unchanged. Generated headers
+  carry `fe-zk-gen 0.2.0`.
+
 ## [0.1.0] - 2026-11-24
 
 First release. Fe 26.5.0.

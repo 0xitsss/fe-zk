@@ -30,6 +30,9 @@ A 50-line contract (`src/lib.fe`) that uses a generated Groth16 verifier, `posei
 5. **Call it** from your contract with a static call
    (`store.verifier.static(MyCircuitVerifierMsg::VerifyProof { a, b, c, input })`), so the verifier
    cannot touch your storage.
+   Without a generated contract: `fe-zk-gen groth16 --lib-module src/key.fe` emits only the key, and your own
+   contract calls `groth16::verify_calldata(vk(), a, b, c, inputs)` (it needs `uses (call: Call, ctx: Ctx)`;
+   see the first recipe of [docs/USAGE.md](../../docs/USAGE.md)).
 6. **Use the library**: `Bn254Fr::from_canonical(x)` for untrusted values, `poseidon_2(a, b)`,
    `merkle_root`, `Transcript`, all behind the `Field` trait.
 7. **Write generic code once**: `fn horner<F: Field, const N: usize>(...)` in `src/lib.fe` runs over

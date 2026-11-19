@@ -14,7 +14,8 @@ cd examples/tornado/verifier && fe test
 
 Tests: the generated battery (`src/tests.fe`) plus `src/mainnet_tests.fe`:
 `real_mainnet_withdraw_proofs_accepted` (all fetched mainnet proofs) and `recipient_swap_rejected`
-(valid proof, other recipient: the front-running attack the public inputs bind against).
+(valid proof, other recipient: the front-running attack the public inputs bind against),
+`relayer_and_fee_mutation_rejected` and `refund_mutation_rejected` (every one of the six public inputs is bound).
 Gas of one proof: ~231k execution in Fe vs ~236k for Verifier.sol (solc 0.7.6, optimizer 200), revm.
 
 Sources and licences: see `vectors/tornado/README.md`. tornado-core is GPL-3.0; its `Verifier.sol` is MIT (Reitwiessner / OKIMS).

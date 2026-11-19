@@ -30,7 +30,9 @@ that does not verify. The arguments are the fields of Semaphore's `SemaphoreProo
 * Gas: about 216k for one verification (any depth).
 * Code size: a contract with a `LeanImt` (about 14 KB) plus `verify_proof` (about 11 KB) does not
   fit the 24,576-byte limit; the examples use `verify_proof_low` (depth <= 5) and cap the group at 32
-  members. For larger groups keep the tree and the verifier in two contracts.
+  members. For larger groups (depth 6 to 10, up to 1,024 members) keep the tree in one contract and the
+  verifier (`verify_proof_high`) in a second one, called with a static call; see
+  [docs/USAGE.md](../docs/USAGE.md), "Beyond 32 members" (tested with a real depth 6 proof).
 
 Tests (`fe test` in this directory, about 3 minutes of key compile time): the real ceremony proof of
 `vectors/groth16/real_semaphore_d10`, one SDK proof per depth 1..10, wrong or out-of-range depth,

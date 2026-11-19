@@ -163,10 +163,10 @@ instructions) and put both schemes in one contract: 43,102 bytes. Loops for the 
 the KZG wrappers). Trade-off: execution gas rose about 1.9% (SHPLONK 384.7k to 391.9k) from loop overhead. `fe build -O 2`
 shrinks only one scheme noticeably (21.7k for SHPLONK alone) and does nothing for the two-scheme contract (42.6k), so the
 split is what makes it deployable. The size regression of the KZG wrapper (1,647 to 2,283 bytes) came from
-`KzgVk::is_degenerate`: `G2::is_infinity` was a short-circuit `&&` chain (branches per word); `(x0|x1|y0|y1) == 0` restores 1,647
-bytes with the check intact. Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 391.9k,
-GWC 422.9k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.21x (wrapper overhead per
-precompile call). The Fe numbers use the compile-time key path (`Halo2Vk::from_consts`). Limits: one circuit shape
+`kzg::Vk::is_degenerate`: `G2::is_infinity` was a short-circuit `&&` chain (branches per word); `(x0|x1|y0|y1) == 0` restores 1,647
+bytes with the check intact. Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 396.6k,
+GWC 428.3k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.23x (wrapper overhead per
+precompile call). The Fe numbers use the compile-time key path (`halo2::Vk::from_consts`). Limits: one circuit shape
 (single phase, one instance column, uncommitted instances); duplicate commitments are rejected by the generator.
 
 ## Groth16 and the generator
@@ -178,12 +178,13 @@ precompile call). The Fe numbers use the compile-time key path (`Halo2Vk::from_c
   gamma, delta. An invalid key does not compile; a valid key costs no runtime gas. CTFE of three G2 subgroup checks
   adds about 20 s of compile time.
 - The generated contract has the snarkjs `Verifier.sol` selector `verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[N])`
-  and calldata layout (B as `[[x_imag, x_real], [y_imag, y_real]]`), and forwards to `groth16_verify_raw`; all checks
+  and calldata layout (B as `[[x_imag, x_real], [y_imag, y_real]]`), and forwards to `groth16::verify_calldata`; all checks
   live in the library, so the generator cannot emit a verifier that skips one.
-- Failure policy: invalid input returns `false`; only a precompile violating its output contract reverts.
+- Failure policy: invalid input returns `false`; a precompile violating its output contract reverts, and so does a
+  call with too little gas (the failure rule, "Verifier API" below).
 - Gas per library `verify`, measured in-test with `evm.gas()` around the call (a different measurement from the revm
-  table in `docs/GAS.md`, which runs the deployed generated contract: N=1 191 620, N=2 199 593, N=3 207 341, Solidity
-  1.01x to 1.03x lower): N=1 190 982, N=2 198 851, N=3 206 158; generated membership contract call 211 433.
+  table in `docs/GAS.md`, which runs the deployed generated contract: N=1 191 869, N=2 200 045, N=3 207 964, Solidity
+  1.02x to 1.03x lower): N=1 190 982, N=2 198 851, N=3 206 158; generated membership contract call 211 433.
 - Fe findings: a dependency that reaches `unsafe` needs `allow_unsafe = true` in the dependent's `[dependencies]`
   entry; absolute dependency paths are rejected ("invalid path"); `assert` and `Option` methods are not const.
 
@@ -197,19 +198,19 @@ price) plus about 190 gas of buffer allocation: std only exposes `Call.raw_stati
 worth an upstream issue. The same wrapper measures 474–740 gas depending on surrounding code (inlining/arena
 decisions).
 
-## gnark PLONK (`src/verifier/gnark_plonk.fe`)
+## gnark PLONK (`src/verifier/gnark.fe`)
 
-`GnarkVk<NP, NC>` fixes the public-input count and the BSB22 commitment count in the type. The sha256 Fiat–Shamir
+`gnark::Vk<NP, NC>` fixes the public-input count and the BSB22 commitment count in the type. The sha256 Fiat–Shamir
 chain (gamma, beta, alpha, zeta, each on the previous raw digest) runs on precompile 0x02 with exact-length checks.
-Gas (`docs/GAS.md`, execution, revm): `mul` 329.8k vs gnark Solidity 261.9k (1.26x); `mulcommit` 375.1k vs 283.3k (1.32x).
+Gas (`docs/GAS.md`, execution, revm): `mul` 333.6k vs gnark Solidity 261.9k (1.27x); `mulcommit` 379.3k vs 283.3k (1.34x).
 The gnark verifier is the furthest above Solidity; its transcript runs on the sha256 precompile, so it pays the
 per-call wrapper overhead (see "Precompile wrapper gas") on every challenge as well.
 
 `fe-zk-gen gnark` (`gen/fe-zk-gen/src/gnark.rs`) emits a contract with gnark's own Solidity ABI,
 `Verify(bytes,uint256[])`. Fe's `Bytes` and `Vec<u256>` message fields decode the dynamic arguments;
-`gnark_plonk_verify_bytes` rejects any length other than the key's fixed `24 + 3 NC` proof words and `NP` inputs before
+`gnark::verify_calldata` rejects any length other than the key's fixed `24 + 3 NC` proof words and `NP` inputs before
 reading a word (safety rule 4: the dynamic ABI must not let a caller drop or append an input). The key is compile-time
-constants checked by `static_assert` and `GnarkVk::from_consts`. The gnark fixtures use the real PSE `ppot_0080_05`
+constants checked by `static_assert` and `gnark::Vk::from_consts`. The gnark fixtures use the real PSE `ppot_0080_05`
 SRS (`vectors/gnark/ptau.go` converts ptau to gnark's canonical and Lagrange SRS, checking the generators, the pairing
 ratio of every consecutive power and that the Lagrange points sum to the generator).
 
@@ -305,3 +306,56 @@ configuration and is not secure.
 - Many 2.7k-word array copies in one function overflow the test frame ("StackOverflow"); heap `MemArray`
   copies do not. `var r = p` on a `MemArray` aliases (struct copy), tests use an explicit `clone_words`.
 - `mut` array parameters cannot be assigned through in 26.5.0 ("immutable assignment"), so tamper helpers copy.
+
+## Verifier API (v0.2.0)
+
+One module per proof system: `groth16`, `plonk` (snarkjs), `gnark`, `halo2`, `kzg`, `fri`, re-exported from
+`src/lib.fe` (`pub use verifier::{..}`), so `groth16::verify(..)` and `plonk::verify(..)` do not collide and the generated
+contracts read the same for every system. Each module has `Vk` (with `from_coords`, an `Option` for runtime keys, and
+`from_consts`, a `const fn` for compile-time keys), `verify` over typed arguments, and `verify_calldata` over raw words.
+The old loose names are listed in `CHANGELOG.md`. `scripts/gen-api-docs.py` generates `docs/API.md` from the source and
+CI checks it.
+
+**Degenerate keys.** A key with `alpha`, `beta`, `gamma` or `delta` at infinity is refused by `from_coords` (`None`);
+`from_consts` cannot return an `Option` (it is `const`), so it builds a poisoned key whose `verify` returns `false`
+before any precompile call. The generator never emits such a key, and `static_assert(!VK_X.is_infinity())` stops a
+hand-edited one.
+
+**Failure rule.** An invalid proof returns `false`; too little gas reverts. A precompile that runs out of gas fails like
+one that rejected its input, and `groth16::verify` maps a failed pairing call to `false` (so that a `B` outside the
+subgroup is a clean `false`), so without a guard a caller could starve a call and read "rejected" for a valid proof.
+`require_gas(cap)` (`src/ec/precompile.fe`) asserts `gas >= cap + GAS_MARGIN` (5,000) before every precompile call.
+Fe offers the remaining gas only through the `Ctx` effect (`ctx.gas()`; the `gas` op is `pub(ingot)` and an `extern`
+declaration fails codegen on the EVM target), so every function that reaches a precompile declares
+`uses (call: Call, ctx: Ctx)`. Cost: 0.1 to 1.3 % execution gas (the guard plus the effect plumbing).
+PLONK, gnark and halo2 use the strict `pairing_check`, which reverts on a failed call anyway; only the Groth16 tests
+are sensitive to the guard (`src/tests/failure_rule.fe`).
+
+## Anonymous kit (`src/anon/`, `semaphore/`)
+
+Goal: a developer writes an anonymous vote, claim or signal in about 50 lines. The pieces:
+
+- `LeanImt` is a port of zk-kit's `InternalLeanIMT._insert` (insert-only): one side node per level, an odd node is
+  promoted unhashed, the depth grows with the size, Poseidon t = 3. Roots equal `@semaphore-protocol/group` 4.x
+  (`vectors/semaphore/lean_imt.json`, checked in `src/tests/anon.fe`). Every historical root stays known. The depth is
+  capped below 32, Semaphore's maximum. It is a storage struct (`StorageMap` fields), declared as a contract field.
+- `Nullifiers` keys the spent set by `keccak(scope, nullifier)`, so a member is limited once per scope and entries of two
+  scopes cannot alias. `hash_to_field` is `keccak(x) >> 8`, below `2^248 < r`, so no reduction occurs.
+- The `semaphore/` ingot verifies Semaphore v4 proofs with the ceremony keys for depth 1..10. The keys are emitted by
+  `fe-zk-gen groth16 --lib-module` (one `keys_dN.fe` each, `static_assert`ed), `src/lib.fe` dispatches on the depth, and
+  `verify_proof_low` / `verify_proof_high` split the keys over two ranges. The split is a size decision: all ten keys are
+  about 11 KB, a `LeanImt` about 14 KB, so one contract holds the tree plus only `verify_proof_low` (21 KB for the vote
+  example); this is why the examples stop at 32 members. Beyond that, the verifier lives in a second contract
+  (`docs/USAGE.md`, "Beyond 32 members").
+- Compile cost: ten keys with compile-time subgroup checks take about 3 minutes to compile.
+- The proof generator is the official JS SDK; the Fe side never sees secrets. Cross-check: every committed proof is also
+  accepted by Semaphore's unmodified `SemaphoreVerifier.sol` in revm (`scripts/check-semaphore-sol.sh`).
+
+## Tornado Cash verifier (`examples/tornado`)
+
+`fe-zk-gen groth16` applied to the `withdraw` verifying key of Tornado Cash classic (6 public inputs). The key numbers
+come from the deployed verifier contract (all 28 coordinates found in its bytecode); the real proofs are calldata of
+five mainnet withdrawals of the 0.1 ETH pool. Verdicts equal Tornado's `Verifier.sol` on 236 cases (5 valid, 231
+mutations) in revm (`vectors/tornado/crosscheck.py`). Gas: 231,117 in Fe against 236,365 for `Verifier.sol` (solc 0.7.6).
+A verifier demo only: no pool, no deposits, no funds. It shows the generator working on a production key that
+nobody here made, and the public-input binding that stops a front-runner from swapping the recipient.

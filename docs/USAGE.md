@@ -1,43 +1,394 @@
 # Using fe-zk
 
-A practical guide for a Fe developer who either has a circuit and a proof system and wants an on-chain verifier in Fe,
-or wants to use the field, curve and hash layer directly. Everything here was run, not just written: each recipe was
-executed end to end on a copy of the repository, and every Fe and Rust snippet below is a file that compiled
-and passed `fe test` or `cargo run`. The last section ("What was run, and what was not") lists the exceptions.
+A practical guide for a Fe developer. The first recipe takes you from nothing to a deployed anonymous-voting contract
+in one evening; the next ones turn a circuit and a proof system of your own into an on-chain verifier; the last part
+is a reference for the field, curve and hash layer. Every command and Fe file below was run (the last section lists
+what was not).
 
-Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.2.0`, circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go),
-arkworks 0.5.0, Plonky3 0.4.2, Foundry (`anvil`, `cast`) 1.8.3.
+Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.2.0`, Node 24 with `@semaphore-protocol/{group,identity,proof}` 4.14.5,
+circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go), arkworks 0.5.0, Plonky3 0.4.2, Foundry (`anvil`, `cast`) 1.8.3.
 
-fe-zk has **not been audited**; read [Integration safety checklist](#6-integration-safety-checklist) before you
-deploy anything, and [SECURITY.md](../SECURITY.md) for the threat model.
+fe-zk has **not been audited**; read the [integration checklist](#7-integration-safety-checklist) before you deploy
+anything, and [SECURITY.md](../SECURITY.md) for the threat model.
 
-All commands assume this layout (the repository and your project are siblings, so that the relative paths in
-`fe.toml` work, see [section 2](#2-add-fe-zk-to-your-fe-project)):
+Layout used throughout (the repository and your project are siblings, so the relative path in `fe.toml` works):
 
 ```
 work/
   fe-zk/        git clone of this repository
-  my-project/   your Fe project
+  vote/         your Fe project (the first recipe)
 ```
 
-Compile times are long. On the machine used for this guide (an old Xeon without AVX), `fe test` or `fe build` of a
-project that depends on `fe_zk` takes 70 to 105 seconds, even for a test that only uses `Field`. Plan for it.
+Compile times are long: `fe test` or `fe build` of a project that depends on `fe_zk` takes 70 to 105 seconds on the
+machine used for this guide (an old Xeon without AVX), and about 2.5 minutes once the Semaphore keys are in. Plan for it.
 
 ## Contents
 
-1. [Install](#1-install)
-2. [Add fe-zk to your Fe project](#2-add-fe-zk-to-your-fe-project)
-3. [Recipes, one per proof system](#3-recipes-one-per-proof-system)
+1. [Anonymous membership in one evening](#1-anonymous-membership-in-one-evening)
+2. [Install](#2-install)
+3. [Add fe-zk to your Fe project](#3-add-fe-zk-to-your-fe-project)
+4. [Recipes, one per proof system](#4-recipes-one-per-proof-system)
    (a) [circom + snarkjs Groth16](#a-circom--snarkjs-groth16) (b) [arkworks Groth16](#b-arkworks-groth16)
    (c) [snarkjs PLONK](#c-snarkjs-plonk) (d) [gnark PLONK](#d-gnark-plonk) (e) [halo2-KZG](#e-halo2-kzg)
    (f) [KZG openings and EIP-4844](#f-kzg-openings-and-eip-4844-point-evaluation) (g) [FRI/STARK](#g-fristark-plonky3)
-4. [Using the library directly](#4-using-the-library-directly)
-5. [Compile, test, deploy](#5-compile-test-deploy)
-6. [Integration safety checklist](#6-integration-safety-checklist)
-7. [Troubleshooting](#7-troubleshooting)
-8. [What was run, and what was not](#8-what-was-run-and-what-was-not)
+5. [Using the library directly](#5-using-the-library-directly)
+6. [Compile, test, deploy](#6-compile-test-deploy)
+7. [Integration safety checklist](#7-integration-safety-checklist)
+8. [Troubleshooting](#8-troubleshooting)
+9. [What was run, and what was not](#9-what-was-run-and-what-was-not)
 
-## 1. Install
+## 1. Anonymous membership in one evening
+
+Goal: a poll where registered members vote once each and nobody learns who voted for what. Semaphore v4 gives the
+proofs (made in JavaScript with the official SDK, against the keys of the public Semaphore ceremony), `fe_zk::anon`
+gives the group tree and the nullifier registry, and the `fe_zk_semaphore` ingot verifies the proofs on chain.
+You write about 50 lines of Fe. Prerequisites: `fe` 26.5.0 ([section 2](#2-install)), Node 20 or newer, and Foundry
+for the deploy step.
+
+```sh
+mkdir work && cd work
+git clone https://github.com/0xitsss/fe-zk
+mkdir vote && cd vote
+```
+
+**1. `fe.toml`.** Two dependencies. `allow_unsafe = true` is required: fe-zk's precompile wrappers use `unsafe`
+blocks and Fe refuses to compile a call into them otherwise ([section 3](#3-add-fe-zk-to-your-fe-project)).
+
+```toml
+[ingot]
+name = "vote"
+version = "0.1.0"
+
+[dependencies]
+fe_zk = { path = "../fe-zk", allow_unsafe = true }
+fe_zk_semaphore = { path = "../fe-zk/semaphore", allow_unsafe = true }
+```
+
+**2. The contract, `src/lib.fe`.** The scope (the poll id) is fixed at deployment; the message of a proof is the
+option voted for. `verify_proof_low` supports trees of depth 1 to 5, so groups of up to 32 members
+([why, and how to go beyond](#beyond-32-members)).
+
+```fe
+use fe_zk::Bn254Fr
+use fe_zk::anon::{LeanImt, Nullifiers}
+use fe_zk_semaphore::verify_proof_low
+use std::evm::{Address, Call, Ctx, StorageMap}
+
+/// verify_proof_low has keys for tree depth 1..5, so a group of at most 32 members.
+const MAX_MEMBERS: u256 = 32
+
+msg VoteMsg {
+    #[selector = sol("register(uint256)")]
+    Register { commitment: u256 },
+    #[selector = sol("vote(uint256,uint256,uint256,uint256,uint256[8])")]
+    Vote { option: u256, depth: u256, root: u256, nullifier: u256, points: [u256; 8] },
+    #[selector = sol("tally(uint256)")]
+    Tally { option: u256 } -> u256,
+}
+
+struct Poll { owner: Address, scope: u256, options: u256 }
+
+pub contract Vote uses (ctx: Ctx, call: Call) {
+    mut tree: LeanImt,
+    mut nulls: Nullifiers,
+    mut tallies: StorageMap<u256, u256>,
+    mut poll: Poll,
+
+    // scope = the poll id the proofs are made for; options are 0..options
+    init(scope: u256, options: u256)
+    uses (ctx, mut poll)
+    {
+        poll.owner = ctx.caller()
+        poll.scope = scope
+        poll.options = options
+    }
+
+    recv VoteMsg {
+        Register { commitment } uses (ctx, poll, mut tree) {
+            assert(ctx.caller() == poll.owner)
+            assert(tree.size() < MAX_MEMBERS)
+            tree.insert(leaf: Bn254Fr::from_canonical(commitment).unwrap())
+        }
+
+        Vote { option, depth, root, nullifier, points }
+        uses (call, ctx, poll, tree, mut nulls, mut tallies)
+        {
+            assert(option < poll.options)
+            assert(tree.is_known_root(root: root))
+            assert(!nulls.is_spent(scope: poll.scope, nullifier: nullifier))
+            // the option is the proof's message, the poll id its scope
+            assert(
+                verify_proof_low(depth, root, nullifier, option, poll.scope, points),
+            )
+            assert(nulls.spend(scope: poll.scope, nullifier: nullifier))
+            tallies[option] = tallies[option] + 1
+        }
+
+        Tally { option } -> u256 uses (tallies) {
+            tallies[option]
+        }
+    }
+}
+```
+
+The checks run in this order, each before the next costs gas: the option exists, the root is one this poll has had,
+the nullifier is unspent for this scope, the proof verifies; only then the nullifier is spent and the vote counted.
+`verify_proof_low` returns `false` (never reverts) for a wrong depth, a non-canonical word or a proof that does not
+verify; the `assert` turns that into a revert. It declares `uses (call: Call, ctx: Ctx)`, so your handler needs `ctx`
+too.
+
+**3. Proofs from the Semaphore SDK.** `package.json` (the exact versions this guide was run with):
+
+```json
+{
+  "name": "vote-proofs",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@semaphore-protocol/group": "4.14.5",
+    "@semaphore-protocol/identity": "4.14.5",
+    "@semaphore-protocol/proof": "4.14.5"
+  }
+}
+```
+
+`make-fixture.mjs` builds a three-member group, proves two votes and writes both the Fe constants for the test and
+`proofs.json` for the deploy step. The SDK downloads the proving key of the group's depth (here 2) from
+`snark-artifacts.pse.dev` on first use. The identities are throw-away test identities.
+
+```js
+// node make-fixture.mjs > src/fixture.fe     (also writes proofs.json for cast)
+import { writeFileSync } from "node:fs"
+import { Group } from "@semaphore-protocol/group"
+import { Identity } from "@semaphore-protocol/identity"
+import { generateProof } from "@semaphore-protocol/proof"
+
+const SCOPE = 42n // the poll id; the contract is deployed with the same number
+const alice = new Identity("alice (throw-away test identity)")
+const bob = new Identity("bob (throw-away test identity)")
+const carol = new Identity("carol (throw-away test identity)")
+const group = new Group([alice.commitment, bob.commitment, carol.commitment])
+
+// message = the option voted for. The SDK downloads the proving key of the group's depth on first use.
+const a1 = await generateProof(alice, group, 1n, SCOPE)
+const b2 = await generateProof(bob, group, 2n, SCOPE)
+writeFileSync("proofs.json", JSON.stringify({ members: group.members.map(String), alice: a1, bob: b2 }, null, 2))
+
+const arr = (xs) => "[" + xs.join(", ") + "]"
+const proof = (name, p) => `
+pub const ${name}_NULLIFIER: u256 = ${p.nullifier}
+pub fn ${name.toLowerCase()}_points() -> [u256; 8] {
+    ${arr(p.points)}
+}`
+console.log(`pub const SCOPE: u256 = ${SCOPE}
+pub const DEPTH: u256 = ${a1.merkleTreeDepth}
+pub const ROOT: u256 = ${a1.merkleTreeRoot}
+pub fn members() -> [u256; 3] {
+    ${arr(group.members)}
+}${proof("ALICE", a1)}${proof("BOB", b2)}`)
+
+process.exit(0) // snarkjs leaves worker threads running; without this node never exits
+```
+
+```sh
+npm install --no-audit --no-fund
+node make-fixture.mjs > src/fixture.fe && fe fmt     # about 3 s after the download
+```
+
+**4. Tests, `src/tests.fe`.** The contract is deployed in the Fe test EVM; the proofs are the real ones from step 3.
+The second test is the front-running case: the option is the proof's message, so a copied proof with another option
+fails and burns nothing.
+
+```fe
+use super::{Vote, VoteMsg}
+use super::fixture::{
+    ALICE_NULLIFIER,
+    BOB_NULLIFIER,
+    DEPTH,
+    ROOT,
+    SCOPE,
+    alice_points,
+    bob_points,
+    members,
+}
+use std::evm::{Address, Evm}
+
+fn register(_ p: Address, _ commitment: u256) -> bool uses (evm: mut Evm) {
+    evm.try_call(
+        addr: p,
+        gas: 30000000,
+        value: Wei::zero(),
+        message: VoteMsg::Register { commitment: commitment },
+    )
+        .success()
+}
+
+/// A poll with three options and the three members registered (same order as the proofs' group).
+fn setup() -> Address uses (evm: mut Evm) {
+    let p = evm.create2<Vote>(value: Wei::zero(), args: (SCOPE, 3), salt: 0)
+    let ms = members()
+    assert(register(p, ms[0]))
+    assert(register(p, ms[1]))
+    assert(register(p, ms[2]))
+    p
+}
+
+fn vote(_ p: Address, _ option: u256, _ nullifier: u256, _ points: [u256; 8]) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: p,
+        gas: 30000000,
+        value: Wei::zero(),
+        message: VoteMsg::Vote {
+            option: option,
+            depth: DEPTH,
+            root: ROOT,
+            nullifier: nullifier,
+            points: points,
+        },
+    )
+        .success()
+}
+
+fn tally(_ p: Address, _ option: u256) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: p,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: VoteMsg::Tally { option: option },
+    )
+}
+
+#[test]
+fn each_member_votes_once() uses (evm: mut Evm) {
+    let p = setup()
+    assert(vote(p, 1, ALICE_NULLIFIER, alice_points()))
+    assert(vote(p, 2, BOB_NULLIFIER, bob_points()))
+    assert(tally(p, 1) == 1)
+    assert(tally(p, 2) == 1)
+    // the same proof again: the nullifier is spent
+    assert(!vote(p, 1, ALICE_NULLIFIER, alice_points()))
+    assert(tally(p, 1) == 1)
+}
+
+#[test]
+fn changing_the_option_breaks_the_proof() uses (evm: mut Evm) {
+    let p = setup()
+    // a front-runner copies Alice's pending proof and swaps the option: the option is the proof's message
+    assert(!vote(p, 2, ALICE_NULLIFIER, alice_points()))
+    assert(tally(p, 2) == 0)
+    // the failed attempt burned nothing: Alice's own vote still goes through
+    assert(vote(p, 1, ALICE_NULLIFIER, alice_points()))
+}
+```
+
+```sh
+fe fmt --check && fe test        # changing_the_option_breaks_the_proof, each_member_votes_once: 2 passed (about 3 minutes)
+```
+
+**5. Deploy to a local chain.** `fe build` writes `out/Vote.bin` (creation code, hex without `0x`),
+`out/Vote.runtime.bin` (21,173 bytes, under the 24,576 EIP-170 limit) and `out/Vote.abi.json`. The commands below
+deploy with a constructor `(scope = 42, options = 3)`, register the three members (only the deployer may), and cast
+Alice's vote for option 1.
+
+```sh
+fe build                                                          # about 2.5 minutes
+anvil --port 18545 &
+export RPC=http://127.0.0.1:18545
+export KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80    # anvil's public dev key #0
+
+VOTE=$(cast send --rpc-url $RPC --private-key $KEY --create "0x$(cat out/Vote.bin)" "constructor(uint256,uint256)" 42 3 --json | jq -r .contractAddress)
+for c in $(jq -r '.members[]' proofs.json); do
+  cast send --rpc-url $RPC --private-key $KEY $VOTE "register(uint256)" $c --json | jq -r .status      # 0x1 three times
+done
+
+P=alice
+cast send --rpc-url $RPC --private-key $KEY $VOTE "vote(uint256,uint256,uint256,uint256,uint256[8])" \
+    1 $(jq -r ".$P.merkleTreeDepth" proofs.json) $(jq -r ".$P.merkleTreeRoot" proofs.json) \
+    $(jq -r ".$P.nullifier" proofs.json) "[$(jq -r ".$P.points | join(\",\")" proofs.json)]" \
+    --gas-limit 1000000 --json | jq -r '.status + " gas " + .gasUsed'                    # 0x1 gas 0x47fd1 (294,865)
+cast call --rpc-url $RPC $VOTE "tally(uint256)(uint256)" 1                              # 1
+```
+
+Run the same `cast send` again and it fails (the nullifier is spent: status `0x0`). Send Bob's proof (`P=bob`) with
+option `1` and it fails too, because his proof was made for option 2; with option `2` it succeeds.
+
+**Gas limit.** One vote costs about 295,000 gas (about 215,000 of it is the Groth16 check). The `--gas-limit` above
+is explicit on purpose: contracts that treat a failed inner call as "invalid" cannot tell an invalid proof from a
+starved call, so always forward ample gas. The fe-zk verifiers themselves revert when the remaining gas is below what
+the next precompile call needs (the *failure rule*, [SAFETY.md](SAFETY.md) section 10), so with this contract
+`cast send` without `--gas-limit` also estimated and recorded the vote correctly (tested).
+
+**What the contract does not do for you.** It checks that the root is one *its own* tree has had (`is_known_root`),
+which is what ties a proof to this poll's group; it fixes the scope in storage, so a member cannot mint a second
+nullifier by choosing another one; and it never uses a proof or its hash as an id (Groth16 proofs are malleable).
+Keep these three if you change the contract. The other two examples, `examples/anon_claim` (one claim per member,
+recipient bound to the proof) and `examples/anon_signal` (anonymous signals per topic), follow the same pattern.
+
+### Beyond 32 members
+
+The examples cap a group at 32 members (`MAX_MEMBERS`, tree depth 5) for a size reason, not a cryptographic one.
+Contract code is limited to 24,576 bytes (EIP-170): a `LeanImt` is about 14 KB, `verify_proof_low` (the five depth
+1 to 5 keys) about 7 KB, and `verify_proof` with all ten keys about 11 KB; `LeanImt` plus `verify_proof` does not fit
+in one contract. For bigger groups (depth 6 to 10, up to 1,024 members, which is all the ingot ships keys for) keep the
+verifier in its own contract using `verify_proof_high` and call it from the contract that holds the tree. This is
+tested in a scratch ingot with a real depth 6 proof:
+
+```fe
+use fe_zk_semaphore::verify_proof_high
+use std::evm::{Call, Ctx}
+
+msg VerifierMsg {
+    #[selector = sol("verify(uint256,uint256,uint256,uint256,uint256,uint256[8])")]
+    Verify { depth: u256, root: u256, nullifier: u256, message: u256, scope: u256, points: [u256; 8] } -> bool,
+}
+
+/// Only the verifier, for tree depth 6..10 (groups of 33 to 1024 members).
+pub contract HighVerifier uses (ctx: Ctx, call: Call) {
+    recv VerifierMsg {
+        Verify { depth, root, nullifier, message, scope, points } -> bool uses (ctx, call) {
+            verify_proof_high(depth, root, nullifier, message, scope, points)
+        }
+    }
+}
+```
+
+Deploy `HighVerifier` once and pass its address to the group contract. The group contract keeps the `LeanImt`, the
+`Nullifiers` and the poll logic, and asks the verifier with a static call, as recipe (a) does:
+`let ok: bool = link.verifier.static(VerifierMsg::Verify { depth: depth, root: root, nullifier: nullifier, message: option, scope: scope, points: points })`
+(`link` being a storage struct with the verifier's `Address`), then `assert(ok)` and spends the nullifier. Registration needs the same cap logic with a larger bound (`MAX_MEMBERS` of your choice up to
+1,024). A group that spans both ranges needs one verifier contract per range (`verify_proof_low` and `verify_proof_high`)
+and a choice by `depth`, or a third contract holding `verify_proof` alone (about 11 KB).
+
+### Key-only verifier, no generated contract
+
+`fe-zk-gen groth16 --lib-module` emits only the key (constants, compile-time checks, `pub fn vk()`), so you can call
+`groth16::verify_calldata` from your own contract instead of deploying a generated one. This is how the Semaphore ingot
+is built. With the multiplier circuit of recipe (a):
+
+```sh
+fe-zk/gen/target/release/fe-zk-gen groth16 --snarkjs verification_key.json --lib-module src/key.fe --module-name key
+```
+
+```fe
+use fe_zk::groth16
+use ingot::key::vk
+use std::evm::{Call, Ctx}
+
+/// Verifies a snarkjs proof of the circuit the key was exported from. `b` is the JSON order of snarkjs'
+/// proof.json: [[x_real, x_imag], [y_real, y_imag]].
+pub fn check(_ a: [u256; 2], _ b: [[u256; 2]; 2], _ c: [u256; 2], _ inputs: [u256; 2]) -> bool
+uses (call: Call, ctx: Ctx)
+{
+    groth16::verify_calldata(vk(), a, b, c, inputs)
+}
+```
+
+`src/key.fe` carries the key digest in its header and `static_assert`s every key point; the library does the rest.
+Tested with the repository's multiplier key: a valid proof is accepted and a changed input rejected.
+
+## 2. Install
 
 **Fe 26.5.0.** fe-zk supports exactly one compiler version.
 
@@ -75,7 +426,8 @@ The recipes below use `cargo run -p fe-zk-gen -- ...` from `fe-zk/gen`, which is
 | snarkjs | 0.7.6 | Groth16 and PLONK keys, proofs, `soliditycalldata` |
 | Go | 1.22 or newer | gnark exporter, recipe (d) |
 | Rust + arkworks 0.5.0 | | recipe (b), (e), (g) |
-| Foundry (`anvil`, `cast`), `jq` | 1.8.3 | deploying and calling, section 5 |
+| Node 20+ and `@semaphore-protocol/*` 4.14.5 | | proofs for the first recipe |
+| Foundry (`anvil`, `cast`), `jq` | 1.8.3 | deploying and calling, [section 6](#6-compile-test-deploy) |
 
 `scripts/setup-tools.sh` builds circom 2.2.2 from a pinned commit into `$ZK_TOOLS_DIR` (default
 `~/.cache/fe-zk-tools`) and runs `npm ci --ignore-scripts` in `vectors/js`, which installs the pinned snarkjs at
@@ -90,7 +442,7 @@ circom --version && snarkjs --help | head -1
 (Run from `work/`. If you already have circom 2.2.x, skip the circom build and only run
 `(cd fe-zk/vectors/js && npm ci --ignore-scripts)`.)
 
-## 2. Add fe-zk to your Fe project
+## 3. Add fe-zk to your Fe project
 
 A Fe project (an "ingot") is a directory with `fe.toml` and `src/lib.fe`. Add fe-zk as a dependency:
 
@@ -105,7 +457,7 @@ fe_zk = { path = "../fe-zk", allow_unsafe = true }
 
 - **`allow_unsafe = true` is required.** fe-zk's precompile wrappers use `unsafe` blocks. Without it, the first call
   that reaches one fails to compile with `call reaches unsafe code in 'fe_zk', which is not allowed to use it`
-  ([Troubleshooting](#7-troubleshooting)). It trusts the whole `fe_zk` ingot, so pin what you trust.
+  ([Troubleshooting](#8-troubleshooting)). It trusts the whole `fe_zk` ingot, so pin what you trust.
 - **The path must be relative.** Fe rejects absolute paths (`The dependency "fe_zk" has an invalid path ...`) and
   anything with a URL scheme. Count the `..` from the `fe.toml` that contains the line. A generated verifier ingot
   has its own `fe.toml`; `--fe-zk-path` writes that path (it is relative to the output directory).
@@ -125,14 +477,18 @@ fe_zk = { path = "../fe-zk", allow_unsafe = true }
   `fe_zk` line of its `fe.toml` into the `source`/`rev` form by hand (not tested).
 
 Generated verifier ingots are ordinary path dependencies of your project: `squareplus_verifier = { path = "verifier" }`.
+The Semaphore ingot is one more: `fe_zk_semaphore = { path = "../fe-zk/semaphore", allow_unsafe = true }`
+(first recipe).
 
-## 3. Recipes, one per proof system
+## 4. Recipes, one per proof system
 
 The generator `fe-zk-gen` reads a verifying key, **validates it** (coordinates `< q`, points on the curve and in the
 subgroup, non-degenerate, correct number of points), fingerprints it, and emits a Fe ingot: a contract that only
 forwards calldata to the audited-by-test library entry point, the key as constants that the Fe compiler checks again
 (`static_assert`), and a test with your real proof plus a battery of invalid ones. There is no flag to skip a check.
-Exit codes: 0 valid, 1 key failed validation, 2 unreadable input. A bad key is reported and nothing is emitted:
+Exit codes: 0 valid, 1 key failed validation, 2 unreadable input. The emitted contract calls the library through one
+entry point per system (`groth16::verify_calldata`, `plonk::verify_calldata`, `gnark::verify_calldata`; names in
+[API.md](API.md)); for Groth16 `--lib-module FILE` emits only the key instead of a contract (first recipe). A bad key is reported and nothing is emitted:
 
 ```
 $ fe-zk-gen groth16 --snarkjs bad_vk.json
@@ -176,7 +532,7 @@ circom square_plus.circom --r1cs --wasm -o build
 echo '{"x":"3","y":"5"}' > input.json
 node build/square_plus_js/generate_witness.js build/square_plus_js/square_plus.wasm input.json build/witness.wtns
 snarkjs groth16 setup build/square_plus.r1cs ppot_0080_14.ptau build/0.zkey
-snarkjs zkey contribute build/0.zkey build/final.zkey --name=me -e="some entropy"   # TEST ONLY, see section 6
+snarkjs zkey contribute build/0.zkey build/final.zkey --name=me -e="some entropy"   # TEST ONLY, see section 7
 snarkjs zkey export verificationkey build/final.zkey verification_key.json
 snarkjs groth16 prove build/final.zkey build/witness.wtns proof.json public.json
 snarkjs groth16 verify verification_key.json public.json proof.json                 # OK!
@@ -265,86 +621,12 @@ pub contract Squarer {
 }
 ```
 
-For the test you need the proof as Fe constants. `snarkjs zkey export soliditycalldata` prints the proof in exactly
-the EVM argument order (`b` already has each `Fq2` as `[imaginary, real]`). This small script turns that output
-into `src/fixture.fe` (`my-project/make-fixture.mjs`):
-
-```js
-// usage: snarkjs zkey export soliditycalldata public.json proof.json | node make-fixture.mjs > src/fixture.fe
-import { readFileSync } from "node:fs";
-const [a, b, c, input] = JSON.parse("[" + readFileSync(0, "utf8") + "]");
-const arr = (xs) => "[" + xs.join(", ") + "]";
-console.log(`pub const A: [u256; 2] = ${arr(a)}`);
-console.log(`pub const B: [[u256; 2]; 2] = [${b.map(arr).join(", ")}]`);
-console.log(`pub const C: [u256; 2] = ${arr(c)}`);
-console.log(`pub const INPUT: [u256; 2] = ${arr(input)}`);
-```
-
-```sh
-cd my-project
-(cd circuit && snarkjs zkey export soliditycalldata public.json proof.json) | node make-fixture.mjs > src/fixture.fe
-fe fmt
-```
-
-`my-project/src/tests.fe` (files under `src/` are modules; `use super::...` reaches `lib.fe`):
-
-```fe
-use super::{Squarer, SquarerMsg}
-use super::fixture::{A, B, C, INPUT}
-use squareplus_verifier::SquarePlusVerifier
-use std::evm::{Address, Evm}
-
-fn deploy() -> Address uses (evm: mut Evm) {
-    let v = evm.create2<SquarePlusVerifier>(value: Wei::zero(), args: (), salt: 0)
-    evm.create2<Squarer>(value: Wei::zero(), args: (v,), salt: 1)
-}
-
-fn claim(_ s: Address, _ a: [u256; 2], _ input: [u256; 2]) -> bool
-uses (evm: mut Evm)
-{
-    let ok: bool = evm
-        .call(
-            addr: s,
-            gas: 10000000,
-            value: Wei::zero(),
-            message: SquarerMsg::Claim { a: a, b: B, c: C, input: input },
-        )
-    ok
-}
-
-#[test]
-fn valid_proof_is_recorded() uses (evm: mut Evm) {
-    let s = deploy()
-    assert(claim(s, A, INPUT))
-    let last: u256 = evm
-        .call(
-            addr: s,
-            gas: 10000000,
-            value: Wei::zero(),
-            message: SquarerMsg::LastOut {},
-        )
-    assert(last == INPUT[0])
-}
-
-#[test]
-fn tampered_proof_or_input_is_rejected() uses (evm: mut Evm) {
-    let s = deploy()
-    assert(!claim(s, [A[0] + 1, A[1]], INPUT))
-    assert(!claim(s, A, [INPUT[0] + 1, INPUT[1]]))
-    let last: u256 = evm
-        .call(
-            addr: s,
-            gas: 10000000,
-            value: Wei::zero(),
-            message: SquarerMsg::LastOut {},
-        )
-    assert(last == 0)
-}
-```
-
-```sh
-fe fmt --check && fe test        # tampered_proof_or_input_is_rejected, valid_proof_is_recorded: 2 passed
-```
+Test it like the first recipe's contract: deploy the generated verifier with `evm.create2<SquarePlusVerifier>(..)`, pass its
+address to `Squarer`, and call `claim` with the proof as constants. `snarkjs zkey export soliditycalldata public.json proof.json`
+prints the proof in exactly the EVM argument order (`b` already has each `Fq2` as `[imaginary, real]`); a ten-line
+script turns it into `src/fixture.fe` (`make-fixture.mjs` of the first recipe does the same for Semaphore proofs).
+`examples/quickstart` is this contract with its tests (valid proof accepted, tampered proof or input rejected,
+nothing recorded).
 
 Do not hand-write a verifier from a key. If the key changes, re-run the generator and commit the diff.
 
@@ -353,107 +635,14 @@ Do not hand-write a verifier from a key. If the key changes, re-run the generato
 `fe-zk-gen groth16 --arkworks` reads a JSON file with ark-serialize encodings (format
 `arkworks-groth16-bn254-uncompressed-v1`, described in `gen/README.md`): each point is `serialize_uncompressed` of the
 affine point as lowercase hex without `0x` (32-byte little-endian coordinates, flags in the top bits of the last
-byte), and the public inputs are decimal strings in the order the circuit allocated them. The full reference
-exporter is `gen/fe-zk-gen/examples/arkworks_fixture.rs`
-(`cargo run -p fe-zk-gen --example arkworks_fixture -- <dir>`). The minimal version for your own circuit is a Cargo
-project (`Cargo.toml` pins what `fe-zk-gen` uses):
-
-```toml
-[package]
-name = "ark-export"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-ark-bn254 = { version = "=0.5.0", default-features = false, features = ["curve"] }
-ark-groth16 = { version = "=0.5.0", default-features = false }
-ark-relations = "=0.5.0"
-ark-serialize = "=0.5.0"
-ark-snark = "=0.5.1"
-rand = "=0.8.5"
-serde_json = "1"
-```
-
-`src/main.rs` (circuit: `x*x == y`, `y` public):
-
-```rust
-use ark_bn254::{Bn254, Fr};
-use ark_groth16::Groth16;
-use ark_relations::{
-    lc,
-    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError},
-};
-use ark_serialize::CanonicalSerialize;
-use ark_snark::SNARK;
-use rand::{rngs::StdRng, SeedableRng};
-use serde_json::json;
-
-const FORMAT: &str = "arkworks-groth16-bn254-uncompressed-v1";
-
-/// x * x == y, with y public and x secret.
-#[derive(Clone)]
-struct Square {
-    x: Option<Fr>,
-}
-
-impl ConstraintSynthesizer<Fr> for Square {
-    fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
-        let xv = self.x;
-        let y = cs.new_input_variable(|| {
-            let v = xv.ok_or(SynthesisError::AssignmentMissing)?;
-            Ok(v * v)
-        })?;
-        let x = cs.new_witness_variable(|| xv.ok_or(SynthesisError::AssignmentMissing))?;
-        cs.enforce_constraint(lc!() + x, lc!() + x, lc!() + y)?;
-        Ok(())
-    }
-}
-
-/// ark-serialize `serialize_uncompressed`, lowercase hex without 0x: the format fe-zk-gen reads.
-fn hx<T: CanonicalSerialize>(t: &T) -> String {
-    let mut v = Vec::new();
-    t.serialize_uncompressed(&mut v).unwrap();
-    v.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn main() {
-    let out = std::env::args().nth(1).expect("usage: ark-export <out dir>");
-    std::fs::create_dir_all(&out).unwrap();
-    // TEST ONLY: a seeded RNG makes the toxic waste reproducible. Use your real ceremony's key.
-    let mut rng = StdRng::seed_from_u64(1);
-    let (pk, vk) =
-        Groth16::<Bn254>::circuit_specific_setup(Square { x: None }, &mut rng).unwrap();
-    let x = Fr::from(7u64);
-    let proof = Groth16::<Bn254>::prove(&pk, Square { x: Some(x) }, &mut rng).unwrap();
-    let public = vec![x * x];
-    assert!(Groth16::<Bn254>::verify(&vk, &public, &proof).unwrap());
-
-    let vk_json = json!({
-        "format": FORMAT,
-        "n_public": public.len(),
-        "alpha_g1": hx(&vk.alpha_g1),
-        "beta_g2": hx(&vk.beta_g2),
-        "gamma_g2": hx(&vk.gamma_g2),
-        "delta_g2": hx(&vk.delta_g2),
-        "gamma_abc_g1": vk.gamma_abc_g1.iter().map(hx).collect::<Vec<_>>(),
-    });
-    let proof_json = json!({
-        "format": FORMAT, "a": hx(&proof.a), "b": hx(&proof.b), "c": hx(&proof.c),
-    });
-    // public inputs: decimal strings, in the order the circuit allocated them
-    let public_json: Vec<String> = public.iter().map(|p| p.to_string()).collect();
-    let w = |name: &str, v: serde_json::Value| {
-        std::fs::write(format!("{out}/{name}"), serde_json::to_string_pretty(&v).unwrap()).unwrap()
-    };
-    w("verification_key.json", vk_json);
-    w("proof.json", proof_json);
-    w("public.json", json!(public_json));
-}
-```
+byte), and the public inputs are decimal strings in the order the circuit allocated them. The reference exporter for a
+tiny circuit (`x*x == y`, `y` public) is `gen/fe-zk-gen/examples/arkworks_fixture.rs`; copy it into your own Cargo
+project (pins: `ark-bn254`, `ark-groth16`, `ark-relations`, `ark-serialize` `=0.5.0`, `ark-snark` `=0.5.1`, `rand`
+`=0.8.5`, `serde_json`) and replace the circuit, or run it as is:
 
 ```sh
-cargo run -q -- out                      # writes out/verification_key.json, proof.json, public.json
 cd fe-zk/gen
+cargo run -q -p fe-zk-gen --example arkworks_fixture -- ../../ark-user/out     # verification_key.json, proof.json, public.json
 cargo run -q -p fe-zk-gen -- groth16 --arkworks ../../ark-user/out/verification_key.json \
     --proof ../../ark-user/out/proof.json --public ../../ark-user/out/public.json \
     --name SquareArk --out ../../my-project/ark_verifier --fe-zk-path ../../fe-zk
@@ -503,45 +692,9 @@ file's sha256. The shipped one is `ppot_0080_05` (2^5 points, circuits with a do
 circuit point it at a bigger PSE file: change the two constants in `ptau.go`, `PtauURL`/`PtauSHA256` (`sed` below,
 same file as recipe (a): `ppot_0080_14`).
 
-`mycircuit.go` (20 squarings, so the domain is 64):
-
-```go
-package main
-
-import (
-	"math/big"
-
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/frontend"
-)
-
-const rounds = 20
-
-// Chain: acc = x; 20 times acc = acc*acc + i; public y = acc. x is secret.
-type Chain struct {
-	X frontend.Variable
-	Y frontend.Variable `gnark:",public"`
-}
-
-func (c *Chain) Define(api frontend.API) error {
-	acc := c.X
-	for i := 0; i < rounds; i++ {
-		acc = api.Add(api.Mul(acc, acc), i)
-	}
-	api.AssertIsEqual(acc, c.Y)
-	return nil
-}
-
-// chainValue computes the same function outside the circuit (the witness needs the public value).
-func chainValue(x int64) *big.Int {
-	r := ecc.BN254.ScalarField()
-	acc := big.NewInt(x)
-	for i := 0; i < rounds; i++ {
-		acc.Mul(acc, acc).Add(acc, big.NewInt(int64(i))).Mod(acc, r)
-	}
-	return acc
-}
-```
+`mycircuit.go` defines your circuit (here a struct `Chain` with a secret `X` and a public `Y`, whose `Define` squares 20 times
+and adds the round number, so the domain is 64) and `chainValue(x int64) *big.Int`, the same function outside the circuit
+(the witness needs the public value).
 
 ```sh
 mkdir gnark-export && cd gnark-export
@@ -622,24 +775,24 @@ this machine had); the generator recipe above uses the shipped fixture.
 ### (f) KZG openings and EIP-4844 point evaluation
 
 No generator: KZG checks are library calls over checked types (`G1`, `G2`, `Bn254Fr`), so an unchecked word cannot be
-passed. `kzg_verify` checks one opening `f(z) = y` for a commitment `C` with a proof `pi`
-(`e(C - [y]G + [z]pi, H) * e(-pi, [tau]H) = 1`, no Fiat-Shamir involved), `kzg_batch_verify_gwc` checks `N`
-polynomials at one point, `kzg_verify_shplonk` checks the fixed shape "3 polynomials at the point sets
+passed. `kzg::verify` checks one opening `f(z) = y` for a commitment `C` with a proof `pi`
+(`e(C - [y]G + [z]pi, H) * e(-pi, [tau]H) = 1`, no Fiat-Shamir involved), `kzg::verify_gwc` checks `N`
+polynomials at one point, `kzg::verify_shplonk` checks the fixed shape "3 polynomials at the point sets
 {z1,z2}, {z1}, {z2}". The batch checks derive their challenges with fe-zk's own transcript (formulas in
 `vectors/kzg/README.md`), so they interoperate with a prover that implements the same, not with an arbitrary other
-implementation. `KzgVk::new` takes whatever `[tau]_2` you supply: the SRS is your trust assumption.
+implementation. `kzg::Vk::from_coords` takes whatever `[tau]_2` you supply: the SRS is your trust assumption.
 
 `kzg_point_evaluation` wraps the EIP-4844 precompile `0x0a` with its exact 192-byte input (versioned hash, `z`, `y`,
 48-byte commitment, 48-byte proof, as `Bytes48` = first 16 bytes and last 32 bytes) and checks the 64-byte answer
 `(4096, BLS_MODULUS)`. It returns `false` when the precompile rejects. It needs an EVM with EIP-4844 and EIP-2537 (the
-test runner has them).
+test runner has them). Like every function that reaches a precompile, both declare `uses (call: Call, ctx: Ctx)`.
 
-`src/kzg.fe` of the ingot used in section 4 (the opening is real: arkworks 0.5.0 on the PSE `ppot_0080_05` SRS, from `vectors/kzg`; the
+`src/kzg.fe` of the ingot used in section 5 (the opening is real: arkworks 0.5.0 on the PSE `ppot_0080_05` SRS, from `vectors/kzg`; the
 EIP-4844 vector is from c-kzg-4844):
 
 ```fe
-use fe_zk::{Bls12381Fr, Bn254Fr, Bytes48, Field, G1, G2, KzgVk, kzg_point_evaluation, kzg_verify}
-use std::evm::Call
+use fe_zk::{Bls12381Fr, Bn254Fr, Bytes48, Field, G1, G2, kzg, kzg_point_evaluation}
+use std::evm::{Call, Ctx}
 
 // Real SRS: PSE perpetual powers of tau (ppot_0080_05); opening made with arkworks 0.5.0
 // (vectors/kzg). [tau]_2 on the twist:
@@ -656,17 +809,17 @@ const PI_X: u256 = 8334224649812707509184057568585103991145220505656649813898048
 const PI_Y: u256 = 16834106107855789945255206278729981459894381212280705621623206801163918048402
 
 #[test]
-fn kzg_single_opening() uses (call: Call) {
+fn kzg_single_opening() uses (call: Call, ctx: Ctx) {
     // every input is a checked type: G1 / G2 / Bn254Fr cannot hold unchecked words
     let tau = G2::from_coords(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1).unwrap()
-    let vk = KzgVk::new(G1::generator(), G2::generator(), tau).unwrap()
+    let vk = kzg::Vk::from_coords(G1::generator(), G2::generator(), tau).unwrap()
     let c = G1::from_coords(C_X, C_Y).unwrap()
     let pi = G1::from_coords(PI_X, PI_Y).unwrap()
     let z = Bn254Fr::from_canonical(Z).unwrap()
     let y = Bn254Fr::from_canonical(Y).unwrap()
-    assert(kzg_verify(vk, c, z, y, pi))
+    assert(kzg::verify(vk, c, z, y, pi))
     // wrong claimed value
-    assert(!kzg_verify(vk, c, z, y.add(Bn254Fr::one()), pi))
+    assert(!kzg::verify(vk, c, z, y.add(Bn254Fr::one()), pi))
 }
 
 // EIP-4844 point evaluation (precompile 0x0a). Vector from c-kzg-4844.
@@ -680,7 +833,7 @@ const BZ: u256 = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000
 const BY: u256 = 0x1522a4a7f34e1ea350ae07c29c96c7e79655aa926122e95fe69fcbd932ca49e9
 
 #[test]
-fn eip4844_point_evaluation() uses (call: Call) {
+fn eip4844_point_evaluation() uses (call: Call, ctx: Ctx) {
     let c = Bytes48::new(C_HI, C_LO).unwrap()
     let proof = Bytes48::new(PROOF_HI, PROOF_LO).unwrap()
     let z = Bls12381Fr::from_canonical(BZ).unwrap()
@@ -708,7 +861,7 @@ configuration module (`FriParams`: trace height, blowup, final polynomial, numbe
 AIRs need new verifier code, not a new config. The shipped secure configuration (2^10 rows, blowup 16, 20 queries, 20
 PoW bits) has 100 bits of security under Plonky3's conjecture, and about 59 bits (Johnson bound) or 38 bits (unique
 decoding) by our own estimate of what is proven; it costs about 4.3 M gas of execution. Research-grade (see the
-[checklist](#6-integration-safety-checklist)).
+[checklist](#7-integration-safety-checklist)).
 
 To regenerate the configuration module and fixture for **your own** configuration or proof, run the Plonky3 prover
 crate in `vectors/plonky3-stark` and convert its output with `emit_fe.py` (Python 3, no dependencies):
@@ -754,7 +907,7 @@ fe test       # rejects_wrong_public_values, accepts_the_plonky3_proof: 2 passed
 ```
 
 As a contract, copy `examples/fri_stark`: it reads the proof from calldata into a `MemArray<u256>` instead of a
-typed `[u256; 2721]` array (a typed array of that size takes minutes to compile, [section 7](#7-troubleshooting)).
+typed `[u256; 2721]` array (a typed array of that size takes minutes to compile, [section 8](#8-troubleshooting)).
 Its selector is `0x12852f9a` (`verify(uint256[2721],uint256[3])`), the runtime code is 18,009 bytes (I built it:
 `fe build` prints a harmless `skipping recv arm 'Verify'` warning and writes no ABI file). The calldata is the
 proof words in the order of `fib_proof()` in the fixture, then the three public values. The deployed code path
@@ -766,10 +919,10 @@ configuration: it runs the prover with `--log-trace 8 --log-blowup 3 --log-final
 `--log-trace 10 --log-blowup 4 --log-final 3 --queries 20` (100 bits). Use the explicit command above, which
 reproduces the committed `config_secure.fe` byte for byte except for the path in its header comment (checked).
 
-## 4. Using the library directly
+## 5. Using the library directly
 
 Everything below is in the root of the `fe_zk` ingot (`use fe_zk::Name`; the full list is [API.md](API.md)).
-Snippets are files of one small ingot (dependency line as in [section 2](#2-add-fe-zk-to-your-fe-project))
+Snippets are files of one small ingot (dependency line as in [section 3](#3-add-fe-zk-to-your-fe-project))
 and were run with `fe test` (11 tests passed).
 
 ### `Field`, `Fp<P>` and generic code
@@ -911,7 +1064,7 @@ fn transcript_binds_inputs() {
 (canonical and on the twist only): it has no conversion to `G2` and can only be passed to `pairing_check_proof` /
 `pairing_try_proof`, where the pairing precompile completes the check. `g1_add`, `g1_mul` and `pairing_check` wrap
 the precompiles `0x06`, `0x07`, `0x08`; they check the success flag and the returned length, and a pairing is
-`true` only for the word `1`. All of them declare `uses (call: Call)`.
+`true` only for the word `1`. All of them declare `uses (call: Call, ctx: Ctx)`.
 
 ```fe
 use fe_zk::{
@@ -926,7 +1079,7 @@ use fe_zk::{
     pairing_check_proof,
     pairing_try_proof,
 }
-use std::evm::Call
+use std::evm::{Call, Ctx}
 
 #[test]
 fn g1_construction() {
@@ -961,7 +1114,7 @@ fn g2_construction() {
 }
 
 #[test]
-fn precompile_wrappers() uses (call: Call) {
+fn precompile_wrappers() uses (call: Call, ctx: Ctx) {
     let p = G1::generator()
     let two = g1_add(p, p) // precompile 0x06
     assert(two.eq(g1_mul(p, Bn254Fr::reduce(2)))) // precompile 0x07
@@ -984,10 +1137,10 @@ fn precompile_wrappers() uses (call: Call) {
 
 ```fe
 use fe_zk::{Bls12381Fr, Field, G1Bls, G2Bls, bls_g1_add, bls_g1_mul, bls_g2_add, bls_pairing_check}
-use std::evm::Call
+use std::evm::{Call, Ctx}
 
 #[test]
-fn bls12_381_eip2537() uses (call: Call) {
+fn bls12_381_eip2537() uses (call: Call, ctx: Ctx) {
     // These need an EVM with the EIP-2537 precompiles (Prague or later); `fe test` has them.
     let g = G1Bls::generator()
     let h = G2Bls::generator()
@@ -1004,7 +1157,7 @@ fn bls12_381_eip2537() uses (call: Call) {
 }
 ```
 
-## 5. Compile, test, deploy
+## 6. Compile, test, deploy
 
 ```sh
 fe fmt --check          # format check (generated code is valid but not fmt-clean: run `fe fmt` on it)
@@ -1032,13 +1185,10 @@ cd fe-zk && scripts/code-size.sh ../my-project/verifier ../my-project/plonk_veri
 I measured: Groth16 2,738, PLONK (snarkjs) 8,171, gnark PLONK 12,597, halo2 SHPLONK 23,137 bytes, the FRI contract
 18,009. The halo2 contracts are close to the limit: a larger circuit may not fit one contract.
 
-**Deploy** with any deployer. With Foundry, against a local `anvil` (I used port 18545; `anvil` defaults to 8545):
+**Deploy** with any deployer. [Section 1](#1-anonymous-membership-in-one-evening) starts `anvil` and sets `RPC` and `KEY`; for the
+generated verifier and `Squarer` of recipe (a):
 
 ```sh
-anvil --port 18545 &
-export RPC=http://127.0.0.1:18545
-export KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80    # anvil's public dev key #0
-
 cd my-project && fe build && fe build verifier
 VERIFIER=$(cast send --rpc-url $RPC --private-key $KEY --create "0x$(cat verifier/out/SquarePlusVerifier.bin)" --json | jq -r .contractAddress)
 SQUARER=$(cast send --rpc-url $RPC --private-key $KEY --create "0x$(cat out/Squarer.bin)" "constructor(address)" $VERIFIER --json | jq -r .contractAddress)
@@ -1065,7 +1215,7 @@ cast call --rpc-url $RPC $VERIFIER "$SIG" "${ARGS[@]}"                          
 cast call --rpc-url $RPC $VERIFIER "$SIG" "[0x01,0x02]" "${ARGS[1]}" "${ARGS[2]}" "${ARGS[3]}"   # false
 ```
 
-Your own contract, with an **explicit gas limit** (see the warning below):
+Your own contract, with an **explicit gas limit** (see the gas limits note below):
 
 ```sh
 cast send --rpc-url $RPC --private-key $KEY $SQUARER "claim(uint256[2],uint256[2][2],uint256[2],uint256[2])" \
@@ -1082,14 +1232,15 @@ halo2
 `cast call $V "verifyShplonk(uint256[57],uint256[1])(bool)" "[$(jq -r .proof shplonk.json | sed 's/^0x//' | fold -w64 | sed 's/^/0x/' | paste -sd, -)]" "$(jq -c '.instances[0]' shplonk.json | tr -d '"')"`.
 All of these returned `true` for the valid proof and `false` for a changed input.
 
-**Warning: gas estimation.** `cast send` without `--gas-limit` estimated 63,146 gas for `claim`, the transaction
-succeeded with status `0x1`, and **nothing was recorded**: `lastOut()` stayed `0`. The estimator found the smallest gas
-at which the transaction does not revert; with less than the verification needs (about 200k), the inner static call
-runs out of gas, returns `false`, and `claim` completes normally without writing. With `--gas-limit 1000000` it
-recorded `14`. A contract that treats `false` as "invalid" cannot tell an invalid proof from a starved call. Set gas
-limits explicitly (and see the checklist).
+**Gas limits.** Give calls to a verifier an explicit gas limit (about 215,000 for one Groth16 check, more for the
+others, see [GAS.md](GAS.md)). Since 0.2.0 every verifier reverts when the remaining gas is below what its next
+precompile call needs plus a margin of 5,000 (the failure rule, [SAFETY.md](SAFETY.md) section 10), so a starved call
+reverts instead of returning `false`, and gas estimation finds the right limit (tested with the first recipe's
+contract: `cast send` without `--gas-limit` recorded the vote). Before 0.2.0 a starved Groth16 call returned `false`
+and a contract that treated `false` as "invalid" silently did nothing; do not rely on estimation for contracts that
+catch a failed inner call.
 
-## 6. Integration safety checklist
+## 7. Integration safety checklist
 
 Condensed from [SAFETY.md](SAFETY.md), [SECURITY.md](../SECURITY.md) and the README limitations. fe-zk is not audited.
 
@@ -1110,12 +1261,16 @@ Condensed from [SAFETY.md](SAFETY.md), [SECURITY.md](../SECURITY.md) and the REA
 - **Bind the action to the proof.** A proof is not bound to `msg.sender`. For anything with a recipient or an amount,
   make the recipient / action hash a **public input** of the circuit and compare it with the call, or a front-runner
   submits your proof first (the proof still verifies, for the same statement).
-- **`false` is not a verdict.** `pairing_try_proof` (used by the Groth16 path) returns `false` for *any* failed
-  precompile call, including one that fails because too little gas was forwarded (see the gas-estimation warning in
-  section 5). Do not use `false` as evidence of an invalid proof, for example in a slashing rule. Forward ample gas and
-  treat `false` as "not accepted now".
+- **`false` is not a verdict if your contract swallows reverts.** The verifiers revert, not return `false`, when the
+  forwarded gas is below what a precompile call needs (the failure rule). A contract that wraps a verifier in a
+  low-level call and treats any failure as "invalid proof" (for example in a slashing rule) turns a starved call into
+  a verdict; forward ample gas and let the revert propagate. Within the verifier, `false` means: some input was invalid.
 - **Gas caps fail closed.** Precompile calls carry hard-coded gas caps just above the current prices (EIP-1108,
   EIP-2565). A repricing makes them revert or return `false`, never accept.
+- **Anonymous groups.** With `fe_zk::anon` and the Semaphore ingot: check that the proof's root is a root of *your*
+  tree (`is_known_root`), pin the scope at deployment, spend the nullifier only after the proof verified, and never
+  use a proof as an id. The ingot verifies a proof, not the group. The examples cap groups at 32 members, see
+  [Beyond 32 members](#beyond-32-members).
 - **Code size, EIP-170.** halo2 verifiers are around 22-23 kB of 24.5 kB; one contract per multi-open scheme. Check with
   `scripts/code-size.sh` after every regeneration.
 - **Call verifiers with a static call and keep your own storage out of the way**: `store.verifier.static(...)`, as in
@@ -1130,7 +1285,7 @@ Condensed from [SAFETY.md](SAFETY.md), [SECURITY.md](../SECURITY.md) and the REA
   again by the Fe compiler.
 - **Not audited.** No external review. Report issues privately ([SECURITY.md](../SECURITY.md)).
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom (exact text) | Cause and fix |
 |---|---|
@@ -1143,39 +1298,49 @@ Condensed from [SAFETY.md](SAFETY.md), [SECURITY.md](../SECURITY.md) and the REA
 | `fe test src/tests/field.fe` prints `` error[2-0002]: `field` is not found `` at `use ingot::field::...` (in your own project the same error names `fe_zk`: `` `fe_zk` is not found ``) | `fe test FILE` compiles the file as a standalone module, so `ingot::`, `super::` and dependency names have nothing to resolve. Run the ingot and filter by test name instead: `cd fe-zk && fe test --filter field` (substring match; 3 tests, about 65 s). |
 | `` error[2-0002]: `a` is not found `` for `var s: u256 = a` followed by a line that starts with `{` | A Fe 26.5.0 parser quirk: an identifier at the end of a line followed by a block on the next line is parsed as a struct literal `a { ... }`. Wrap it: `var s: u256 = (a)`. Repro: `scripts/probe/issue_block_after_ident.fe`; with the parentheses it passes. |
 | `error: invalid verifying key: point not on curve: alpha_g1` (exit 1) from `fe-zk-gen` | The key failed validation (off curve, not in the subgroup, non-canonical coordinate, identity gamma/delta, wrong number of IC points). Nothing is emitted. Re-export the key from the prover. |
-| A transaction with an estimated gas limit "succeeds" but nothing happens | Gas estimation under-estimates a contract that treats a failed static call as `false`. Pass `--gas-limit` (section 5). |
+| A transaction with an estimated gas limit "succeeds" but nothing happens | Only with a contract that treats a failed inner call as `false` (and with verifiers older than 0.2.0): estimation finds the smallest gas at which nothing reverts. Pass `--gas-limit` (section 6). |
 | `snarkjs zkey export soliditycalldata` output will not parse (PLONK) | The PLONK output is `[proof][input]` with no comma between the arrays; `sed 's/\]\[/],[/'` fixes it. |
-| `Illegal instruction` when running `fe` | CPU without AVX; build Fe from source ([section 1](#1-install)). |
+| `Illegal instruction` when running `fe` | CPU without AVX; build Fe from source ([section 2](#2-install)). |
 | `fe build` prints `Warning: skipping recv arm 'Verify': selector signature is unknown` | Expected for the FRI contract, which uses a raw selector; the contract is built, only the ABI file is skipped. |
+| `error[...]: call reaches unsafe code ...` is not the problem, but `` `verify_proof_low` requires effect `Ctx` to be in scope `` is | Every function that reaches a precompile (all verifiers, `g1_add`, `pairing_check`, ...) declares `uses (call: Call, ctx: Ctx)` since 0.2.0 (the gas guard reads the remaining gas through `Ctx`). Add `ctx` to the `uses` list of your handler or test. |
+| `node make-fixture.mjs` proves, prints the fixture, and then never exits | snarkjs leaves worker threads running. End the script with `process.exit(0)`. |
 | `circom`: `invalid output path` | `-o build` needs the directory to exist: `mkdir -p build`. |
 
-## 8. What was run, and what was not
+## 9. What was run, and what was not
 
-Run on a copy of this repository, with the commands as written (paths adapted only by the layout above):
+Run with the commands as written (paths adapted only by the layout above), on a copy of this repository:
 
+- **the first recipe**, in a scratch project: `npm install` (172 packages), `node make-fixture.mjs` (real SDK proofs
+  against the ceremony keys, artifacts downloaded from `snark-artifacts.pse.dev`), `fe fmt --check && fe test`
+  (2 passed, 2 m 43 s), `fe build` (2 m 35 s; `Vote.runtime.bin` 21,173 bytes), then on `anvil` 1.8.3 with `cast`:
+  deploy, three `register`, `vote` (status `0x1`, gas 294,865), replay and wrong-option attempts (status `0x0`),
+  `tally`; `cast send` without `--gas-limit` also recorded a vote;
+- **beyond 32 members**: the `HighVerifier` and `Gate` contracts above in a scratch ingot, `fe test` with the committed
+  real depth 6 proof (`vectors/semaphore/depths.json`), `fe build`;
+- **the key-only verifier**: `fe-zk-gen groth16 --lib-module` on the multiplier key, `fe test` (2 passed);
 - recipe (a): circom 2.2.2 compile, snarkjs 0.7.6 setup/contribute/prove/verify, `fe-zk-gen groth16 --snarkjs`,
-  `fe test` of the generated ingot (15 passed) and of `my-project` (2 passed), `fe build`, `fe fmt --check`;
-- recipe (b): the Rust exporter above, `fe-zk-gen groth16 --arkworks`, `fe test` (14 passed);
-- recipe (c): snarkjs PLONK, `fe-zk-gen plonk`, `fe test`, `fe build`;
-- recipe (d): the Go exporter with the circuit above (`go run`), `fe-zk-gen gnark`, `fe test` (17 passed), `fe build`;
-- recipe (e): `fe-zk-gen halo2` (`--scheme shplonk`, `gwc`, `both`, and validate-only), `fe test` (13 passed) and
-  `fe build` of the SHPLONK ingot;
-- recipe (f) and section 4: all snippets, as one ingot, `fe test` (11 passed);
+  `fe test` of the generated ingot (15 passed) and of `my-project` (2 passed), `fe build`, `fe fmt --check`
+  (run at v0.1.0; the generated contracts' ABI did not change in 0.2.0, regenerated and re-tested by `scripts/demo.sh`);
+- recipes (b) to (e): as at v0.1.0, the generated ingots re-tested by `scripts/demo.sh` at 0.2.0
+  (halo2, PLONK and gnark ingots; the arkworks, Go and halo2 exporters were run at v0.1.0);
+- recipe (f) and section 5: all snippets as one ingot, `fe test`, on the 0.2.0 names (see the end of this list);
 - recipe (g): `cargo run --release --locked` of `vectors/plonky3-stark` with the secure parameters, `emit_fe.py`,
-  `fe test` of the config module in a separate ingot (2 passed), `fe build` of `examples/fri_stark`;
-- section 2: the git dependency against a local `file://` repository;
-- section 5: `anvil` 1.8.3 and `cast` 1.8.3: deploy of the Groth16, PLONK, gnark and halo2 verifiers and of `Squarer`,
-  `verifyProof`/`Verify`/`verifyShplonk` calls (true for the valid proof, false for a changed input), `vkDigest()`,
-  `claim`, `scripts/code-size.sh`;
-- section 7: every error text was reproduced, except `Illegal instruction`.
+  `fe test` of the config module in a separate ingot (2 passed), `fe build` of `examples/fri_stark` (v0.1.0);
+- section 3: the git dependency against a local `file://` repository (v0.1.0);
+- section 6: `anvil` and `cast` 1.8.3 as above, and at v0.1.0 deploy of the Groth16, PLONK, gnark and halo2 verifiers
+  with `verifyProof`/`Verify`/`verifyShplonk` calls (true for the valid proof, false for a changed input),
+  `vkDigest()`, `scripts/code-size.sh`;
+- section 8: the error texts were reproduced at v0.1.0, plus the two new rows above.
 
 **Not run** (marked here so nobody assumes otherwise):
 
 - the `feup` installer line and the build-Fe-from-source recipe (the machine already had a source-built `fe`; the
   steps follow DESIGN.md and were not repeated);
-- `scripts/setup-tools.sh` (it compiles circom from source; a circom 2.2.2 binary and the pinned snarkjs were
-  already present) and the `curl` download of the ptau file (a local copy with the same sha256 was used);
+- `scripts/setup-tools.sh` (it compiles circom from source) and the `curl` download of the ptau file (a local copy with
+  the same sha256 was used);
 - the Git dependency form against GitHub;
 - the halo2 exporter (`vectors/halo2`) on a circuit of my own, and the Plonky3 prover on anything but the committed
   secure parameters;
-- calling the FRI contract on a node, and the arkworks-generated verifier on a node.
+- calling the FRI contract on a node, and the arkworks-generated verifier on a node;
+- the Semaphore recipe against a public testnet or mainnet, and a group contract that spans a separate verifier with
+  its own tree (only the verifier/gate pair above was built and tested).

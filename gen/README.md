@@ -20,6 +20,10 @@ cargo run -p fe-zk-gen -- groth16 --arkworks ../vectors/groth16/arkworks_multipl
 cargo test
 ```
 
+Key only, no contract: `fe-zk-gen groth16 --snarkjs vk.json --lib-module src/key.fe --module-name key` writes the key
+constants, the compile-time checks and `pub fn vk() -> groth16::Vk<N>` (conflicts with `--out`); call it with
+`groth16::verify_calldata`. The Semaphore ingot's key modules are made this way.
+
 Exit codes: 0 valid, 1 key failed validation, 2 unreadable/unparseable input. There is no flag
 to skip validation.
 
@@ -74,7 +78,7 @@ then 32-byte words `nb_public, power, NC, generator, coset_shift`, `Ql Qr Qm Qo 
 (x, y), the `NC` constraint indices, `[x]_2` (x.real, x.imag, y.real, y.imag).
 The contract has the ABI of gnark's Solidity verifier, `Verify(bytes proof, uint256[] public_inputs) returns (bool)`
 (selector checked against `solc --hashes` of `vectors/gnark/*/Verifier.sol` in `tests/gnark.rs`), plus `vkDigest()`. It
-forwards to `gnark_plonk_verify_bytes`, which returns `false` unless the proof is exactly `24 + 3 NC` words and
+forwards to `gnark::verify_calldata`, which returns `false` unless the proof is exactly `24 + 3 NC` words and
 `public_inputs` has exactly `nb_public` entries.
 
 ## Key digest
