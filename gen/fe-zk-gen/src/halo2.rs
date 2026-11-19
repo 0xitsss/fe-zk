@@ -617,13 +617,13 @@ impl<'a> Gen<'a> {
         self.emit("//! 5 (transcript absorbs the vk transcript_repr, the instances and every commitment and");
         self.emit("//! evaluation in reference order), 6 (precompile wrappers check success, length, result).");
         let (root, common) = self.paths();
-        self.emit("use std::evm::Call");
+        self.emit("use std::evm::{Call, Ctx}");
         self.emit(format!(
             "use {root}::ec::{{G1, G2, g1_is_valid, g1_mul, g2_is_valid}}"
         ));
         self.emit(format!("use {root}::field::{{Bn254Fr, Field}}"));
         self.emit(format!("use {common}::{{"));
-        self.emit("Halo2Transcript, Halo2Vk, batch_inv, final_pairing, fr, mul_add, read_g1, read_points,\nread_scalars,");
+        self.emit("Halo2Transcript, Vk, batch_inv, final_pairing, fr, mul_add, read_g1, read_points,\nread_scalars,");
         self.emit("}");
         self.emit("");
         self.emit(
@@ -722,8 +722,8 @@ impl<'a> Gen<'a> {
         self.emit(
             "/// SRS and transcript constants (compile-time validated, no gas for validation).",
         );
-        self.emit("pub fn vk() -> Halo2Vk {");
-        self.emit("Halo2Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)");
+        self.emit("pub fn vk() -> Vk {");
+        self.emit("Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)");
         self.emit("}");
         self.emit("");
     }
@@ -752,11 +752,11 @@ impl<'a> Gen<'a> {
         self.emit("/// Reads and validates the common part of the proof, derives theta, beta, gamma, y, x and the");
         self.emit("/// value `expected_h` of the quotient polynomial at `x` (SPEC sections 2-6). `None` = reject.");
         self.emit("pub fn phase1<const L: usize>(");
-        self.emit("_ vk: Halo2Vk,");
+        self.emit("_ vk: Vk,");
         self.emit("_ proof: [u256; L],");
         self.emit(format!("_ instances: [u256; {}],", self.ni));
         self.emit("_ tr: mut Halo2Transcript,");
-        self.emit(") -> Option<Phase1> uses (call: Call) {");
+        self.emit(") -> Option<Phase1> uses (call: Call, ctx: Ctx) {");
         self.emit("assert(L >= COMMON_WORDS)");
         self.emit("tr.absorb(vk.transcript_repr().to_canonical())");
         let mut inst: Vec<Vec<String>> = vec![];
@@ -1122,7 +1122,7 @@ impl<'a> Gen<'a> {
                 cs.join(", ")
             ));
         }
-        self.emit("pub fn shplonk_check(_ vk: Halo2Vk, _ p1: Phase1, _ o: ShplonkOpen) -> bool uses (call: Call) {");
+        self.emit("pub fn shplonk_check(_ vk: Vk, _ p1: Phase1, _ o: ShplonkOpen) -> bool uses (call: Call, ctx: Ctx) {");
         self.prelude(&sup);
         self.xn_powers();
         self.emit("let y = o.y");
@@ -1243,10 +1243,10 @@ impl<'a> Gen<'a> {
             "/// Returns false for every rejected input (non-canonical, off curve, wrong proof).",
         );
         self.emit("pub fn verify_shplonk(");
-        self.emit("_ vk: Halo2Vk,");
+        self.emit("_ vk: Vk,");
         self.emit(format!("_ proof: [u256; {total}],"));
         self.emit(format!("_ instances: [u256; {}],", self.ni));
-        self.emit(") -> bool uses (call: Call) {");
+        self.emit(") -> bool uses (call: Call, ctx: Ctx) {");
         self.emit("var tr = Halo2Transcript::new()");
         self.unwrap_or("p1", "phase1(vk, proof, instances, mut tr)", "false");
         self.unwrap_or("o", "shplonk_open(proof, mut tr)", "false");
@@ -1309,7 +1309,7 @@ impl<'a> Gen<'a> {
             "/// SPEC 8 final check. Point groups (rotation of `x`): {}.",
             desc.join(", ")
         ));
-        self.emit("pub fn gwc_check(_ vk: Halo2Vk, _ p1: Phase1, _ o: GwcOpen) -> bool uses (call: Call) {");
+        self.emit("pub fn gwc_check(_ vk: Vk, _ p1: Phase1, _ o: GwcOpen) -> bool uses (call: Call, ctx: Ctx) {");
         let rots: Vec<i64> = groups.iter().map(|g| g.0).collect();
         self.prelude(&rots);
         self.xn_powers();
@@ -1400,10 +1400,10 @@ impl<'a> Gen<'a> {
         self.emit("");
         self.emit("/// Verifies a GWC proof (`GWC_PROOF_WORDS` big-endian words) for `instances`.");
         self.emit("pub fn verify_gwc(");
-        self.emit("_ vk: Halo2Vk,");
+        self.emit("_ vk: Vk,");
         self.emit(format!("_ proof: [u256; {total}],"));
         self.emit(format!("_ instances: [u256; {}],", self.ni));
-        self.emit(") -> bool uses (call: Call) {");
+        self.emit(") -> bool uses (call: Call, ctx: Ctx) {");
         self.emit("var tr = Halo2Transcript::new()");
         self.unwrap_or("p1", "phase1(vk, proof, instances, mut tr)", "false");
         self.unwrap_or("o", "gwc_open(proof, mut tr)", "false");
@@ -1559,7 +1559,7 @@ pub fn emit_halo2_ingot(vk: &Halo2Vk, opts: &Halo2EmitOptions) -> Result<Emitted
         writeln!(w, "    recv {msg} {{").unwrap();
         writeln!(
             w,
-            "        {} {{ proof, instances }} -> bool uses (call: Call) {{",
+            "        {} {{ proof, instances }} -> bool uses (call: Call, ctx: Ctx) {{",
             sc.variant
         )
         .unwrap();
