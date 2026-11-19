@@ -4,7 +4,7 @@
 traits, on-chain verifiers for Groth16, PLONK, halo2-KZG, KZG and FRI/STARK proofs, and a generator, `fe-zk-gen`,
 that turns verifying keys into Fe verifier contracts whose keys the Fe compiler itself validates.
 
-<p align="center"><img src="docs/media/life.svg" alt="Animated: 64 generations of the R-pentomino on a 16x16 board stepped by a Fe contract (657 gas per step), then one Groth16 proof of 512 generations verified for 207,758 gas versus 271,686 gas for run()" width="640"></p>
+<p align="center"><img src="docs/media/life.svg" alt="Animated: 64 generations of the R-pentomino on a 16x16 board stepped by a Fe contract (657 gas per step), then one Groth16 proof of 512 generations verified for 208,210 gas versus 271,686 gas for run()" width="640"></p>
 
 *What the animation shows: every board and gas number is output of the compiled Fe `Life` contract executed in revm
 (`life-cli --frames-json`, rendered by `scripts/make-life-svg.py`). First, on-chain generations with word-parallel bit
@@ -332,8 +332,8 @@ wrong start board: REJECTED
 gas (revm, Osaka)                                 execution      with tx
 512 separate step() calls                            336393     11205525
 one run(board, 512) call                             271686       293066
-one proveRun (verify proof of the same run)          207758       233942
-one advanceProven (verify + 2 Poseidon + store)       263675       289127
+one proveRun (verify proof of the same run)          207758       234394
+one advanceProven (verify + 2 Poseidon + store)       264127       289579
 
 break-even: a proof pays off above about 392 generations (531 gas per on-chain generation)
 ```
