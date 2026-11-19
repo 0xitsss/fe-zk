@@ -16,7 +16,7 @@ MONO, MONOB = DJV + "DejaVuSansMono.ttf", DJV + "DejaVuSansMono-Bold.ttf"
 SYM = DJV + "DejaVuSans.ttf"
 CHARW = 1233 / 2048.0  # DejaVu Sans Mono advance, in em
 
-# palette (one accent: sky blue; no orange anywhere)
+# palette (one accent: sky blue; orange only for the window minimize dot)
 ACC = "0x4fc3f7"
 ACC2 = "0xa6dcff"
 BG0 = "0x0b0f14"
@@ -255,7 +255,7 @@ class Scene:
             self.box(x, y, w, 44, PANEL2 + "@0.98", t0, t1)
             self.box(x, y + 44, w, 2, LINE, t0, t1)
             if kind == "term":
-                for i, c in enumerate((ERR, "0xa6dcff", OK)):
+                for i, c in enumerate((ERR, "0xffbd2e", OK)):
                     self.text("●", x + 20 + i * 30, y + 6, 26, c, SYM, t0=t0, t1=t1, anim="fade", tick=True)
             self.text(title, x + (120 if kind == "term" else 20), y + 8, 26, DIM, MONO, t0=t0, t1=t1, anim="fade", tick=True)
 
