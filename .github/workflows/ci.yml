@@ -12,6 +12,7 @@ env:
   FE_VERSION: v26.5.0
 
 jobs:
+  # Fast gate: formatting, API docs, the library's own tests and the generator's tests.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -25,17 +26,24 @@ jobs:
       - name: API docs are up to date
         run: python3 -I scripts/gen-api-docs.py --check
       - run: fe test
-      # The root ingot is a library with no contract; contracts live in the example ingots.
-      # Game of Life: Fe tests, on-chain stepping checked against a per-cell reference in revm,
-      # and one Groth16 proof of 512 generations verified by the generated Fe verifier.
-      - name: Game of Life demo
-        run: scripts/life-demo.sh
       - name: fe-zk-gen
         working-directory: gen
         run: cargo test
-      # Differential smoke test (docs/TESTING.md): every Fe verifier vs its reference verifier (snarkjs,
-      # gnark, snark-verifier Solidity under solc 0.8.24; ark-groth16 natively) on the committed proofs and
-      # a few hundred mutations of each, in revm. Fails on any unexplained verdict difference.
+
+  # Differential smoke test (docs/TESTING.md): every Fe verifier vs its reference verifier (snarkjs,
+  # gnark, snark-verifier Solidity under solc 0.8.24; ark-groth16 natively) on the committed proofs and
+  # a few hundred mutations of each, in revm. Fails on any unexplained verdict difference.
+  # Every committed Semaphore v4 proof (one per depth 1..10 plus the anon_* example proofs) is accepted by
+  # Semaphore's unmodified SemaphoreVerifier.sol (pinned commit and sha256) in revm; tampered ones rejected.
+  crosscheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Fe
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
+          echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
+      - run: fe --version
       - name: Differential test (quick)
         run: |
           curl -fsSL -o "$HOME/solc" https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux
@@ -45,19 +53,49 @@ jobs:
           mkdir -p "$HOME/bin" && mv "$HOME/solc" "$HOME/bin/solc" && export PATH="$HOME/bin:$PATH"
           solc --version
           scripts/difftest.sh --quick
-      # Every committed Semaphore v4 proof (one per depth 1..10 plus the anon_* example proofs) is accepted by
-      # Semaphore's unmodified SemaphoreVerifier.sol (pinned commit and sha256) in revm; tampered ones rejected.
       - name: Semaphore Solidity cross-check
         run: |
           curl -fsSL -o "$HOME/solc" https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux
+          # sha256 from https://binaries.soliditylang.org/linux-amd64/list.json (v0.8.24+commit.e11b9ed9)
           echo "fb03a29a517452b9f12bcf459ef37d0a543765bb3bbc911e70a87d6a37c30d5f  $HOME/solc" | sha256sum -c -
           chmod +x "$HOME/solc"
           mkdir -p "$HOME/bin" && mv "$HOME/solc" "$HOME/bin/solc" && export PATH="$HOME/bin:$PATH"
+          solc --version
           (cd vectors/js/semaphore && npm ci --no-audit --no-fund)
           scripts/check-semaphore-sol.sh
-      # Emits the membership verifier with fe-zk-gen, checks it is unchanged, and runs the
-      # generated verifier's tests and the demo contract's tests.
-      - name: Membership demo
+
+  # Heavy demos (about 20+ minutes): emits every verifier with fe-zk-gen and checks the committed
+  # ones are unchanged, runs the generated verifiers' tests, the Semaphore ingot (about 3 minutes of key
+  # compile time), the anon_* examples, the Tornado verifier (real mainnet proofs) and the size guard.
+  demos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Fe
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
+          echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
+      - run: fe --version
+      - name: Demos (membership, PLONK, halo2, gnark, Semaphore ingot, anon examples, size guard)
         run: |
           scripts/demo.sh
-          git diff --exit-code examples/membership
+          git diff --exit-code
+      - name: Tornado withdraw verifier (real mainnet proofs)
+        working-directory: examples/tornado/verifier
+        run: fe test
+
+  # Game of Life: Fe tests, on-chain stepping checked against a per-cell reference in revm,
+  # and one Groth16 proof of 512 generations verified by the generated Fe verifier.
+  life:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Fe
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
+          echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
+      - run: fe --version
+      - name: Game of Life demo
+        run: scripts/life-demo.sh
