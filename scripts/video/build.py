@@ -30,7 +30,7 @@ SRC = TMP / "scn"
 FE = os.environ.get("FE", "fe")
 GEN = os.environ.get("GEN_BIN", "fe-zk-gen")
 LIFE = os.environ.get("LIFE_BIN", "life-cli")
-NCHAP = 9
+NCHAP = 10
 
 
 def log(*a):
@@ -613,9 +613,30 @@ def main():
         sc.track(t0, y)
     sc.caption("Fe / Solidity execution gas on the same proof, same revm (docs/GAS.md).", 1.0)
 
+    # ---- 9b. anonymous apps (v0.2.0)
+    sc = new("s09b_anon", 14.0, "Anonymous apps in Fe", "anon module", 9)
+    li = Src("src/anon/lean_imt.fe")
+    nu = Src("src/anon/nullifier.fe")
+    a, an = li.grab("pub fn insert(mut self", 1)
+    b, bn_ = li.grab("pub fn is_known_root", 1)
+    c, cn = nu.grab("pub fn spend(mut self", 8)
+    ls, ns = join((a, an), (b, bn_))
+    pos, h1 = sc.code(ls, 60, 190, 1800, 28, 38, t0=0.3, per=0.3, title="src/anon/lean_imt.fe: LeanIMT, root-compatible with Semaphore v4", numbers=ns)
+    pos, h2 = sc.code(c, 60, 190 + h1 + 30, 1800, 28, 38, t0=2.0, per=0.2, title="src/anon/nullifier.fe: one use per scope", numbers=cn)
+    ty = 190 + h1 + h2 + 80
+    chk = ("anon_vote", "anonymous voting (Semaphore v4 ingot, nullifier per poll)"), ("tornado", "Tornado withdraw verifier: real mainnet proofs")
+    for k, (key, lab) in enumerate(chk):
+        r = next((o for l, rc, o, p_, f in results if l.endswith(key) or l.startswith("examples/" + key)), None)
+        m = re.findall(r"test result: \w+\. (\d+) passed", r or "")
+        t0 = 5.0 + k * 1.5
+        sc.text("✓", 80, ty + k * 70, 48, OK, SYM, t0=t0, anim="fade")
+        sc.text(lab, 160, ty + k * 70 + 4, 34, TXT, SANSB, t0=t0)
+        sc.text("%s tests passed" % (m[0] if m else "?"), ("r", 1840), ty + k * 70 + 8, 28, DIM, MONO, t0=t0 + 0.4, anim="fade")
+    sc.caption("v0.2.0: LeanIMT, scoped nullifiers, Semaphore v4 ingot, voting, Tornado verifier.", 1.0)
+
     # ---- 10. tested
     td = testing_totals()
-    sc = new("s10_tested", 11.0, "Tested like it matters", "verification", 9)
+    sc = new("s10_tested", 11.0, "Tested like it matters", "verification", 10)
     cards = [(n_tests, "Fe tests passing", "fe test, %d ingots, 0 failed" % len(results)),
              (td["cases"], "differential cases", "Fe vs reference verifiers: %d bugs" % td["bugs"]),
              (safety_rules(), "safety rules", "enforcement point + test, each")]
@@ -655,7 +676,7 @@ def main():
     clips = [CLIPS / (s.name + ".mp4") for s in scenes]
     durs = [s.dur for s in scenes]
     kinds = ["fade", "slideleft", "fade", "wipeleft", "fadeblack", "smoothleft", "fade", "slideup", "fade", "smoothleft", "fade",
-             "slideleft", "fade", "fadeblack", "smoothup", "fade"]
+             "slideleft", "fade", "fadeblack", "smoothup", "fade", "fade"]
     final = VIDEO / "fe-zk-demo.mp4"
     total = assemble(clips, durs, final, 0.55, kinds)
     log("final %.1f s" % total)
