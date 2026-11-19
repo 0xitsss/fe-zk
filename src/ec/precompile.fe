@@ -2,11 +2,23 @@
 //! (safety rule 6). Not re-exported: every public wrapper lives next to its point types.
 use core::ptr::{self, FixedMemBuffer, MemBuffer}
 use core::abi::{load_word, store_word}
-use std::evm::{Address, Call}
+use std::evm::{Address, Call, Ctx}
 
 // Every call passes an explicit gas cap just above the precompile's price. A failing precompile
 // (invalid point, bad proof) consumes ALL gas forwarded to it, so forwarding "everything" would
 // let one rejected point burn 63/64 of the transaction's gas.
+
+/// Gas that must remain above a precompile's forwarded cap before it is called. Covers the work
+/// between the check and the STATICCALL plus the rest of the caller's frame.
+pub const GAS_MARGIN: u256 = 5000
+
+/// Failure rule: an invalid input is `false`, a lack of gas is a revert. A precompile that runs
+/// out of gas looks exactly like one that rejected its input, so without this check a caller
+/// could pick the gas limit that makes a valid proof come back `false`. Reverts unless at least
+/// `cap + GAS_MARGIN` gas remains.
+pub fn require_gas(_ cap: u256) uses (ctx: Ctx) {
+    assert(ctx.gas() >= cap + GAS_MARGIN)
+}
 
 /// Writes `v` as the 32-byte word at byte offset `32 * index`.
 pub fn put(_ buf: mut MemBuffer, _ index: usize, _ v: u256) {
@@ -43,8 +55,9 @@ pub fn call_try(
     _ out: mut MemBuffer,
     _ out_len: u256,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
+    require_gas(gas)
     unsafe {
         input.set_len(in_len)
     }
@@ -70,7 +83,7 @@ pub fn call_checked(
     _ out: mut MemBuffer,
     _ out_len: u256,
 )
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(call_try(addr, gas, mut input, in_len, mut out, out_len))
 }
@@ -102,8 +115,9 @@ pub fn call_try_fixed<const I: usize>(
     _ out: mut MemBuffer,
     _ out_len: u256,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
+    require_gas(gas)
     var inb = input.into_buffer()
     let r = call.raw_staticcall(
             addr: Address::new(addr),
@@ -127,8 +141,9 @@ pub fn call_try_fixed_buf(
     _ out: mut MemBuffer,
     _ out_len: u256,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
+    require_gas(gas)
     unsafe {
         input.set_len(in_len)
     }

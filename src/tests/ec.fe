@@ -5,7 +5,7 @@ use core::ptr::{self, MemBuffer}
 use core::abi::{load_word, store_word}
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::field::{Bn254Fr, Field}
-use std::evm::{Address, Call, Evm}
+use std::evm::{Address, Call, Ctx, Evm}
 
 const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -164,7 +164,7 @@ fn g2_rejects_non_subgroup() {
 /// Sends e(G1, P_bad) directly (words in precompile order x_imag, x_real, y_imag, y_real) and
 /// records the answer in the log.
 #[test]
-fn precompile_vs_non_subgroup() uses (evm: mut Evm, call: Call) {
+fn precompile_vs_non_subgroup() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     var input = MemBuffer::with_capacity(192)
     let bad: [u256; 6] = [1, 2, BAD_X1, BAD_X0, BAD_Y1, BAD_Y0]
     var i: usize = 0
@@ -222,7 +222,7 @@ fn precompile_vs_non_subgroup() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn add_and_mul_match_reference() uses (evm: mut Evm, call: Call) {
+fn add_and_mul_match_reference() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let gen = G1::generator()
     let two = g1_add(gen, gen)
     assert(two.x() == G1_2X && two.y() == G1_2Y)
@@ -242,7 +242,7 @@ fn add_and_mul_match_reference() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn pairing_accepts_and_rejects() uses (evm: mut Evm, call: Call) {
+fn pairing_accepts_and_rejects() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let p = G1::generator()
     let q = G2::generator()
     // e(P,Q) * e(-P,Q) = 1
@@ -259,7 +259,7 @@ fn pairing_accepts_and_rejects() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn pairing_bilinearity() uses (evm: mut Evm, call: Call) {
+fn pairing_bilinearity() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let p = G1::generator()
     let q = G2::generator()
     let ap = g1(G1_AX, G1_AY)
@@ -276,7 +276,7 @@ fn pairing_bilinearity() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn gas_report() uses (evm: mut Evm, call: Call) {
+fn gas_report() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let p = G1::generator()
     let q = G2::generator()
     var g0 = evm.gas()

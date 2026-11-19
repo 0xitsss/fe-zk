@@ -17,7 +17,7 @@
 //! Precompile word order for G2 (EIP-197): `x_imag, x_real, y_imag, y_real`. The Fe API uses
 //! `(x0, x1, y0, y1)` = `(x_real, x_imag, y_real, y_imag)`, the order of py_ecc / arkworks.
 use core::ptr::{FixedMemBuffer, MemBuffer}
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use std::evm::crypto::{addmod, mulmod}
 use ingot::field::{Bn254Fr, Field}
 use super::precompile::{
@@ -414,7 +414,7 @@ impl G2Proof {
 // ---------------------------------------------------------------------------------------
 
 /// `a + b` via precompile 0x06. Reverts on failure.
-pub fn g1_add(_ a: G1, _ b: G1) -> G1 uses (call: Call) {
+pub fn g1_add(_ a: G1, _ b: G1) -> G1 uses (call: Call, ctx: Ctx) {
     let input = unsafe {
         FixedMemBuffer<128>::alloc_uninit()
     }
@@ -431,7 +431,7 @@ pub fn g1_add(_ a: G1, _ b: G1) -> G1 uses (call: Call) {
 }
 
 /// `[s] p` via precompile 0x07. The scalar is a canonical `Bn254Fr`. Reverts on failure.
-pub fn g1_mul(_ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
+pub fn g1_mul(_ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call, ctx: Ctx) {
     let input = unsafe {
         FixedMemBuffer<96>::alloc_uninit()
     }
@@ -448,7 +448,9 @@ pub fn g1_mul(_ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
 /// Calls the pairing precompile on `n` pairs already written to `input`.
 /// Result code: 0 = product != 1, 1 = product == 1, 2 = precompile call failed.
 /// Reverts on a returned length other than 32 or a word above 1.
-fn pairing_run(_ input: mut MemBuffer, _ n: usize) -> u256 uses (call: Call) {
+fn pairing_run(_ input: mut MemBuffer, _ n: usize) -> u256
+uses (call: Call, ctx: Ctx)
+{
     var out = unsafe {
         FixedMemBuffer<32>::alloc_uninit().into_buffer()
     }
@@ -469,7 +471,7 @@ fn pairing_run(_ input: mut MemBuffer, _ n: usize) -> u256 uses (call: Call) {
 
 /// Result code of `pairing_raw`: see `pairing_run`.
 fn pairing_raw<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> u256
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(N != 0)
     var input = unsafe {
@@ -496,7 +498,7 @@ uses (call: Call)
 /// returns a length other than 32, returns a word other than 0 or 1, or `N == 0`
 /// (an empty product would be vacuously true).
 pub fn pairing_check<const N: usize>(_ ps: [G1; N], _ qs: [G2; N]) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(N != 0)
     var input = unsafe {
@@ -523,7 +525,7 @@ uses (call: Call)
 /// Like `pairing_check` for untrusted `G2Proof` operands, strict: reverts if the precompile
 /// call fails (which is what happens for a point outside the order-`r` subgroup).
 pub fn pairing_check_proof<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     let w = pairing_raw(ps, qs)
     assert(w <= 1)
@@ -535,12 +537,12 @@ uses (call: Call)
 /// "call failed" is mapped to rejection, never to acceptance. The failing call burns only the
 /// capped gas of `pairing_raw`.
 ///
-/// `false` therefore means "not accepted", not "proven invalid": a caller that forwards less gas
-/// than the cap also gets `false`. Do not slash or penalise on `false` from this function.
-/// Gas caps are set for current precompile prices (EIP-1108); a repricing above a cap makes
-/// calls fail closed (revert or `false`), never accept.
+/// A lack of gas is not a `false`: `call_try_fixed_buf` reverts unless `cap + GAS_MARGIN` gas
+/// remains, so `false` here means the precompile saw the operands and refused them. Gas caps are
+/// set for current precompile prices (EIP-1108); a repricing above a cap makes calls fail closed
+/// (revert or `false`), never accept.
 pub fn pairing_try_proof<const N: usize>(_ ps: [G1; N], _ qs: [G2Proof; N]) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     pairing_raw(ps, qs) == 1
 }

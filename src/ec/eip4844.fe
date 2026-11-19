@@ -8,7 +8,7 @@
 //! `BLS_MODULUS`, as two 32-byte words. It fails (consumes the gas, returns nothing) if the
 //! versioned hash does not match the commitment, an input is malformed, or the proof is invalid.
 use core::ptr::MemBuffer
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use ingot::field::Field
 use super::bls12_381::{BLS12_381_R, Bls12381Fr}
 use super::precompile::{call_try, get, put, put_at}
@@ -41,7 +41,7 @@ pub fn kzg_point_evaluation(
     _ commitment: Bytes48,
     _ proof: Bytes48,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     var input = MemBuffer::with_capacity(192)
     // A 48-byte field is written as an unaligned word whose low 16 bytes hold the first 16 bytes

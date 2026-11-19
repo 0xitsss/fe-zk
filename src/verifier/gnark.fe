@@ -28,14 +28,14 @@
 //! ```
 //!
 //! Safety rules, enforced by types:
-//! - Rule 1/2: `GnarkProof` can only be built by `GnarkProof::from_words`: every point is a `G1`
+//! - Rule 1/2: `Proof` can only be built by `Proof::from_words`: every point is a `G1`
 //!   (canonical coordinates, on the curve; the point at infinity is rejected because gnark's
 //!   byte encoding of it, with a flag bit, is not representable in the Solidity layout) and every
 //!   evaluation is a canonical `Bn254Fr`. Public inputs must be `< r` (never reduced).
 //! - Rule 3: `[x]_2` is a fully checked `G2` (on curve, in the subgroup); the G1 and G2 SRS
 //!   generators are the canonical ones (gnark's keys always use them).
 //! - Rule 4: the number of public inputs `NP` and of BSB22 commitments `NC` are const generics of
-//!   `GnarkVk<NP, NC>`, so the verifier takes exactly `[u256; NP]` and `NC` openings and
+//!   `Vk<NP, NC>`, so the verifier takes exactly `[u256; NP]` and `NC` openings and
 //!   commitments; a different count does not type-check.
 //! - Rule 5: gamma binds the whole key (all 8 + NC commitments) and the public inputs, then L, R, O;
 //!   every later challenge chains on the previous raw digest and binds every other commitment and
@@ -43,11 +43,11 @@
 //! - Rule 6: precompile failures revert (`ingot::ec`, and `sha256` below, which also checks the
 //!   returned length); the pairing word must be 0 or 1.
 //!
-//! Verification is read-only: `uses (call: Call)` and no storage. Limitations: `NP >= 1`,
+//! Verification is read-only: `uses (call: Call, ctx: Ctx)` and no storage. Limitations: `NP >= 1`,
 //! `power <= 28`; keys with a commitment at infinity (e.g. an all-zero selector) are rejected
-//! by `GnarkVk::new`.
+//! by `Vk::from_coords`.
 use core::ptr::MemBuffer
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use std::evm::crypto::mulmod
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::{call_checked, get, put, put_at}
@@ -62,9 +62,9 @@ const NAME_ALPHA: u256 = 0x616c706861 << 216
 const NAME_ZETA: u256 = 0x7a657461 << 224
 
 /// gnark verifying key for `NP` public inputs and `NC` BSB22 commitments. Private fields: build
-/// with `GnarkVk::new`, which validates the domain parameters. The curve points are validated by
+/// with `Vk::from_coords`, which validates the domain parameters. The curve points are validated by
 /// their types.
-pub struct GnarkVk<const NP: usize, const NC: usize> {
+pub struct Vk<const NP: usize, const NC: usize> {
     power: u256,
     w: Bn254Fr,
     size_inv: Bn254Fr,
@@ -81,7 +81,7 @@ pub struct GnarkVk<const NP: usize, const NC: usize> {
     cci: [u256; NC],
     x2: G2,
 }
-impl<const NP: usize, const NC: usize> Copy for GnarkVk<NP, NC> {}
+impl<const NP: usize, const NC: usize> Copy for Vk<NP, NC> {}
 
 const SCALAR_R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
@@ -99,8 +99,8 @@ const fn fr_pow2k(_ b: u256, _ k: u256) -> u256 {
 /// Whether `(power, w, k)` are valid gnark domain parameters: `1 <= power <= 28`, `w` and `k`
 /// canonical, `k` nonzero, `w` of order exactly `2^power` (`w^(2^(power-1)) = -1`), and `k` gives
 /// three distinct cosets (`k^n != 1`, `k^(2n) != 1`). `const fn`: used by `static_assert` in
-/// generated verifiers and by `GnarkVk::from_consts`.
-pub const fn gnark_domain_is_valid(_ power: u256, _ w: u256, _ k: u256) -> bool {
+/// generated verifiers and by `Vk::from_consts`.
+pub const fn domain_is_valid(_ power: u256, _ w: u256, _ k: u256) -> bool {
     if power == 0 || power > 28 {
         return false
     }
@@ -118,13 +118,13 @@ fn finite(_ p: G1) -> bool {
     !p.is_infinity()
 }
 
-impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
+impl<const NP: usize, const NC: usize> Vk<NP, NC> {
     /// `commitments` is `[Ql, Qr, Qm, Qo, Qk, S1, S2, S3]`; `qcp[j]` and `cci[j]` are the j-th
     /// BSB22 selector commitment and its constraint index (`VK_INDEX_COMMIT_API_j`).
     /// `None` if: `NP == 0`; `power` is 0 or above 28; `w` is not of order exactly `2^power`;
     /// `k` does not give three distinct cosets (`k^n` and `k^(2n)` must differ from 1);
     /// `NP + cci_j >= n`; any key commitment or `[x]_2` is the point at infinity.
-    pub fn new(
+    pub fn from_coords(
         _ power: u256,
         _ w: Bn254Fr,
         _ coset_shift: Bn254Fr,
@@ -132,7 +132,7 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
         _ qcp: [G1; NC],
         _ cci: [u256; NC],
         _ x2: G2,
-    ) -> Option<GnarkVk<NP, NC>> {
+    ) -> Option<Vk<NP, NC>> {
         if NP == 0 || NP > 1000000 || NC > 1000 || power == 0 || power > 28 {
             return Option::None
         }
@@ -167,7 +167,7 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
             return Option::None
         }
         Option::Some(
-            GnarkVk {
+            Vk {
                 power,
                 w,
                 size_inv: Bn254Fr::reduce(n).inv().unwrap(),
@@ -188,12 +188,12 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
     }
 }
 
-impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
+impl<const NP: usize, const NC: usize> Vk<NP, NC> {
     /// Key from compile-time constants: build the points with `from_coords_or_infinity` and pair
     /// them with `static_assert(g1_is_valid(..))`, `static_assert(g2_is_valid(..))` and
-    /// `static_assert(gnark_domain_is_valid(..))`; no gas is spent on the G2 subgroup check. Same
-    /// conditions as `new`; if any fails (bad domain, a commitment at infinity, a bad constraint
-    /// index) the key is poisoned (`[x]_2` = infinity) and `gnark_plonk_verify` rejects every proof.
+    /// `static_assert(domain_is_valid(..))`; no gas is spent on the G2 subgroup check. Same
+    /// conditions as `from_coords`; if any fails (bad domain, a commitment at infinity, a bad constraint
+    /// index) the key is poisoned (`[x]_2` = infinity) and `verify` rejects every proof.
     pub fn from_consts(
         _ power: u256,
         _ w: u256,
@@ -202,11 +202,8 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
         _ qcp: [G1; NC],
         _ cci: [u256; NC],
         _ x2: G2,
-    ) -> GnarkVk<NP, NC> {
-        var ok = NP > 0
-            && NP <= 1000000
-            && NC <= 1000
-            && gnark_domain_is_valid(power, w, coset_shift)
+    ) -> Vk<NP, NC> {
+        var ok = NP > 0 && NP <= 1000000 && NC <= 1000 && domain_is_valid(power, w, coset_shift)
         if ok {
             let n = 1 << power
             ok = (NP as u256) <= n
@@ -222,7 +219,7 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
             }
         }
         let n_fr = Bn254Fr::reduce(1 << power)
-        GnarkVk {
+        Vk {
             power,
             w: Bn254Fr::reduce(w),
             size_inv: if ok {
@@ -247,8 +244,8 @@ impl<const NP: usize, const NC: usize> GnarkVk<NP, NC> {
 }
 
 /// A gnark PLONK proof with `NC` BSB22 commitments. Private fields: build with
-/// `GnarkProof::from_words`.
-pub struct GnarkProof<const NC: usize> {
+/// `Proof::from_words`.
+pub struct Proof<const NC: usize> {
     l: G1,
     r: G1,
     o: G1,
@@ -267,7 +264,7 @@ pub struct GnarkProof<const NC: usize> {
     qcp_eval: [Bn254Fr; NC],
     bsb: [G1; NC],
 }
-impl<const NC: usize> Copy for GnarkProof<NC> {}
+impl<const NC: usize> Copy for Proof<NC> {}
 
 fn proof_point(_ w: [u256; 24], _ i: usize) -> Option<G1> {
     match G1::from_coords(w[2 * i], w[2 * i + 1]) {
@@ -282,7 +279,7 @@ fn proof_point(_ w: [u256; 24], _ i: usize) -> Option<G1> {
     }
 }
 
-impl<const NC: usize> GnarkProof<NC> {
+impl<const NC: usize> Proof<NC> {
     /// `fixed` is the first 24 words of `MarshalSolidity()`: `L, R, O` (x, y each), `H0, H1, H2`,
     /// `l, r, o, s1, s2` at zeta, `Z`, `Z(w zeta)`, `W_zeta`, `W_zeta_omega`. `qcp_at_zeta` are the
     /// `NC` selector openings and `bsb` the `NC` BSB22 commitments (x, y), the words that follow.
@@ -292,7 +289,7 @@ impl<const NC: usize> GnarkProof<NC> {
         _ fixed: [u256; 24],
         _ qcp_at_zeta: [u256; NC],
         _ bsb: [[u256; 2]; NC],
-    ) -> Option<GnarkProof<NC>> {
+    ) -> Option<Proof<NC>> {
         var bx = [0; NC]
         var by = [0; NC]
         var j: usize = 0
@@ -301,7 +298,7 @@ impl<const NC: usize> GnarkProof<NC> {
             by[j] = bsb[j][1]
             j += 1
         }
-        GnarkProof<NC>::from_columns(fixed, qcp_at_zeta, bx, by)
+        Proof<NC>::from_columns(fixed, qcp_at_zeta, bx, by)
     }
 
     /// As `from_words`, with the BSB22 commitments as an x column and a y column.
@@ -310,7 +307,7 @@ impl<const NC: usize> GnarkProof<NC> {
         _ qcp_at_zeta: [u256; NC],
         _ bsb_x: [u256; NC],
         _ bsb_y: [u256; NC],
-    ) -> Option<GnarkProof<NC>> {
+    ) -> Option<Proof<NC>> {
         // fixed layout: 0..5 LRO, 6..11 H, 12..16 evals, 17..18 Z, 19 zu, 20..21 W, 22..23 Ww
         let l = proof_point(fixed, 0)
         let r = proof_point(fixed, 1)
@@ -368,7 +365,7 @@ impl<const NC: usize> GnarkProof<NC> {
             i += 1
         }
         Option::Some(
-            GnarkProof {
+            Proof {
                 l: l.unwrap(),
                 r: r.unwrap(),
                 o: o.unwrap(),
@@ -393,7 +390,9 @@ impl<const NC: usize> GnarkProof<NC> {
 
 /// `sha256` (precompile 0x02) of the first `len` bytes of `buf`. Reverts if the call fails or
 /// does not return 32 bytes. The gas cap is just above the precompile price `60 + 12 * words`.
-fn sha256(_ buf: mut MemBuffer, _ len: usize) -> u256 uses (call: Call) {
+fn sha256(_ buf: mut MemBuffer, _ len: usize) -> u256
+uses (call: Call, ctx: Ctx)
+{
     var out = MemBuffer::with_capacity(32)
     call_checked(
         2,
@@ -420,7 +419,7 @@ fn w_g1(_ buf: mut MemBuffer, _ off: u256, _ p: G1) -> u256 {
 
 /// `H2F`: gnark-crypto `hash_to_field` with DST "BSB22-Plonk" (expand_message_xmd, sha256,
 /// 48 output bytes, interpreted big endian and reduced mod r) of the 64-byte point encoding.
-pub fn hash_to_fr(_ p: G1) -> Bn254Fr uses (call: Call) {
+pub fn hash_to_fr(_ p: G1) -> Bn254Fr uses (call: Call, ctx: Ctx) {
     // b0 = sha256(0^64 || x || y || 0x00 0x30 0x00 || DST || len(DST))
     var b = MemBuffer::with_capacity(160)
     put(mut b, 0, 0)
@@ -445,7 +444,7 @@ pub fn hash_to_fr(_ p: G1) -> Bn254Fr uses (call: Call) {
 
 /// Every intermediate value of a verification, public so that tests can compare each with
 /// gnark's Go replay. `ok` is the final pairing result.
-pub struct GnarkTrace {
+pub struct Trace {
     pub gamma: Bn254Fr,
     pub beta: Bn254Fr,
     pub alpha: Bn254Fr,
@@ -459,11 +458,11 @@ pub struct GnarkTrace {
     pub folded_digest: G1,
     pub ok: bool,
 }
-impl Copy for GnarkTrace {}
+impl Copy for Trace {}
 
 /// The four first challenges `gamma, beta, alpha, zeta` (reduced) and the raw 256-bit digests
 /// they chain on.
-pub struct GnarkChallenges {
+pub struct Challenges {
     pub gamma: Bn254Fr,
     pub beta: Bn254Fr,
     pub alpha: Bn254Fr,
@@ -473,15 +472,15 @@ pub struct GnarkChallenges {
     pub alpha_raw: u256,
     pub zeta_raw: u256,
 }
-impl Copy for GnarkChallenges {}
+impl Copy for Challenges {}
 
 /// gamma, beta, alpha, zeta exactly as gnark computes them (see the module comment).
-pub fn gnark_challenges<const NP: usize, const NC: usize>(
-    _ vk: GnarkVk<NP, NC>,
+pub fn challenges<const NP: usize, const NC: usize>(
+    _ vk: Vk<NP, NC>,
     _ pubs: [Bn254Fr; NP],
-    _ p: GnarkProof<NC>,
-) -> GnarkChallenges
-uses (call: Call)
+    _ p: Proof<NC>,
+) -> Challenges
+uses (call: Call, ctx: Ctx)
 {
     // gamma
     let words = 22 + 2 * NC + NP
@@ -534,7 +533,7 @@ uses (call: Call)
     off = w_g1(mut b3, off, p.h1)
     off = w_g1(mut b3, off, p.h2)
     let zeta_raw = sha256(mut b3, 4 + 7 * 32)
-    GnarkChallenges {
+    Challenges {
         gamma: Bn254Fr::reduce(gamma_raw),
         beta: Bn254Fr::reduce(beta_raw),
         alpha: Bn254Fr::reduce(alpha_raw),
@@ -547,21 +546,21 @@ uses (call: Call)
 }
 
 /// `acc + [s] p`.
-fn acc_mul(_ acc: G1, _ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
+fn acc_mul(_ acc: G1, _ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call, ctx: Ctx) {
     g1_add(acc, g1_mul(p, s))
 }
 
 /// Runs the whole verification on canonical public inputs and returns every intermediate value.
 /// `trace.ok` is `false` (and the other fields are zero or generator placeholders) if zeta lies
 /// in the evaluation domain (a Lagrange denominator is zero); the proof is then not valid.
-pub fn gnark_trace<const NP: usize, const NC: usize>(
-    _ vk: GnarkVk<NP, NC>,
-    _ p: GnarkProof<NC>,
+pub fn trace<const NP: usize, const NC: usize>(
+    _ vk: Vk<NP, NC>,
+    _ p: Proof<NC>,
     _ pubs: [Bn254Fr; NP],
-) -> GnarkTrace
-uses (call: Call)
+) -> Trace
+uses (call: Call, ctx: Ctx)
 {
-    let ch = gnark_challenges(vk, pubs, p)
+    let ch = challenges(vk, pubs, p)
     let zero = Bn254Fr::zero()
     let one = Bn254Fr::one()
     let gen = G1::generator()
@@ -569,7 +568,7 @@ uses (call: Call)
     let gamma = ch.gamma
     let alpha = ch.alpha
     let zeta = ch.zeta
-    let failed = GnarkTrace {
+    let failed = Trace {
         gamma,
         beta,
         alpha,
@@ -746,7 +745,7 @@ uses (call: Call)
     dtot = acc_mul(dtot, p.w_zeta_omega, rnd.mul(zeta).mul(vk.w))
     let quot = acc_mul(p.w_zeta, p.w_zeta_omega, rnd).neg()
     let ok = pairing_check([dtot, quot], [G2::generator(), vk.x2])
-    GnarkTrace {
+    Trace {
         gamma,
         beta,
         alpha,
@@ -764,12 +763,12 @@ uses (call: Call)
 
 /// Verifies `proof` for public inputs `pubs_raw` against `vk`. `false` if any public input is
 /// `>= r` (never reduced) or the pairing check fails. Reverts only if a precompile call fails.
-pub fn gnark_plonk_verify<const NP: usize, const NC: usize>(
-    _ vk: GnarkVk<NP, NC>,
-    _ proof: GnarkProof<NC>,
+pub fn verify<const NP: usize, const NC: usize>(
+    _ vk: Vk<NP, NC>,
+    _ proof: Proof<NC>,
     _ pubs_raw: [u256; NP],
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     // Degenerate key (`[x]_2` = infinity, see `from_consts`): never verifies.
     if vk.x2.is_infinity() {
@@ -788,23 +787,23 @@ uses (call: Call)
         }
         i += 1
     }
-    gnark_trace(vk, proof, pubs).ok
+    trace(vk, proof, pubs).ok
 }
 
 /// One call from the raw `MarshalSolidity()` words: `fixed` (24 words), the `NC` selector
 /// openings and the `NC` BSB22 commitments. `false` if the proof words are not canonical on-curve
 /// data, a public input is not canonical, or the proof does not verify.
-pub fn gnark_plonk_verify_words<const NP: usize, const NC: usize>(
-    _ vk: GnarkVk<NP, NC>,
+fn verify_words<const NP: usize, const NC: usize>(
+    _ vk: Vk<NP, NC>,
     _ fixed: [u256; 24],
     _ qcp_at_zeta: [u256; NC],
     _ bsb: [[u256; 2]; NC],
     _ pubs: [u256; NP],
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
-    match GnarkProof<NC>::from_words(fixed, qcp_at_zeta, bsb) {
-        Option::Some(p) => gnark_plonk_verify(vk, p, pubs),
+    match Proof<NC>::from_words(fixed, qcp_at_zeta, bsb) {
+        Option::Some(p) => verify(vk, p, pubs),
         Option::None => false,
     }
 }
@@ -812,13 +811,13 @@ uses (call: Call)
 /// gnark Solidity ABI adapter: `Verify(bytes proof, uint256[] public_inputs)`. The proof must be
 /// exactly `(24 + 3 NC)` words (`MarshalSolidity()`) and `public_inputs` exactly `NP` entries:
 /// any other length is rejected (`false`, never truncated or padded; safety rule 4), which gnark's
-/// Solidity verifier does with a revert. The word layout is that of `gnark_plonk_verify_words`.
-pub fn gnark_plonk_verify_bytes<const NP: usize, const NC: usize>(
-    _ vk: GnarkVk<NP, NC>,
+/// Solidity verifier does with a revert. The word layout is that of `verify_words`.
+pub fn verify_calldata<const NP: usize, const NC: usize>(
+    _ vk: Vk<NP, NC>,
     _ proof: Bytes,
     _ pubs: Vec<u256>,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     if proof.len() != (24 + 3 * NC) * 32 || pubs.len() != NP {
         return false
@@ -845,8 +844,8 @@ uses (call: Call)
         pi[i] = pubs.get(i)
         i += 1
     }
-    match GnarkProof<NC>::from_columns(fixed, qe, bx, by) {
-        Option::Some(p) => gnark_plonk_verify(vk, p, pi),
+    match Proof<NC>::from_columns(fixed, qe, bx, by) {
+        Option::Some(p) => verify(vk, p, pi),
         Option::None => false,
     }
 }

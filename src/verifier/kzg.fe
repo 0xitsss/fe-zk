@@ -1,9 +1,9 @@
 //! KZG polynomial-commitment opening checks over BN254.
 //!
 //! Three checks, all reduced to one 2-pair `pairing_check`:
-//! - `kzg_verify`: one polynomial at one point.
-//! - `kzg_batch_verify_gwc`: `N` polynomials at the same point (GWC random linear combination).
-//! - `kzg_verify_shplonk`: 3 polynomials at point sets {z1,z2}, {z1}, {z2} (SHPLONK, fixed shape).
+//! - `verify`: one polynomial at one point.
+//! - `verify_gwc`: `N` polynomials at the same point (GWC random linear combination).
+//! - `verify_shplonk`: 3 polynomials at point sets {z1,z2}, {z1}, {z2} (SHPLONK, fixed shape).
 //!
 //! Exact formulas and transcript encodings: `vectors/kzg/README.md`.
 //!
@@ -14,10 +14,10 @@
 //! distinct domain tag per challenge. Precompile failures revert (rule 6, in `ingot::ec`).
 //!
 //! The KZG commitment itself is malleable-free but NOT zero-knowledge or hiding without
-//! blinding; that is a prover concern. The SRS is trusted: `KzgVk` takes whatever
+//! blinding; that is a prover concern. The SRS is trusted: `Vk` takes whatever
 //! `[tau]G2` the caller supplies.
 use core::ptr::MemBuffer
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use std::evm::crypto::keccak256
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::put
@@ -30,18 +30,18 @@ pub const DOMAIN_SHPLONK_Y: u256 = 0x46455a4b2d5348504c4f4e4b2d5931
 /// "FEZK-SHPLONK-U1"
 pub const DOMAIN_SHPLONK_U: u256 = 0x46455a4b2d5348504c4f4e4b2d5531
 
-/// KZG verifying key: `[1]G1`, `[1]G2`, `[tau]G2`. Private fields: build with `KzgVk::new`.
-pub struct KzgVk { g1: G1, g2: G2, tau_g2: G2 }
-impl Copy for KzgVk {}
+/// KZG verifying key: `[1]G1`, `[1]G2`, `[tau]G2`. Private fields: build with `Vk::from_coords`.
+pub struct Vk { g1: G1, g2: G2, tau_g2: G2 }
+impl Copy for Vk {}
 
-impl KzgVk {
+impl Vk {
     /// `None` if any of the three points is the point at infinity (a degenerate key makes
     /// every pairing check trivially true). The points are already validated by their types.
-    pub fn new(_ g1: G1, _ g2: G2, _ tau_g2: G2) -> Option<KzgVk> {
+    pub fn from_coords(_ g1: G1, _ g2: G2, _ tau_g2: G2) -> Option<Vk> {
         if g1.is_infinity() || g2.is_infinity() || tau_g2.is_infinity() {
             return Option::None
         }
-        Option::Some(KzgVk { g1, g2, tau_g2 })
+        Option::Some(Vk { g1, g2, tau_g2 })
     }
 
     /// Key from compile-time constants: build the points with `G1::from_coords_or_infinity` /
@@ -49,11 +49,11 @@ impl KzgVk {
     /// `static_assert(g2_is_valid(..))` (the `[tau]G2` subgroup check then costs no gas). A
     /// degenerate key (any point at infinity) is poisoned to all-infinity and every verify
     /// function rejects it, so an unusable key can never accept a proof.
-    pub const fn from_consts(_ g1: G1, _ g2: G2, _ tau_g2: G2) -> KzgVk {
+    pub const fn from_consts(_ g1: G1, _ g2: G2, _ tau_g2: G2) -> Vk {
         if g1.is_infinity() || g2.is_infinity() || tau_g2.is_infinity() {
-            return KzgVk { g1: G1::infinity(), g2: G2::infinity(), tau_g2: G2::infinity() }
+            return Vk { g1: G1::infinity(), g2: G2::infinity(), tau_g2: G2::infinity() }
         }
-        KzgVk { g1, g2, tau_g2 }
+        Vk { g1, g2, tau_g2 }
     }
 
     /// `true` for a key from `from_consts` that was poisoned.
@@ -68,7 +68,7 @@ fn put_g1(_ buf: mut MemBuffer, _ at: usize, _ p: G1) {
 }
 
 /// Writes the 10 words `g1 (2), g2 (4), tau_g2 (4)` at word index `at`.
-fn put_vk(_ buf: mut MemBuffer, _ at: usize, _ vk: KzgVk) {
+fn put_vk(_ buf: mut MemBuffer, _ at: usize, _ vk: Vk) {
     put_g1(mut buf, at, vk.g1)
     put(mut buf, at + 2, vk.g2.x0())
     put(mut buf, at + 3, vk.g2.x1())
@@ -91,8 +91,8 @@ fn hash_to_fr(_ buf: mut MemBuffer, _ words: usize) -> Bn254Fr {
 
 /// Single opening: `C` opens to `y` at `z` with proof `pi`, i.e. `f(z) = y` for the committed `f`.
 /// Check: `e(C - [y]G + [z]pi, [1]G2) * e(-pi, [tau]G2) == 1`.
-pub fn kzg_verify(_ vk: KzgVk, _ c: G1, _ z: Bn254Fr, _ y: Bn254Fr, _ pi: G1) -> bool
-uses (call: Call)
+pub fn verify(_ vk: Vk, _ c: G1, _ z: Bn254Fr, _ y: Bn254Fr, _ pi: G1) -> bool
+uses (call: Call, ctx: Ctx)
 {
     if vk.is_degenerate() {
         return false
@@ -106,7 +106,7 @@ uses (call: Call)
 /// GWC batch challenge `v = keccak256(DOMAIN_GWC, N, vk(10 words), z, C_0.x, C_0.y, ..., y_0, ...) mod r`.
 /// Public so that tests can check that every input changes it (safety rule 5).
 pub fn gwc_challenge<const N: usize>(
-    _ vk: KzgVk,
+    _ vk: Vk,
     _ cs: [G1; N],
     _ z: Bn254Fr,
     _ ys: [Bn254Fr; N],
@@ -128,15 +128,15 @@ pub fn gwc_challenge<const N: usize>(
 
 /// Batched opening of `N >= 1` polynomials at one point `z` (GWC): `cs[i]` opens to `ys[i]` at `z`.
 /// `pi` is the opening proof of `sum_i v^i f_i` at `z`, `v = gwc_challenge(..)`. Reduces to
-/// `kzg_verify(vk, sum v^i C_i, z, sum v^i y_i, pi)`.
-pub fn kzg_batch_verify_gwc<const N: usize>(
-    _ vk: KzgVk,
+/// `verify(vk, sum v^i C_i, z, sum v^i y_i, pi)`.
+pub fn verify_gwc<const N: usize>(
+    _ vk: Vk,
     _ cs: [G1; N],
     _ z: Bn254Fr,
     _ ys: [Bn254Fr; N],
     _ pi: G1,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(N != 0)
     let v = gwc_challenge(vk, cs, z, ys)
@@ -150,12 +150,12 @@ uses (call: Call)
         pw = pw.mul(v)
         i += 1
     }
-    kzg_verify(vk, c_acc, z, y_acc, pi)
+    verify(vk, c_acc, z, y_acc, pi)
 }
 
 /// SHPLONK challenge `y = keccak256(DOMAIN_SHPLONK_Y, vk(10), z1, z2, C_0..C_2 (6 words), e00, e01, e1, e2) mod r`.
 pub fn shplonk_challenge_y(
-    _ vk: KzgVk,
+    _ vk: Vk,
     _ cs: [G1; 3],
     _ z1: Bn254Fr,
     _ z2: Bn254Fr,
@@ -189,8 +189,8 @@ pub fn shplonk_challenge_u(_ y: Bn254Fr, _ h: G1) -> Bn254Fr {
 /// `f0` is claimed at `z1` and `z2` (`evals[0] = f0(z1)`, `evals[1] = f0(z2)`), `f1` at `z1`
 /// (`evals[2]`), `f2` at `z2` (`evals[3]`). `h` commits the quotient polynomial and `pi` is the
 /// final opening proof at `u`. Returns `false` if `z1 == z2`.
-pub fn kzg_verify_shplonk(
-    _ vk: KzgVk,
+pub fn verify_shplonk(
+    _ vk: Vk,
     _ cs: [G1; 3],
     _ z1: Bn254Fr,
     _ z2: Bn254Fr,
@@ -198,7 +198,7 @@ pub fn kzg_verify_shplonk(
     _ h: G1,
     _ pi: G1,
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     if vk.is_degenerate() || z1.eq(z2) {
         return false

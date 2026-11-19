@@ -20,7 +20,7 @@ use ingot::ec::{
 }
 use ingot::field::Field
 use super::ec_bls_vectors::*
-use std::evm::{Address, Call, Evm}
+use std::evm::{Address, Call, Ctx, Evm}
 
 #[event]
 struct GasUsed { what: u256, gas: u256 }
@@ -33,11 +33,11 @@ fn g1w(_ xh: u256, _ xl: u256, _ yh: u256, _ yl: u256) -> [u256; 4] {
     [xh, xl, yh, yl]
 }
 
-fn g1_2() -> G1Bls uses (call: Call) {
+fn g1_2() -> G1Bls uses (call: Call, ctx: Ctx) {
     G1Bls::from_words(g1w(G1_2_X_HI, G1_2_X_LO, G1_2_Y_HI, G1_2_Y_LO)).unwrap()
 }
 
-fn g2_2() -> G2Bls uses (call: Call) {
+fn g2_2() -> G2Bls uses (call: Call, ctx: Ctx) {
     G2Bls::from_words(
         [
             G2_2_X0_HI,
@@ -54,7 +54,7 @@ fn g2_2() -> G2Bls uses (call: Call) {
 }
 
 #[test]
-fn g1_validation() uses (evm: mut Evm, call: Call) {
+fn g1_validation() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let g = G1Bls::generator()
     // generator and 2G pass the precompile's curve + subgroup check
     assert(G1Bls::from_words(g.words()).unwrap().eq(g))
@@ -83,7 +83,7 @@ fn g1_validation() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn g1_ops_match_reference() uses (evm: mut Evm, call: Call) {
+fn g1_ops_match_reference() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let g = G1Bls::generator()
     // add(G1, G1) = multiply(G1, 2)
     let two = bls_g1_add(g, g)
@@ -107,7 +107,7 @@ fn g1_ops_match_reference() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn g2_ops_match_reference() uses (evm: mut Evm, call: Call) {
+fn g2_ops_match_reference() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let g = G2Bls::generator()
     assert(G2Bls::from_words(g.words()).unwrap().eq(g))
     assert(
@@ -148,7 +148,7 @@ fn g2_ops_match_reference() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn pairing() uses (evm: mut Evm, call: Call) {
+fn pairing() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let p = G1Bls::generator()
     let q = G2Bls::generator()
     // e(P,Q) e(-P,Q) = 1
@@ -162,7 +162,7 @@ fn pairing() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn map_to_curve() uses (evm: mut Evm, call: Call) {
+fn map_to_curve() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     // MAP_FP2_TO_G2(1 + 2u) vs py_ecc clear_cofactor_G2(map_to_curve_G2(FQ2([1, 2])))
     let r = bls_map_fp2_to_g2(0, 1, 0, 2)
     assert(
@@ -185,7 +185,9 @@ fn map_to_curve() uses (evm: mut Evm, call: Call) {
 }
 
 /// Calls a precompile with raw words and reports whether it succeeded.
-fn raw_call(_ addr: u256, _ words: [u256; 5]) -> bool uses (call: Call) {
+fn raw_call(_ addr: u256, _ words: [u256; 5]) -> bool
+uses (call: Call, ctx: Ctx)
+{
     var input = MemBuffer::with_capacity(160)
     var i: usize = 0
     while i < 5 {
@@ -211,7 +213,9 @@ fn raw_call(_ addr: u256, _ words: [u256; 5]) -> bool uses (call: Call) {
 }
 
 #[test]
-fn precompile_rejects_invalid_point() uses (evm: mut Evm, call: Call) {
+fn precompile_rejects_invalid_point()
+uses (evm: mut Evm, call: Call, ctx: Ctx)
+{
     // (1, 1) is not on the curve: the G1 MSM precompile must fail.
     assert(!raw_call(0x0c, [0, 1, 0, 1, 1]))
     // control: generator x scalar 1 succeeds
@@ -219,7 +223,7 @@ fn precompile_rejects_invalid_point() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn point_evaluation_c_kzg_vector() uses (evm: mut Evm, call: Call) {
+fn point_evaluation_c_kzg_vector() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let c = Bytes48::new(KZG_C_HI, KZG_C_LO).unwrap()
     let pr = Bytes48::new(KZG_PROOF_HI, KZG_PROOF_LO).unwrap()
     assert(
@@ -251,7 +255,7 @@ fn point_evaluation_c_kzg_vector() uses (evm: mut Evm, call: Call) {
 }
 
 #[test]
-fn gas_report_bls() uses (evm: mut Evm, call: Call) {
+fn gas_report_bls() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let g = G1Bls::generator()
     let h = G2Bls::generator()
     var g0 = evm.gas()

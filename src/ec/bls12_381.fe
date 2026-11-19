@@ -20,7 +20,7 @@
 //! must be exactly 1. Wrappers revert on failure; `from_words` returns `None` for a point the
 //! precompile rejects.
 use core::ptr::MemBuffer
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use ingot::field::{Field, Fp}
 use super::precompile::{call_checked, call_try, get, put}
 
@@ -81,7 +81,7 @@ impl G1Bls {
     /// Validates `[x_hi, x_lo, y_hi, y_lo]`: canonical coordinates (checked here), then on
     /// curve and in the subgroup (checked by precompile 0x0c, `[1] P`). All-zero is infinity.
     /// `None` if any check fails.
-    pub fn from_words(_ w: [u256; 4]) -> Option<G1Bls> uses (call: Call) {
+    pub fn from_words(_ w: [u256; 4]) -> Option<G1Bls> uses (call: Call, ctx: Ctx) {
         if !fp_is_canonical(w[0], w[1]) || !fp_is_canonical(w[2], w[3]) {
             return Option::None
         }
@@ -144,7 +144,7 @@ impl Copy for G2Bls {}
 impl G2Bls {
     /// Validates `[x0_hi, x0_lo, x1_hi, x1_lo, y0_hi, y0_lo, y1_hi, y1_lo]`; see
     /// `G1Bls::from_words` (uses precompile 0x0e).
-    pub fn from_words(_ w: [u256; 8]) -> Option<G2Bls> uses (call: Call) {
+    pub fn from_words(_ w: [u256; 8]) -> Option<G2Bls> uses (call: Call, ctx: Ctx) {
         var i: usize = 0
         while i < 8 {
             if !fp_is_canonical(w[i], w[i + 1]) {
@@ -265,7 +265,7 @@ fn write_g2(_ buf: mut MemBuffer, _ at: usize, _ p: G2Bls) {
 }
 
 /// `a + b` (precompile 0x0b). Reverts on failure.
-pub fn bls_g1_add(_ a: G1Bls, _ b: G1Bls) -> G1Bls uses (call: Call) {
+pub fn bls_g1_add(_ a: G1Bls, _ b: G1Bls) -> G1Bls uses (call: Call, ctx: Ctx) {
     var input = MemBuffer::with_capacity(256)
     write_g1(mut input, 0, a)
     write_g1(mut input, 4, b)
@@ -276,7 +276,7 @@ pub fn bls_g1_add(_ a: G1Bls, _ b: G1Bls) -> G1Bls uses (call: Call) {
 
 /// `sum_i [ss[i]] ps[i]` (precompile 0x0c, 160 bytes per pair). Reverts on failure or `N == 0`.
 pub fn bls_g1_msm<const N: usize>(_ ps: [G1Bls; N], _ ss: [Bls12381Fr; N]) -> G1Bls
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(N != 0)
     var input = MemBuffer::with_capacity(N * 160)
@@ -299,12 +299,14 @@ uses (call: Call)
 }
 
 /// `[s] p` (precompile 0x0c with one pair).
-pub fn bls_g1_mul(_ p: G1Bls, _ s: Bls12381Fr) -> G1Bls uses (call: Call) {
+pub fn bls_g1_mul(_ p: G1Bls, _ s: Bls12381Fr) -> G1Bls
+uses (call: Call, ctx: Ctx)
+{
     bls_g1_msm([p], [s])
 }
 
 /// `a + b` (precompile 0x0d). Reverts on failure.
-pub fn bls_g2_add(_ a: G2Bls, _ b: G2Bls) -> G2Bls uses (call: Call) {
+pub fn bls_g2_add(_ a: G2Bls, _ b: G2Bls) -> G2Bls uses (call: Call, ctx: Ctx) {
     var input = MemBuffer::with_capacity(512)
     write_g2(mut input, 0, a)
     write_g2(mut input, 8, b)
@@ -315,7 +317,7 @@ pub fn bls_g2_add(_ a: G2Bls, _ b: G2Bls) -> G2Bls uses (call: Call) {
 
 /// `sum_i [ss[i]] ps[i]` (precompile 0x0e, 288 bytes per pair). Reverts on failure or `N == 0`.
 pub fn bls_g2_msm<const N: usize>(_ ps: [G2Bls; N], _ ss: [Bls12381Fr; N]) -> G2Bls
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(N != 0)
     var input = MemBuffer::with_capacity(N * 288)
@@ -338,14 +340,16 @@ uses (call: Call)
 }
 
 /// `[s] p` (precompile 0x0e with one pair).
-pub fn bls_g2_mul(_ p: G2Bls, _ s: Bls12381Fr) -> G2Bls uses (call: Call) {
+pub fn bls_g2_mul(_ p: G2Bls, _ s: Bls12381Fr) -> G2Bls
+uses (call: Call, ctx: Ctx)
+{
     bls_g2_msm([p], [s])
 }
 
 /// `true` iff `prod_i e(ps[i], qs[i]) == 1` (precompile 0x0f, 384 bytes per pair). Reverts if
 /// the call fails, the returndata length is not 32, the word is not 0 or 1, or `N == 0`.
 pub fn bls_pairing_check<const N: usize>(_ ps: [G1Bls; N], _ qs: [G2Bls; N]) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(N != 0)
     var input = MemBuffer::with_capacity(N * 384)
@@ -371,7 +375,9 @@ uses (call: Call)
 
 /// Maps a canonical `Fp` element `(hi, lo)` to G1 (precompile 0x10, SSWU + isogeny + cofactor
 /// clearing). Reverts if `(hi, lo)` is not canonical. The result is in the subgroup.
-pub fn bls_map_fp_to_g1(_ hi: u256, _ lo: u256) -> G1Bls uses (call: Call) {
+pub fn bls_map_fp_to_g1(_ hi: u256, _ lo: u256) -> G1Bls
+uses (call: Call, ctx: Ctx)
+{
     assert(fp_is_canonical(hi, lo))
     var input = MemBuffer::with_capacity(64)
     put(mut input, 0, hi)
@@ -384,7 +390,7 @@ pub fn bls_map_fp_to_g1(_ hi: u256, _ lo: u256) -> G1Bls uses (call: Call) {
 /// Maps a canonical `Fp2` element `c0 + c1 u` (each `(hi, lo)`) to G2 (precompile 0x11).
 /// Reverts if a component is not canonical. The result is in the subgroup.
 pub fn bls_map_fp2_to_g2(_ c0_hi: u256, _ c0_lo: u256, _ c1_hi: u256, _ c1_lo: u256) -> G2Bls
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(
         fp_is_canonical(c0_hi, c0_lo) && fp_is_canonical(c1_hi, c1_lo),
