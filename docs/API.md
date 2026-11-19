@@ -5,7 +5,8 @@
 
 Every name in the field, ec and hash sections is re-exported at the root of the `fe_zk` ingot
 (`use fe_zk::<Name>`). The verifiers are modules, one per proof system (`use fe_zk::groth16`, then
-`groth16::verify(..)`). Signatures are copied from the source; the description is the first sentence
+`groth16::verify(..)`). `anon` is a module of building blocks for anonymous actions; the Semaphore ingot is a separate
+package, listed last. Signatures are copied from the source; the description is the first sentence
 of the declaration's doc comment. Safety rules and their enforcement: [SAFETY.md](SAFETY.md).
 
 ## `field`
@@ -203,3 +204,34 @@ After `use fe_zk::plonk`, call `plonk::<name>`.
 | `challenges` | fn | `pub fn challenges<const NP: usize>(_ vk: Vk<NP>, _ pubs: [Bn254Fr; NP], _ p: Proof) -> Challenges` | `beta, gamma, alpha, xi, v, u` exactly as snarkjs computes them (see the module comment). [`src/verifier/plonk.fe`](../src/verifier/plonk.fe) |
 | `verify` | fn | `pub fn verify<const NP: usize>(_ vk: Vk<NP>, _ proof: Proof, _ pubs_raw: [u256; NP]) -> bool uses (call: Call, ctx: Ctx)` | Verifies `proof` for public signals `pubs` against `vk`. [`src/verifier/plonk.fe`](../src/verifier/plonk.fe) |
 | `verify_calldata` | fn | `pub fn verify_calldata<const NP: usize>(_ vk: Vk<NP>, _ proof_words: [u256; 24], _ pubs: [u256; NP]) -> bool uses (call: Call, ctx: Ctx)` | One call from raw calldata words: `false` if the proof words are not canonical on-curve data, a public input is not canonical, or the proof does not verify. [`src/verifier/plonk.fe`](../src/verifier/plonk.fe) |
+
+## `anon`
+
+After `use fe_zk::anon`, or `use fe_zk::anon::{LeanImt, Nullifiers, hash_to_field}`.
+
+| Name | Kind | Signature | Description |
+|---|---|---|---|
+| `hash_to_field` | fn | `pub fn hash_to_field(_ x: u256) -> Bn254Fr` | `keccak256(abi.encodePacked(x)) >> 8` with `x` a 32-byte word, as `Semaphore.sol` and `@semaphore-protocol/proof` hash the `message` and `scope` signals. [`src/anon/hash.fe`](../src/anon/hash.fe) |
+| `grown_depth` | fn | `pub fn grown_depth(_ depth: u256, _ new_size: u256) -> u256` | Depth of a tree holding `new_size` leaves, given the current `depth`. [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `LeanImt` | struct | `pub struct LeanImt` | - [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `LeanImt::insert` | fn | `pub fn insert(mut self, leaf: Bn254Fr) -> Bn254Fr` | Appends `leaf` and returns the new root. [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `LeanImt::root` | fn | `pub fn root(self) -> Bn254Fr` | - [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `LeanImt::size` | fn | `pub fn size(self) -> u256` | - [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `LeanImt::depth` | fn | `pub fn depth(self) -> u256` | - [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `LeanImt::is_known_root` | fn | `pub fn is_known_root(self, root: u256) -> bool` | True for every root this tree has had after an insert. [`src/anon/lean_imt.fe`](../src/anon/lean_imt.fe) |
+| `Nullifiers` | struct | `pub struct Nullifiers` | Spent nullifiers per scope. [`src/anon/nullifier.fe`](../src/anon/nullifier.fe) |
+| `Nullifiers::spend` | fn | `pub fn spend(mut self, scope: u256, nullifier: u256) -> bool` | Marks `nullifier` spent for `scope`. [`src/anon/nullifier.fe`](../src/anon/nullifier.fe) |
+| `Nullifiers::is_spent` | fn | `pub fn is_spent(self, scope: u256, nullifier: u256) -> bool` | - [`src/anon/nullifier.fe`](../src/anon/nullifier.fe) |
+
+## `fe_zk_semaphore` (the `semaphore/` ingot)
+
+A separate ingot: add `fe_zk_semaphore = { path = "../semaphore" }` to `fe.toml` and `use fe_zk_semaphore::verify_proof_low`.
+Semaphore v4 proof verification with the published ceremony keys, tree depths 1 to 10 (see
+[`semaphore/README.md`](../semaphore/README.md)).
+
+| Name | Kind | Signature | Description |
+|---|---|---|---|
+| `key_digest` | fn | `pub fn key_digest(_ depth: u256) -> u256` | Digest (`fe-zk-gen`, see the key module header) of the verifying key for `depth`, or 0 if there is no key. [`semaphore/src/lib.fe`](../semaphore/src/lib.fe) |
+| `verify_proof_low` | fn | `pub fn verify_proof_low(_ depth: u256, _ root: u256, _ nullifier: u256, _ message: u256, _ scope: u256, _ points: [u256; 8]) -> bool uses (call: Call, ctx: Ctx)` | Like `verify_proof`, but only for depth 1..LOW_MAX_DEPTH (groups up to 2^5 = 32 members): false for any other depth. [`semaphore/src/lib.fe`](../semaphore/src/lib.fe) |
+| `verify_proof_high` | fn | `pub fn verify_proof_high(_ depth: u256, _ root: u256, _ nullifier: u256, _ message: u256, _ scope: u256, _ points: [u256; 8]) -> bool uses (call: Call, ctx: Ctx)` | Like `verify_proof`, but only for depth LOW_MAX_DEPTH+1..MAX_DEPTH: false for any other depth. [`semaphore/src/lib.fe`](../semaphore/src/lib.fe) |
+| `verify_proof` | fn | `pub fn verify_proof(_ depth: u256, _ root: u256, _ nullifier: u256, _ message: u256, _ scope: u256, _ points: [u256; 8]) -> bool uses (call: Call, ctx: Ctx)` | Verifies a Semaphore v4 proof. [`semaphore/src/lib.fe`](../semaphore/src/lib.fe) |
