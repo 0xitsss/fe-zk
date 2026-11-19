@@ -1,35 +1,3 @@
-//! Proof and opening verifiers.
-
-pub use halo2::Halo2Vk
-pub use kzg::{
-    KzgVk,
-    gwc_challenge,
-    kzg_batch_verify_gwc,
-    kzg_verify,
-    kzg_verify_shplonk,
-    shplonk_challenge_u,
-    shplonk_challenge_y,
-}
-
-pub use groth16::{
-    Groth16Proof,
-    Groth16Vk,
-    verify as groth16_verify,
-    verify_raw as groth16_verify_raw,
-}
-pub use plonk::{
-    PlonkProof,
-    PlonkVk,
-    plonk_challenges,
-    plonk_domain_is_valid,
-    plonk_verify,
-    plonk_verify_words,
-}
-pub use gnark_plonk::{
-    GnarkProof,
-    GnarkVk,
-    gnark_domain_is_valid,
-    gnark_plonk_verify,
-    gnark_plonk_verify_bytes,
-    gnark_plonk_verify_words,
-}
+//! Proof and opening verifiers, one module per proof system: `groth16`, `plonk` (snarkjs),
+//! `gnark` (gnark PLONK), `halo2`, `kzg`, `fri`. Each exposes `Vk`, `verify` and
+//! `verify_calldata` (raw words), see docs/API.md.

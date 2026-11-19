@@ -10,25 +10,25 @@
 //! only through `Bn254Fr::from_canonical`, and `G1` only through `read_g1` (canonical, on the
 //! curve, point at infinity rejected as SPEC section 2 demands).
 use core::ptr::MemBuffer
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use std::evm::packed::Packed
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::{call_checked, get, put}
 use ingot::field::{Bn254Fr, Field}
 
-/// Constant circuit data shared by all halo2-KZG circuits. Private fields: `Halo2Vk::new`.
+/// Constant circuit data shared by all halo2-KZG circuits. Private fields: `Vk::from_coords`.
 /// The G2 points are validated (on curve, in the subgroup) by `G2::from_coords` before they
 /// get here; the G1 generator by its type.
-pub struct Halo2Vk { transcript_repr: Bn254Fr, g1: G1, g2: G2, s_g2: G2 }
-impl Copy for Halo2Vk {}
+pub struct Vk { transcript_repr: Bn254Fr, g1: G1, g2: G2, s_g2: G2 }
+impl Copy for Vk {}
 
-impl Halo2Vk {
+impl Vk {
     /// `None` if any SRS point is the point at infinity (then every pairing check passes).
-    pub fn new(_ transcript_repr: Bn254Fr, _ g1: G1, _ g2: G2, _ s_g2: G2) -> Option<Halo2Vk> {
+    pub fn from_coords(_ transcript_repr: Bn254Fr, _ g1: G1, _ g2: G2, _ s_g2: G2) -> Option<Vk> {
         if g1.is_infinity() || g2.is_infinity() || s_g2.is_infinity() {
             return Option::None
         }
-        Option::Some(Halo2Vk { transcript_repr, g1, g2, s_g2 })
+        Option::Some(Vk { transcript_repr, g1, g2, s_g2 })
     }
 
     /// Key from compile-time constants: build the points with `G1::from_coords_or_infinity` /
@@ -36,16 +36,16 @@ impl Halo2Vk {
     /// `static_assert(g2_is_valid(..))`, so no gas is spent on the G2 subgroup checks. A
     /// degenerate key (any SRS point at infinity) is poisoned to all-infinity and
     /// `final_pairing` rejects it.
-    pub fn from_consts(_ transcript_repr: Bn254Fr, _ g1: G1, _ g2: G2, _ s_g2: G2) -> Halo2Vk {
+    pub fn from_consts(_ transcript_repr: Bn254Fr, _ g1: G1, _ g2: G2, _ s_g2: G2) -> Vk {
         if g1.is_infinity() || g2.is_infinity() || s_g2.is_infinity() {
-            return Halo2Vk {
+            return Vk {
                 transcript_repr,
                 g1: G1::infinity(),
                 g2: G2::infinity(),
                 s_g2: G2::infinity(),
             }
         }
-        Halo2Vk { transcript_repr, g1, g2, s_g2 }
+        Vk { transcript_repr, g1, g2, s_g2 }
     }
 
     pub fn transcript_repr(self) -> Bn254Fr {
@@ -55,8 +55,8 @@ impl Halo2Vk {
         self.g1
     }
     /// The same SRS with another circuit digest (tests: a wrong vk constant must be rejected).
-    pub fn with_transcript_repr(self, _ transcript_repr: Bn254Fr) -> Halo2Vk {
-        Halo2Vk { transcript_repr, g1: self.g1, g2: self.g2, s_g2: self.s_g2 }
+    pub fn with_transcript_repr(self, _ transcript_repr: Bn254Fr) -> Vk {
+        Vk { transcript_repr, g1: self.g1, g2: self.g2, s_g2: self.s_g2 }
     }
 }
 
@@ -181,7 +181,7 @@ impl Halo2Transcript {
 
 /// `1 / a` through the modexp precompile (`a^(r-2)`): about 1.4k gas instead of ~25k for the
 /// square-and-multiply loop. `None` for zero.
-pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call) {
+pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call, ctx: Ctx) {
     if a.is_zero() {
         return Option::None
     }
@@ -200,7 +200,7 @@ pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call) {
 
 /// Montgomery batch inversion: one modexp for all of `xs`. `None` if any element is zero.
 pub fn batch_inv<const N: usize>(_ xs: [Bn254Fr; N]) -> Option<[Bn254Fr; N]>
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     var pre = xs
     var acc = Bn254Fr::one()
@@ -229,8 +229,8 @@ uses (call: Call)
 
 /// `e(left, [s]H) * e(right, -H) == 1` with success flag, length and result checks (rule 6)
 /// inside `pairing_check`.
-pub fn final_pairing(_ vk: Halo2Vk, _ left: G1, _ right: G1) -> bool
-uses (call: Call)
+pub fn final_pairing(_ vk: Vk, _ left: G1, _ right: G1) -> bool
+uses (call: Call, ctx: Ctx)
 {
     if vk.g1.is_infinity() || vk.g2.is_infinity() || vk.s_g2.is_infinity() {
         return false
@@ -239,6 +239,6 @@ uses (call: Call)
 }
 
 /// `acc + [s] p`.
-pub fn mul_add(_ acc: G1, _ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call) {
+pub fn mul_add(_ acc: G1, _ p: G1, _ s: Bn254Fr) -> G1 uses (call: Call, ctx: Ctx) {
     g1_add(acc, g1_mul(p, s))
 }

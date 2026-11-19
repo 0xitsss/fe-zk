@@ -24,14 +24,14 @@
 //! ```
 //!
 //! Safety rules, enforced by types:
-//! - Rule 1/2: `PlonkProof` can only be built by `PlonkProof::from_words`, which makes every
+//! - Rule 1/2: `Proof` can only be built by `Proof::from_words`, which makes every
 //!   commitment a `G1` (canonical coordinates, on the curve) and every evaluation a canonical
-//!   `Bn254Fr`. Public inputs are checked canonical in `plonk_verify`; nothing is reduced.
+//!   `Bn254Fr`. Public inputs are checked canonical in `verify`; nothing is reduced.
 //!   Like the snarkjs verifier, the point at infinity `(0, 0)` is rejected for proof commitments
 //!   (an honest prover never produces it, and the snarkjs verifier reverts on it).
 //! - Rule 3: `[x]_2` of the key is a fully checked `G2` (on curve and in the subgroup).
-//! - Rule 4: the number of public inputs is the const generic `NP` of `PlonkVk<NP>`, so
-//!   `plonk_verify` takes exactly `[u256; NP]`; a different length does not type-check.
+//! - Rule 4: the number of public inputs is the const generic `NP` of `Vk<NP>`, so
+//!   `verify` takes exactly `[u256; NP]`; a different length does not type-check.
 //! - Rule 5: `beta` binds all 16 words of the 8 key commitments, every public input and
 //!   `A, B, C`; later challenges chain on the earlier ones and bind every other commitment and
 //!   every evaluation (as in snarkjs). The domain parameters `n, w, k1, k2, [x]_2` are not
@@ -39,10 +39,10 @@
 //!   Tests: every transcript input changes the challenges.
 //! - Rule 6: precompile failures revert in `ingot::ec`; the pairing word must be 0 or 1.
 //!
-//! Verification is read-only: `uses (call: Call)` and no storage. Limitations: `NP >= 1`
+//! Verification is read-only: `uses (call: Call, ctx: Ctx)` and no storage. Limitations: `NP >= 1`
 //! (the circom compiler always emits at least one public signal), `power <= 28`.
 use core::ptr::MemBuffer
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use std::evm::crypto::{keccak256, mulmod}
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
 use ingot::ec::precompile::put
@@ -67,8 +67,8 @@ const fn fr_pow2k(_ b: u256, _ k: u256) -> u256 {
 /// `2^power`-th root of unity (`w^(2^(power-1)) = -1`); and `k1`, `k2` give three distinct cosets
 /// of the domain (`k1^n != 1`, `k2^n != 1`, `(k1/k2)^n != 1`, the last tested as `k1^n != k2^n`
 /// so no inversion is needed). `const fn`: runs in `static_assert` at compile time, so a
-/// generated verifier with a bad domain does not compile; also used by `PlonkVk::from_consts`.
-pub const fn plonk_domain_is_valid(_ power: u256, _ w: u256, _ k1: u256, _ k2: u256) -> bool {
+/// generated verifier with a bad domain does not compile; also used by `Vk::from_consts`.
+pub const fn domain_is_valid(_ power: u256, _ w: u256, _ k1: u256, _ k2: u256) -> bool {
     if power == 0 || power > 28 {
         return false
     }
@@ -84,9 +84,9 @@ pub const fn plonk_domain_is_valid(_ power: u256, _ w: u256, _ k1: u256, _ k2: u
 }
 
 /// snarkjs verifying key for `NP` public signals (outputs first, then inputs, circom order).
-/// Private fields: build with `PlonkVk::new`, which validates the domain parameters. The curve
+/// Private fields: build with `Vk::from_coords`, which validates the domain parameters. The curve
 /// points are validated by their types.
-pub struct PlonkVk<const NP: usize> {
+pub struct Vk<const NP: usize> {
     power: u256,
     w: Bn254Fr,
     k1: Bn254Fr,
@@ -101,21 +101,21 @@ pub struct PlonkVk<const NP: usize> {
     s3: G1,
     x2: G2,
 }
-impl<const NP: usize> Copy for PlonkVk<NP> {}
+impl<const NP: usize> Copy for Vk<NP> {}
 
-impl<const NP: usize> PlonkVk<NP> {
+impl<const NP: usize> Vk<NP> {
     /// `None` if: `NP == 0` or `NP > 2^power`; `power` is 0 or above 28; `w` is not a primitive `2^power`-th root
     /// of unity; `k1`, `k2` do not give three distinct cosets of the evaluation domain
     /// (`k1^n`, `k2^n`, `(k1/k2)^n` must all differ from 1); or `[x]_2` is the point at infinity
     /// (a degenerate key makes the pairing trivially true).
-    pub fn new(
+    pub fn from_coords(
         _ power: u256,
         _ w: Bn254Fr,
         _ k1: Bn254Fr,
         _ k2: Bn254Fr,
         _ commitments: [G1; 8],
         _ x2: G2,
-    ) -> Option<PlonkVk<NP>> {
+    ) -> Option<Vk<NP>> {
         if NP == 0 || NP > 1000000 || power == 0 || power > 28 {
             return Option::None
         }
@@ -141,7 +141,7 @@ impl<const NP: usize> PlonkVk<NP> {
             return Option::None
         }
         Option::Some(
-            PlonkVk {
+            Vk {
                 power,
                 w,
                 k1,
@@ -160,14 +160,14 @@ impl<const NP: usize> PlonkVk<NP> {
     }
 }
 
-impl<const NP: usize> PlonkVk<NP> {
+impl<const NP: usize> Vk<NP> {
     /// Key from compile-time constants. Build the points with `G1::from_coords_or_infinity` /
     /// `G2::from_coords_or_infinity` (checked in the compiler, no gas) and pair them with
     /// `static_assert(g1_is_valid(..))`, `static_assert(g2_is_valid(..))` and
-    /// `static_assert(plonk_domain_is_valid(..))`. No gas is spent on validation: the runtime
+    /// `static_assert(domain_is_valid(..))`. No gas is spent on validation: the runtime
     /// cost is five modular reductions. As in the other `*_or_infinity` constructors, invalid
     /// parameters never yield a usable key: a bad domain (or `NP == 0`) poisons the key by
-    /// setting `[x]_2` to infinity, and `plonk_verify` rejects every proof for such a key.
+    /// setting `[x]_2` to infinity, and `verify` rejects every proof for such a key.
     pub fn from_consts(
         _ power: u256,
         _ w: u256,
@@ -175,12 +175,12 @@ impl<const NP: usize> PlonkVk<NP> {
         _ k2: u256,
         _ commitments: [G1; 8],
         _ x2: G2,
-    ) -> PlonkVk<NP> {
+    ) -> Vk<NP> {
         let ok = NP > 0
             && NP <= 1000000
-            && plonk_domain_is_valid(power, w, k1, k2)
+            && domain_is_valid(power, w, k1, k2)
             && (NP as u256) <= (1 << power)
-        PlonkVk {
+        Vk {
             power,
             w: Bn254Fr::reduce(w),
             k1: Bn254Fr::reduce(k1),
@@ -199,8 +199,8 @@ impl<const NP: usize> PlonkVk<NP> {
 }
 
 /// A snarkjs PLONK proof: 9 commitments and 6 evaluations. Private fields: build with
-/// `PlonkProof::from_words`.
-pub struct PlonkProof {
+/// `Proof::from_words`.
+pub struct Proof {
     a: G1,
     b: G1,
     c: G1,
@@ -217,7 +217,7 @@ pub struct PlonkProof {
     eval_s2: Bn254Fr,
     eval_zw: Bn254Fr,
 }
-impl Copy for PlonkProof {}
+impl Copy for Proof {}
 
 fn proof_point(_ w: [u256; 24], _ i: usize) -> Option<G1> {
     // Same rejection set as the snarkjs verifier: off-curve (incl. (0,0)) and non-canonical.
@@ -233,12 +233,12 @@ fn proof_point(_ w: [u256; 24], _ i: usize) -> Option<G1> {
     }
 }
 
-impl PlonkProof {
+impl Proof {
     /// The snarkjs Solidity calldata layout `uint256[24]`: `A, B, C, Z, T1, T2, T3, Wxi, Wxiw`
     /// (x then y each), then `eval_a, eval_b, eval_c, eval_s1, eval_s2, eval_zw`.
     /// `None` if any point is not a canonical on-curve non-infinity point or any evaluation is
     /// `>= r`.
-    pub fn from_words(_ w: [u256; 24]) -> Option<PlonkProof> {
+    pub fn from_words(_ w: [u256; 24]) -> Option<Proof> {
         let a = proof_point(w, 0)
         let b = proof_point(w, 1)
         let c = proof_point(w, 2)
@@ -267,7 +267,7 @@ impl PlonkProof {
             return Option::None
         }
         Option::Some(
-            PlonkProof {
+            Proof {
                 a: a.unwrap(),
                 b: b.unwrap(),
                 c: c.unwrap(),
@@ -289,7 +289,7 @@ impl PlonkProof {
 }
 
 /// The six Fiat-Shamir challenges. Public so that tests and generators can inspect them.
-pub struct PlonkChallenges {
+pub struct Challenges {
     pub beta: Bn254Fr,
     pub gamma: Bn254Fr,
     pub alpha: Bn254Fr,
@@ -297,7 +297,7 @@ pub struct PlonkChallenges {
     pub v: Bn254Fr,
     pub u: Bn254Fr,
 }
-impl Copy for PlonkChallenges {}
+impl Copy for Challenges {}
 
 fn put_g1(_ buf: mut MemBuffer, _ at: usize, _ p: G1) {
     put(mut buf, at, p.x())
@@ -314,11 +314,7 @@ fn hash_to_fr(_ buf: mut MemBuffer, _ words: usize) -> Bn254Fr {
 }
 
 /// `beta, gamma, alpha, xi, v, u` exactly as snarkjs computes them (see the module comment).
-pub fn plonk_challenges<const NP: usize>(
-    _ vk: PlonkVk<NP>,
-    _ pubs: [Bn254Fr; NP],
-    _ p: PlonkProof,
-) -> PlonkChallenges {
+pub fn challenges<const NP: usize>(_ vk: Vk<NP>, _ pubs: [Bn254Fr; NP], _ p: Proof) -> Challenges {
     // beta
     let words = 16 + NP + 6
     var buf = MemBuffer::with_capacity(words * 32)
@@ -371,17 +367,13 @@ pub fn plonk_challenges<const NP: usize>(
     put_g1(mut b5, 0, p.wxi)
     put_g1(mut b5, 2, p.wxiw)
     let u = hash_to_fr(mut b5, 4)
-    PlonkChallenges { beta, gamma, alpha, xi, v, u }
+    Challenges { beta, gamma, alpha, xi, v, u }
 }
 
 /// Verifies `proof` for public signals `pubs` against `vk`. `false` if any public input is
 /// `>= r` (never reduced) or the pairing check fails. Reverts only if a precompile call fails.
-pub fn plonk_verify<const NP: usize>(
-    _ vk: PlonkVk<NP>,
-    _ proof: PlonkProof,
-    _ pubs_raw: [u256; NP],
-) -> bool
-uses (call: Call)
+pub fn verify<const NP: usize>(_ vk: Vk<NP>, _ proof: Proof, _ pubs_raw: [u256; NP]) -> bool
+uses (call: Call, ctx: Ctx)
 {
     // Degenerate key (`[x]_2` = infinity, see `from_consts`): never verifies.
     if vk.x2.is_infinity() {
@@ -401,7 +393,7 @@ uses (call: Call)
         }
         i += 1
     }
-    let ch = plonk_challenges(vk, pubs, proof)
+    let ch = challenges(vk, pubs, proof)
     let one = Bn254Fr::one()
 
     // xi^n and Z_H(xi) = xi^n - 1
@@ -525,15 +517,15 @@ uses (call: Call)
 
 /// One call from raw calldata words: `false` if the proof words are not canonical on-curve
 /// data, a public input is not canonical, or the proof does not verify.
-pub fn plonk_verify_words<const NP: usize>(
-    _ vk: PlonkVk<NP>,
+pub fn verify_calldata<const NP: usize>(
+    _ vk: Vk<NP>,
     _ proof_words: [u256; 24],
     _ pubs: [u256; NP],
 ) -> bool
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
-    match PlonkProof::from_words(proof_words) {
-        Option::Some(p) => plonk_verify(vk, p, pubs),
+    match Proof::from_words(proof_words) {
+        Option::Some(p) => verify(vk, p, pubs),
         Option::None => false,
     }
 }

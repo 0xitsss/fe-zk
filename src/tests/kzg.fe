@@ -4,16 +4,9 @@
 //! Gas: `fe test --show-logs` prints the `GasUsed` events of `gas_report`.
 use ingot::ec::{G1, G2, g1_is_valid, g2_is_valid}
 use ingot::field::{Bn254Fr, Field}
-use ingot::verifier::kzg::{
-    KzgVk,
-    gwc_challenge,
-    kzg_batch_verify_gwc,
-    kzg_verify,
-    kzg_verify_shplonk,
-    shplonk_challenge_u,
-    shplonk_challenge_y,
-}
-use std::evm::{Call, Evm}
+use ingot::verifier::kzg
+use ingot::verifier::kzg::{gwc_challenge, shplonk_challenge_u, shplonk_challenge_y}
+use std::evm::{Call, Ctx, Evm}
 
 const TAU_X0: u256 = 18253511544609001572866960948873128266198935669250718031100637619547827597184
 const TAU_X1: u256 = 10764647077472957448033591885865458661573660819003350325268673957890498500987
@@ -74,23 +67,23 @@ fn fr(_ v: u256) -> Bn254Fr {
     Bn254Fr::from_canonical(v).unwrap()
 }
 
-fn vk() -> KzgVk {
+fn vk() -> kzg::Vk {
     let tau = G2::from_coords(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1).unwrap()
-    KzgVk::new(G1::generator(), G2::generator(), tau).unwrap()
+    kzg::Vk::from_coords(G1::generator(), G2::generator(), tau).unwrap()
 }
 
 // A key that differs from `vk()` only in [tau]G2.
-fn vk_other_tau() -> KzgVk {
-    KzgVk::new(G1::generator(), G2::generator(), G2::generator()).unwrap()
+fn vk_other_tau() -> kzg::Vk {
+    kzg::Vk::from_coords(G1::generator(), G2::generator(), G2::generator()).unwrap()
 }
 
 // A key that differs from `vk_other_tau()` only in G1 (2G instead of G).
-fn vk_other_g1() -> KzgVk {
+fn vk_other_g1() -> kzg::Vk {
     let two_g = g1(
         1368015179489954701390400359078579693043519447331113978918064868415326638035,
         9918110051302171585080402603319702774565515993150576347155970296011118125764,
     )
-    KzgVk::new(two_g, G2::generator(), G2::generator()).unwrap()
+    kzg::Vk::from_coords(two_g, G2::generator(), G2::generator()).unwrap()
 }
 
 fn s_c() -> G1 {
@@ -134,21 +127,19 @@ const G2_GEN_Y1: u256 = 40823678758634336813322034031454355683168513275934012081
 static_assert(g1_is_valid(1, 2))
 static_assert(g2_is_valid(G2_GEN_X0, G2_GEN_X1, G2_GEN_Y0, G2_GEN_Y1))
 static_assert(g2_is_valid(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1))
-const CONST_VK: KzgVk = KzgVk::from_consts(
+const CONST_VK: kzg::Vk = kzg::Vk::from_consts(
     G1::from_coords_or_infinity(1, 2),
     G2::from_coords_or_infinity(G2_GEN_X0, G2_GEN_X1, G2_GEN_Y0, G2_GEN_Y1),
     G2::from_coords_or_infinity(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1),
 )
 
 #[test]
-fn const_vk_accepts_all_fixtures() uses (call: Call) {
+fn const_vk_accepts_all_fixtures() uses (call: Call, ctx: Ctx) {
     assert(!CONST_VK.is_degenerate())
-    assert(kzg_verify(CONST_VK, s_c(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(kzg::verify(CONST_VK, s_c(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(kzg::verify_gwc(CONST_VK, b_cs(), fr(B_Z), b_ys(), b_pi()))
     assert(
-        kzg_batch_verify_gwc(CONST_VK, b_cs(), fr(B_Z), b_ys(), b_pi()),
-    )
-    assert(
-        kzg_verify_shplonk(
+        kzg::verify_shplonk(
             CONST_VK,
             h_cs(),
             fr(H_Z1),
@@ -164,24 +155,22 @@ fn const_vk_accepts_all_fixtures() uses (call: Call) {
 }
 
 #[test]
-fn const_vk_with_invalid_point_is_poisoned() uses (call: Call) {
+fn const_vk_with_invalid_point_is_poisoned() uses (call: Call, ctx: Ctx) {
     // `from_coords_or_infinity` maps an invalid [tau]G2 (here: y + 1, off the twist) to infinity,
     // `from_consts` poisons the key and every verifier rejects, even a valid proof.
-    let bad = KzgVk::from_consts(
+    let bad = kzg::Vk::from_consts(
         G1::from_coords_or_infinity(1, 2),
         G2::from_coords_or_infinity(G2_GEN_X0, G2_GEN_X1, G2_GEN_Y0, G2_GEN_Y1),
         G2::from_coords_or_infinity(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1 + 1),
     )
     assert(bad.is_degenerate())
-    assert(!kzg_verify(bad, s_c(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg::verify(bad, s_c(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg::verify_gwc(bad, b_cs(), fr(B_Z), b_ys(), b_pi()))
     assert(
-        !kzg_batch_verify_gwc(bad, b_cs(), fr(B_Z), b_ys(), b_pi()),
-    )
-    assert(
-        !kzg_verify_shplonk(bad, h_cs(), fr(H_Z1), fr(H_Z2), h_evals(), h_h(), h_pi()),
+        !kzg::verify_shplonk(bad, h_cs(), fr(H_Z1), fr(H_Z2), h_evals(), h_h(), h_pi()),
     )
     // an off-curve G1 generator likewise
-    let bad1 = KzgVk::from_consts(
+    let bad1 = kzg::Vk::from_consts(
         G1::from_coords_or_infinity(1, 3),
         G2::generator(),
         G2::generator(),
@@ -192,47 +181,53 @@ fn const_vk_with_invalid_point_is_poisoned() uses (call: Call) {
 #[test]
 fn vk_rejects_infinity() {
     let g2 = G2::generator()
-    assert(KzgVk::new(G1::infinity(), g2, g2).is_none())
-    assert(KzgVk::new(G1::generator(), G2::infinity(), g2).is_none())
-    assert(KzgVk::new(G1::generator(), g2, G2::infinity()).is_none())
-    assert(KzgVk::new(G1::generator(), g2, g2).is_some())
+    assert(kzg::Vk::from_coords(G1::infinity(), g2, g2).is_none())
+    assert(
+        kzg::Vk::from_coords(G1::generator(), G2::infinity(), g2).is_none(),
+    )
+    assert(
+        kzg::Vk::from_coords(G1::generator(), g2, G2::infinity()).is_none(),
+    )
+    assert(kzg::Vk::from_coords(G1::generator(), g2, g2).is_some())
 }
 
 // ---------------------------------------------------------------- single
 
 #[test]
-fn single_accepts_valid() uses (call: Call) {
-    assert(kzg_verify(vk(), s_c(), fr(S_Z), fr(S_Y), s_pi()))
+fn single_accepts_valid() uses (call: Call, ctx: Ctx) {
+    assert(kzg::verify(vk(), s_c(), fr(S_Z), fr(S_Y), s_pi()))
 }
 
 #[test]
-fn single_rejects_tampered() uses (call: Call) {
+fn single_rejects_tampered() uses (call: Call, ctx: Ctx) {
     let k = vk()
     let one = Bn254Fr::one()
     // tampered value, point, proof, commitment
-    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y).add(one), s_pi()))
-    assert(!kzg_verify(k, s_c(), fr(S_Z).add(one), fr(S_Y), s_pi()))
-    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), G1::generator()))
-    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), s_pi().neg()))
-    assert(!kzg_verify(k, s_c().neg(), fr(S_Z), fr(S_Y), s_pi()))
-    assert(!kzg_verify(k, G1::generator(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg::verify(k, s_c(), fr(S_Z), fr(S_Y).add(one), s_pi()))
+    assert(!kzg::verify(k, s_c(), fr(S_Z).add(one), fr(S_Y), s_pi()))
+    assert(!kzg::verify(k, s_c(), fr(S_Z), fr(S_Y), G1::generator()))
+    assert(!kzg::verify(k, s_c(), fr(S_Z), fr(S_Y), s_pi().neg()))
+    assert(!kzg::verify(k, s_c().neg(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg::verify(k, G1::generator(), fr(S_Z), fr(S_Y), s_pi()))
     // proof for a different commitment
-    assert(!kzg_verify(k, g1(B_C0X, B_C0Y), fr(S_Z), fr(S_Y), s_pi()))
+    assert(
+        !kzg::verify(k, g1(B_C0X, B_C0Y), fr(S_Z), fr(S_Y), s_pi()),
+    )
     // infinity commitment and infinity proof
-    assert(!kzg_verify(k, G1::infinity(), fr(S_Z), fr(S_Y), s_pi()))
-    assert(!kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), G1::infinity()))
+    assert(!kzg::verify(k, G1::infinity(), fr(S_Z), fr(S_Y), s_pi()))
+    assert(!kzg::verify(k, s_c(), fr(S_Z), fr(S_Y), G1::infinity()))
 }
 
 #[test]
-fn single_rejects_wrong_srs() uses (call: Call) {
+fn single_rejects_wrong_srs() uses (call: Call, ctx: Ctx) {
     assert(
-        !kzg_verify(vk_other_tau(), s_c(), fr(S_Z), fr(S_Y), s_pi()),
+        !kzg::verify(vk_other_tau(), s_c(), fr(S_Z), fr(S_Y), s_pi()),
     )
 }
 
 #[test]
 fn raw_inputs_need_checked_constructors() {
-    // kzg_verify takes G1 / Bn254Fr only; these are the ways in from raw words.
+    // kzg::verify takes G1 / Bn254Fr only; these are the ways in from raw words.
     assert(Bn254Fr::from_canonical(Bn254Fr::MODULUS).is_none())
     assert(Bn254Fr::from_canonical(Bn254Fr::MODULUS - 1).is_some())
     assert(
@@ -255,14 +250,12 @@ fn gwc_challenge_matches_reference() {
 }
 
 #[test]
-fn gwc_accepts_valid() uses (call: Call) {
-    assert(
-        kzg_batch_verify_gwc(vk(), b_cs(), fr(B_Z), b_ys(), b_pi()),
-    )
+fn gwc_accepts_valid() uses (call: Call, ctx: Ctx) {
+    assert(kzg::verify_gwc(vk(), b_cs(), fr(B_Z), b_ys(), b_pi()))
 }
 
 #[test]
-fn gwc_rejects_tampered() uses (call: Call) {
+fn gwc_rejects_tampered() uses (call: Call, ctx: Ctx) {
     let k = vk()
     let cs = b_cs()
     let ys = b_ys()
@@ -270,52 +263,46 @@ fn gwc_rejects_tampered() uses (call: Call) {
     let one = Bn254Fr::one()
     // tampered value (each)
     assert(
-        !kzg_batch_verify_gwc(k, cs, z, [ys[0].add(one), ys[1], ys[2]], b_pi()),
+        !kzg::verify_gwc(k, cs, z, [ys[0].add(one), ys[1], ys[2]], b_pi()),
     )
     assert(
-        !kzg_batch_verify_gwc(k, cs, z, [ys[0], ys[1].add(one), ys[2]], b_pi()),
+        !kzg::verify_gwc(k, cs, z, [ys[0], ys[1].add(one), ys[2]], b_pi()),
     )
     assert(
-        !kzg_batch_verify_gwc(k, cs, z, [ys[0], ys[1], ys[2].add(one)], b_pi()),
+        !kzg::verify_gwc(k, cs, z, [ys[0], ys[1], ys[2].add(one)], b_pi()),
     )
     // tampered point
-    assert(!kzg_batch_verify_gwc(k, cs, z.add(one), ys, b_pi()))
+    assert(!kzg::verify_gwc(k, cs, z.add(one), ys, b_pi()))
     // tampered proof
-    assert(!kzg_batch_verify_gwc(k, cs, z, ys, G1::generator()))
-    assert(!kzg_batch_verify_gwc(k, cs, z, ys, b_pi().neg()))
+    assert(!kzg::verify_gwc(k, cs, z, ys, G1::generator()))
+    assert(!kzg::verify_gwc(k, cs, z, ys, b_pi().neg()))
     // tampered commitment
     assert(
-        !kzg_batch_verify_gwc(k, [G1::generator(), cs[1], cs[2]], z, ys, b_pi()),
+        !kzg::verify_gwc(k, [G1::generator(), cs[1], cs[2]], z, ys, b_pi()),
     )
     assert(
-        !kzg_batch_verify_gwc(k, [cs[0], cs[1], cs[2].neg()], z, ys, b_pi()),
+        !kzg::verify_gwc(k, [cs[0], cs[1], cs[2].neg()], z, ys, b_pi()),
     )
     // wrong key
-    assert(!kzg_batch_verify_gwc(vk_other_tau(), cs, z, ys, b_pi()))
+    assert(!kzg::verify_gwc(vk_other_tau(), cs, z, ys, b_pi()))
 }
 
 #[test]
-fn gwc_rejects_swapped_or_resized() uses (call: Call) {
+fn gwc_rejects_swapped_or_resized() uses (call: Call, ctx: Ctx) {
     let k = vk()
     let cs = b_cs()
     let ys = b_ys()
     let z = fr(B_Z)
     // swapped commitments
-    assert(
-        !kzg_batch_verify_gwc(k, [cs[1], cs[0], cs[2]], z, ys, b_pi()),
-    )
-    assert(
-        !kzg_batch_verify_gwc(k, [cs[0], cs[2], cs[1]], z, ys, b_pi()),
-    )
+    assert(!kzg::verify_gwc(k, [cs[1], cs[0], cs[2]], z, ys, b_pi()))
+    assert(!kzg::verify_gwc(k, [cs[0], cs[2], cs[1]], z, ys, b_pi()))
     // swapped values
-    assert(
-        !kzg_batch_verify_gwc(k, cs, z, [ys[1], ys[0], ys[2]], b_pi()),
-    )
+    assert(!kzg::verify_gwc(k, cs, z, [ys[1], ys[0], ys[2]], b_pi()))
     // dropped element (N = 2, N = 1) with the N = 3 proof
     assert(
-        !kzg_batch_verify_gwc(k, [cs[0], cs[1]], z, [ys[0], ys[1]], b_pi()),
+        !kzg::verify_gwc(k, [cs[0], cs[1]], z, [ys[0], ys[1]], b_pi()),
     )
-    assert(!kzg_batch_verify_gwc(k, [cs[0]], z, [ys[0]], b_pi()))
+    assert(!kzg::verify_gwc(k, [cs[0]], z, [ys[0]], b_pi()))
 }
 
 /// Safety rule 5: changing any transcript input changes the challenge.
@@ -378,9 +365,9 @@ fn shplonk_challenges_match_reference() {
 }
 
 #[test]
-fn shplonk_accepts_valid() uses (call: Call) {
+fn shplonk_accepts_valid() uses (call: Call, ctx: Ctx) {
     assert(
-        kzg_verify_shplonk(
+        kzg::verify_shplonk(
             vk(),
             h_cs(),
             fr(H_Z1),
@@ -393,7 +380,7 @@ fn shplonk_accepts_valid() uses (call: Call) {
 }
 
 #[test]
-fn shplonk_rejects_tampered() uses (call: Call) {
+fn shplonk_rejects_tampered() uses (call: Call, ctx: Ctx) {
     let k = vk()
     let cs = h_cs()
     let ev = h_evals()
@@ -403,7 +390,7 @@ fn shplonk_rejects_tampered() uses (call: Call) {
     let h = h_h()
     let pi = h_pi()
     assert(
-        !kzg_verify_shplonk(
+        !kzg::verify_shplonk(
             k,
             cs,
             z1,
@@ -414,7 +401,7 @@ fn shplonk_rejects_tampered() uses (call: Call) {
         ),
     )
     assert(
-        !kzg_verify_shplonk(
+        !kzg::verify_shplonk(
             k,
             cs,
             z1,
@@ -425,7 +412,7 @@ fn shplonk_rejects_tampered() uses (call: Call) {
         ),
     )
     assert(
-        !kzg_verify_shplonk(
+        !kzg::verify_shplonk(
             k,
             cs,
             z1,
@@ -436,7 +423,7 @@ fn shplonk_rejects_tampered() uses (call: Call) {
         ),
     )
     assert(
-        !kzg_verify_shplonk(
+        !kzg::verify_shplonk(
             k,
             cs,
             z1,
@@ -448,37 +435,41 @@ fn shplonk_rejects_tampered() uses (call: Call) {
     )
     // swapped evaluations
     assert(
-        !kzg_verify_shplonk(k, cs, z1, z2, [ev[1], ev[0], ev[2], ev[3]], h, pi),
+        !kzg::verify_shplonk(k, cs, z1, z2, [ev[1], ev[0], ev[2], ev[3]], h, pi),
     )
     // points
-    assert(!kzg_verify_shplonk(k, cs, z1.add(one), z2, ev, h, pi))
-    assert(!kzg_verify_shplonk(k, cs, z2, z1, ev, h, pi))
+    assert(!kzg::verify_shplonk(k, cs, z1.add(one), z2, ev, h, pi))
+    assert(!kzg::verify_shplonk(k, cs, z2, z1, ev, h, pi))
     // proofs
     assert(
-        !kzg_verify_shplonk(k, cs, z1, z2, ev, G1::generator(), pi),
+        !kzg::verify_shplonk(k, cs, z1, z2, ev, G1::generator(), pi),
     )
-    assert(!kzg_verify_shplonk(k, cs, z1, z2, ev, h, G1::generator()))
-    assert(!kzg_verify_shplonk(k, cs, z1, z2, ev, pi, h))
+    assert(
+        !kzg::verify_shplonk(k, cs, z1, z2, ev, h, G1::generator()),
+    )
+    assert(!kzg::verify_shplonk(k, cs, z1, z2, ev, pi, h))
     // commitments (each) and swapped commitments
     assert(
-        !kzg_verify_shplonk(k, [G1::generator(), cs[1], cs[2]], z1, z2, ev, h, pi),
+        !kzg::verify_shplonk(k, [G1::generator(), cs[1], cs[2]], z1, z2, ev, h, pi),
     )
     assert(
-        !kzg_verify_shplonk(k, [cs[0], cs[1].neg(), cs[2]], z1, z2, ev, h, pi),
+        !kzg::verify_shplonk(k, [cs[0], cs[1].neg(), cs[2]], z1, z2, ev, h, pi),
     )
     assert(
-        !kzg_verify_shplonk(k, [cs[0], cs[1], G1::generator()], z1, z2, ev, h, pi),
+        !kzg::verify_shplonk(k, [cs[0], cs[1], G1::generator()], z1, z2, ev, h, pi),
     )
     assert(
-        !kzg_verify_shplonk(k, [cs[1], cs[0], cs[2]], z1, z2, ev, h, pi),
+        !kzg::verify_shplonk(k, [cs[1], cs[0], cs[2]], z1, z2, ev, h, pi),
     )
     assert(
-        !kzg_verify_shplonk(k, [cs[0], cs[2], cs[1]], z1, z2, ev, h, pi),
+        !kzg::verify_shplonk(k, [cs[0], cs[2], cs[1]], z1, z2, ev, h, pi),
     )
     // wrong key
-    assert(!kzg_verify_shplonk(vk_other_tau(), cs, z1, z2, ev, h, pi))
+    assert(
+        !kzg::verify_shplonk(vk_other_tau(), cs, z1, z2, ev, h, pi),
+    )
     // degenerate: equal points
-    assert(!kzg_verify_shplonk(k, cs, z1, z1, ev, h, pi))
+    assert(!kzg::verify_shplonk(k, cs, z1, z1, ev, h, pi))
 }
 
 #[test]
@@ -527,16 +518,16 @@ fn shplonk_challenges_bind_every_input() {
 // ---------------------------------------------------------------- gas
 
 #[test]
-fn kzg_gas_report() uses (evm: mut Evm, call: Call) {
+fn kzg_gas_report() uses (evm: mut Evm, call: Call, ctx: Ctx) {
     let k = vk()
     var g0 = evm.gas()
-    let a = kzg_verify(k, s_c(), fr(S_Z), fr(S_Y), s_pi())
+    let a = kzg::verify(k, s_c(), fr(S_Z), fr(S_Y), s_pi())
     evm.emit(GasUsed { what: 1, gas: g0 - evm.gas() })
     g0 = evm.gas()
-    let b = kzg_batch_verify_gwc(k, b_cs(), fr(B_Z), b_ys(), b_pi())
+    let b = kzg::verify_gwc(k, b_cs(), fr(B_Z), b_ys(), b_pi())
     evm.emit(GasUsed { what: 2, gas: g0 - evm.gas() })
     g0 = evm.gas()
-    let c = kzg_verify_shplonk(k, h_cs(), fr(H_Z1), fr(H_Z2), h_evals(), h_h(), h_pi())
+    let c = kzg::verify_shplonk(k, h_cs(), fr(H_Z1), fr(H_Z2), h_evals(), h_h(), h_pi())
     evm.emit(GasUsed { what: 3, gas: g0 - evm.gas() })
     assert(a && b && c)
 }

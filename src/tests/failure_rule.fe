@@ -1,0 +1,193 @@
+//! Failure rule: an invalid proof is `false`, a lack of gas is a revert. A precompile that runs
+//! out of gas fails exactly like one that rejected its input, so every verifier checks
+//! `gas >= cap + GAS_MARGIN` before each precompile call (src/ec/precompile.fe `require_gas`).
+//! Each system has a pair of tests through a deployed wrapper contract: too little gas reverts
+//! (the call does not succeed), enough gas with a tampered proof returns `false`, and enough gas
+//! with the valid proof returns `true`.
+use ingot::verifier::{gnark, groth16, plonk}
+use super::gnark_plonk::gm_vk
+use super::gnark_plonk_fixtures::{gm_fixed, gm_pubs}
+use super::groth16::vk_multiplier
+use super::plonk::m2_vk
+use super::plonk_fixtures::{m2_proof, m2_pubs}
+use std::abi::{bytes_from_words, dyn_array_from}
+use std::evm::{Address, Call, CallOutcome, Ctx, Evm}
+
+const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+
+msg RuleMsg {
+    #[selector = sol("groth16(uint256[2],uint256[2][2],uint256[2],uint256[1])")]
+    Groth16 { a: [u256; 2], b: [[u256; 2]; 2], c: [u256; 2], x: [u256; 1] } -> bool,
+    #[selector = sol("plonk(uint256[24],uint256[2])")]
+    Plonk { proof: [u256; 24], pubs: [u256; 2] } -> bool,
+    #[selector = sol("gnark(uint256[24],uint256[2])")]
+    Gnark { proof: [u256; 24], pubs: [u256; 2] } -> bool,
+}
+
+contract RuleWrapper {
+    recv RuleMsg {
+        Groth16 { a, b, c, x } -> bool uses (call: Call, ctx: Ctx) {
+            groth16::verify_calldata(vk_multiplier(), a, b, c, x)
+        }
+        Plonk { proof, pubs } -> bool uses (call: Call, ctx: Ctx) {
+            plonk::verify_calldata(m2_vk(), proof, pubs)
+        }
+        Gnark { proof, pubs } -> bool uses (call: Call, ctx: Ctx) {
+            gnark::verify_calldata(gm_vk(), bytes_from_words(proof), dyn_array_from(pubs))
+        }
+    }
+}
+
+fn deploy() -> Address uses (evm: mut Evm) {
+    evm.create2<RuleWrapper>(value: Wei::zero(), args: (), salt: 0)
+}
+
+// snarkjs multiplier proof (src/tests/groth16.fe), real-first `b`
+fn ga() -> [u256; 2] {
+    [
+        7721094462243721192636187423381229733086297345272207725305842020332867459139,
+        11777289101270056922347586881428666908464962277362243260779970953004571759317,
+    ]
+}
+
+fn gb() -> [[u256; 2]; 2] {
+    [
+        [
+            5161316430930545003086711383422200777738761246325689252635909985486544014740,
+            21277750394916048891567404513831611180277166162069260510584357133920202477378,
+        ],
+        [
+            14422645920932369733545549060456712166692491266940685185992320759644209162950,
+            14103470080089620595572674831392059767207721215286838770055244440766897379157,
+        ],
+    ]
+}
+
+fn gc() -> [u256; 2] {
+    [
+        10472107627023360383508793401069183758176138362484573046971854801581908968635,
+        10213754952762924117787775756330474509176482092373894806045581838250651582842,
+    ]
+}
+
+fn groth16_call(_ w: Address, _ gas: u256, _ a: [u256; 2]) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: w,
+        gas: gas,
+        value: Wei::zero(),
+        message: RuleMsg::Groth16 { a: a, b: gb(), c: gc(), x: [33] },
+    )
+}
+
+fn plonk_call(_ w: Address, _ gas: u256, _ proof: [u256; 24]) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: w,
+        gas: gas,
+        value: Wei::zero(),
+        message: RuleMsg::Plonk { proof: proof, pubs: m2_pubs() },
+    )
+}
+
+fn gnark_call(_ w: Address, _ gas: u256, _ proof: [u256; 24]) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: w,
+        gas: gas,
+        value: Wei::zero(),
+        message: RuleMsg::Gnark { proof: proof, pubs: gm_pubs() },
+    )
+}
+
+// Same curve, wrong point: negate the y of the point whose x is at word `ix`.
+fn tamper_point(_ w: [u256; 24], _ ix: usize) -> [u256; 24] {
+    var t = w
+    t[ix + 1] = Q - w[ix + 1]
+    t
+}
+
+#[test]
+fn groth16_low_gas_reverts() uses (evm: mut Evm) {
+    let w = deploy()
+    assert(!groth16_call(w, 60000, ga()).success())
+}
+
+#[test]
+fn groth16_invalid_with_gas_is_false() uses (evm: mut Evm) {
+    let w = deploy()
+    let a = ga()
+    let bad = groth16_call(w, 1000000, [a[0], Q - a[1]])
+    assert(bad.success())
+    let r: bool = bad.decode()
+    assert(!r)
+    let ok: bool = groth16_call(w, 1000000, a).decode()
+    assert(ok)
+}
+
+#[test]
+fn plonk_low_gas_reverts() uses (evm: mut Evm) {
+    let w = deploy()
+    assert(!plonk_call(w, 60000, m2_proof()).success())
+}
+
+#[test]
+fn plonk_invalid_with_gas_is_false() uses (evm: mut Evm) {
+    let w = deploy()
+    let bad = plonk_call(w, 3000000, tamper_point(m2_proof(), 0))
+    assert(bad.success())
+    let r: bool = bad.decode()
+    assert(!r)
+    let ok: bool = plonk_call(w, 3000000, m2_proof()).decode()
+    assert(ok)
+}
+
+#[test]
+fn gnark_low_gas_reverts() uses (evm: mut Evm) {
+    let w = deploy()
+    assert(!gnark_call(w, 60000, gm_fixed()).success())
+}
+
+#[test]
+fn gnark_invalid_with_gas_is_false() uses (evm: mut Evm) {
+    let w = deploy()
+    let bad = gnark_call(w, 3000000, tamper_point(gm_fixed(), 0))
+    assert(bad.success())
+    let r: bool = bad.decode()
+    assert(!r)
+    let ok: bool = gnark_call(w, 3000000, gm_fixed()).decode()
+    assert(ok)
+}
+
+// "Just short": the caller gives 40_000 gas less than the valid call uses, so the final pairing
+// would run out of gas inside the precompile. Without the gas check that comes back as `false`
+// (a valid proof "rejected"); with it the call reverts.
+#[test]
+fn groth16_just_short_of_gas_reverts() uses (evm: mut Evm) {
+    let w = deploy()
+    let g0 = evm.gas()
+    assert(groth16_call(w, 3000000, ga()).success())
+    let used = g0 - evm.gas()
+    assert(!groth16_call(w, used - 40000, ga()).success())
+}
+
+#[test]
+fn plonk_just_short_of_gas_reverts() uses (evm: mut Evm) {
+    let w = deploy()
+    let g0 = evm.gas()
+    assert(plonk_call(w, 3000000, m2_proof()).success())
+    let used = g0 - evm.gas()
+    assert(!plonk_call(w, used - 40000, m2_proof()).success())
+}
+
+#[test]
+fn gnark_just_short_of_gas_reverts() uses (evm: mut Evm) {
+    let w = deploy()
+    let g0 = evm.gas()
+    assert(gnark_call(w, 3000000, gm_fixed()).success())
+    let used = g0 - evm.gas()
+    assert(!gnark_call(w, used - 40000, gm_fixed()).success())
+}
