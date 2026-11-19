@@ -44,3 +44,4 @@ pub use hash::{
     poseidon_5,
 }
 pub use verifier::{fri, gnark, groth16, halo2, kzg, plonk}
+pub use anon
