@@ -1508,7 +1508,7 @@ pub fn emit_halo2_ingot(vk: &Halo2Vk, opts: &Halo2EmitOptions) -> Result<Emitted
     let (mut lib, lay) = Gen::new(vk, Halo2Mode::Ingot, opts.scheme, &digest).run();
     let ingot_name = format!("{}_verifier", opts.name.to_lowercase());
     let fe_toml = format!(
-        "[ingot]\nname = \"{ingot_name}\"\nversion = \"0.1.0\"\n\n[dependencies]\nfe_zk = {{ path = \"{}\", allow_unsafe = true }}\n",
+        "[ingot]\nname = \"{ingot_name}\"\nversion = \"{TOOL_VERSION}\"\n\n[dependencies]\nfe_zk = {{ path = \"{}\", allow_unsafe = true }}\n",
         opts.fe_zk_path
     );
     let ni = lay.n_instances;

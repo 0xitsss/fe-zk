@@ -119,7 +119,7 @@ pub fn emit_ingot(vk: &Groth16Vk, opts: &EmitOptions) -> Result<EmittedIngot, Vk
     let msg = format!("{contract}Msg");
 
     let fe_toml = format!(
-        "[ingot]\nname = \"{ingot_name}\"\nversion = \"0.1.0\"\n\n[dependencies]\nfe_zk = {{ path = \"{}\", allow_unsafe = true }}\n",
+        "[ingot]\nname = \"{ingot_name}\"\nversion = \"{TOOL_VERSION}\"\n\n[dependencies]\nfe_zk = {{ path = \"{}\", allow_unsafe = true }}\n",
         opts.fe_zk_path
     );
 
