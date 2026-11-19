@@ -14,7 +14,7 @@ Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
 Submission: release tag [`v0.1.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.1.0) (the full commit SHA is in the submission form).
 Current version: **0.2.0** ([CHANGELOG.md](CHANGELOG.md)): one API per proof system, an anonymous-action kit (`fe_zk::anon`,
 Semaphore v4 ingot) and a Tornado Cash verifier demo.
-Demo video: [youtu.be/u64MVwoeKjk](https://youtu.be/u64MVwoeKjk) (2:44, every number and output comes from a real run).
+Demo video: [youtu.be/3lFUyRV3F7Q](https://youtu.be/3lFUyRV3F7Q) (2:44, every number and output comes from a real run).
 
 ## Try it
 
