@@ -45,6 +45,16 @@ jobs:
           mkdir -p "$HOME/bin" && mv "$HOME/solc" "$HOME/bin/solc" && export PATH="$HOME/bin:$PATH"
           solc --version
           scripts/difftest.sh --quick
+      # Every committed Semaphore v4 proof (one per depth 1..10 plus the anon_* example proofs) is accepted by
+      # Semaphore's unmodified SemaphoreVerifier.sol (pinned commit and sha256) in revm; tampered ones rejected.
+      - name: Semaphore Solidity cross-check
+        run: |
+          curl -fsSL -o "$HOME/solc" https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux
+          echo "fb03a29a517452b9f12bcf459ef37d0a543765bb3bbc911e70a87d6a37c30d5f  $HOME/solc" | sha256sum -c -
+          chmod +x "$HOME/solc"
+          mkdir -p "$HOME/bin" && mv "$HOME/solc" "$HOME/bin/solc" && export PATH="$HOME/bin:$PATH"
+          (cd vectors/js/semaphore && npm ci --no-audit --no-fund)
+          scripts/check-semaphore-sol.sh
       # Emits the membership verifier with fe-zk-gen, checks it is unchanged, and runs the
       # generated verifier's tests and the demo contract's tests.
       - name: Membership demo

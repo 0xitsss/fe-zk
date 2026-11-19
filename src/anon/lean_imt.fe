@@ -11,6 +11,19 @@ use ingot::field::{Bn254Fr, Field}
 use ingot::hash::poseidon_2
 use std::evm::StorageMap
 
+/// Depth of a tree holding `new_size` leaves, given the current `depth`. Reverts at depth 32 or
+/// more: 32 is Semaphore's maximum tree depth and a deeper tree has no verifying key. (Depth 32
+/// needs 2^31 leaves, out of reach of any gas limit; the guard documents the bound.)
+/// The depth stays far below 256 until then, so the shift is safe.
+pub fn grown_depth(_ depth: u256, _ new_size: u256) -> u256 {
+    var d = depth
+    if (1 << d) < new_size {
+        d += 1
+    }
+    assert(d < 32)
+    d
+}
+
 pub struct LeanImt {
     size: u256,
     depth: u256,
@@ -28,11 +41,7 @@ impl LeanImt {
         assert(l != 0)
         assert(self.leaves[l] == 0)
         let index = self.size
-        var depth = self.depth
-        // depth stays far below 256 (size is bounded by gas), so the shift is safe
-        if (1 << depth) < index + 1 {
-            depth += 1
-        }
+        let depth = grown_depth(self.depth, index + 1)
         self.depth = depth
         var node = leaf
         var level: u256 = 0

@@ -14,7 +14,7 @@ vectors/cache/
 *.zkey
 *.params
 # Node tooling for reference vectors (snarkjs, circom)
-node_modules/
+node_modules
 # Editors / OS
 .idea/
 .vscode/

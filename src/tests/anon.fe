@@ -2,6 +2,7 @@
 //! pattern for any contract using the kit). Reference-vector tests are in `anon_vectors.fe`
 //! (generated).
 use ingot::anon::{LeanImt, Nullifiers}
+use ingot::anon::lean_imt::grown_depth
 use ingot::field::{Bn254Fr, Field}
 use std::evm::{Address, Evm}
 
@@ -25,6 +26,8 @@ msg AnonMsg {
     Spend { scope: u256, nullifier: u256 } -> bool,
     #[selector = sol("isSpent(uint256,uint256)")]
     IsSpent { scope: u256, nullifier: u256 } -> bool,
+    #[selector = sol("grownDepth(uint256,uint256)")]
+    GrownDepth { depth: u256, new_size: u256 } -> u256,
 }
 
 pub contract Anon {
@@ -53,6 +56,9 @@ pub contract Anon {
         }
         IsSpent { scope, nullifier } -> bool uses (nulls) {
             nulls.is_spent(scope: scope, nullifier: nullifier)
+        }
+        GrownDepth { depth, new_size } -> u256 {
+            grown_depth(depth, new_size)
         }
     }
 }
@@ -244,4 +250,26 @@ fn lean_imt_gas_per_insert() uses (evm: mut Evm) {
     insert(g, 1024)
     let h1 = evm.gas()
     evm.emit(GasUsed { what: 1024, gas: h0 - h1 })
+}
+
+fn try_grown_depth(_ g: Address, _ depth: u256, _ new_size: u256) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: g,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: AnonMsg::GrownDepth { depth: depth, new_size: new_size },
+    )
+        .success()
+}
+
+#[test]
+fn lean_imt_depth_capped_below_32() uses (evm: mut Evm) {
+    // Semaphore has no key above depth 32: growing a depth-31 tree past 2^31 leaves reverts
+    let g = deploy()
+    assert(try_grown_depth(g, 0, 1))
+    assert(try_grown_depth(g, 30, (1 << 30) + 1))
+    assert(!try_grown_depth(g, 31, (1 << 31) + 1))
+    assert(!try_grown_depth(g, 32, 1))
 }

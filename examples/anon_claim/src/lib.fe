@@ -1,0 +1,123 @@
+//! Anonymous claim from an allow-list (airdrop pattern): a member of the group claims once,
+//! to any recipient address, without revealing which member they are.
+//!
+//! * The owner (deployer) registers the allow-list: one Semaphore identity commitment each.
+//! * `claim(recipient, depth, root, nullifier, points)` takes the fields of a `SemaphoreProof`
+//!   made with  scope = the campaign id given at deployment,  message = the recipient address.
+//!   The recipient is bound by the proof: a front-runner who copies the transaction from the
+//!   mempool cannot redirect the claim to their own address (changing the recipient breaks the
+//!   proof), they can only deliver it to the intended recipient.
+//! * The second claim by the same member (same scope, same nullifier) reverts, whatever the
+//!   recipient.
+//!
+//! This contract records the entitlement (`claimed(recipient)`, `Claimed` event). The payout
+//! (a token transfer or ETH send) belongs where `// PAYOUT` is marked.
+//! Groth16 proofs are malleable: the proof is never stored or used as an id.
+use fe_zk::Field
+use fe_zk::anon::{LeanImt, Nullifiers}
+use fe_zk::Bn254Fr
+use fe_zk_semaphore::verify_proof_low
+use std::evm::{Address, Call, Ctx, Log, StorageMap}
+
+/// `verify_proof_low` has keys for tree depth <= 5, i.e. groups of up to 2^5 = 32 members. A larger
+/// group would silently contain members who cannot prove, so registration stops at 32. For bigger
+/// groups use `verify_proof` (all depths) and keep the tree in a separate group contract: the
+/// tree alone is 14 KB of code, `verify_proof` 11 KB.
+pub const MAX_MEMBERS: u256 = 32
+
+#[event]
+struct Registered { commitment: u256, index: u256 }
+
+#[event]
+struct Claimed { recipient: u256, nullifier: u256 }
+
+msg ClaimMsg {
+    #[selector = sol("register(uint256)")]
+    Register { commitment: u256 } -> u256,
+    #[selector = sol("claim(uint256,uint256,uint256,uint256,uint256[8])")]
+    Claim {
+        recipient: u256,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        points: [u256; 8],
+    },
+    #[selector = sol("claimed(uint256)")]
+    IsClaimed { recipient: u256 } -> bool,
+    #[selector = sol("claims()")]
+    Claims -> u256,
+    #[selector = sol("scope()")]
+    Scope -> u256,
+    #[selector = sol("root()")]
+    Root -> u256,
+}
+
+struct Campaign { owner: Address, scope: u256, claims: u256 }
+
+pub contract AnonClaim uses (ctx: Ctx, call: Call, log: mut Log) {
+    mut tree: LeanImt,
+    mut nulls: Nullifiers,
+    mut received: StorageMap<u256, bool>,
+    mut campaign: Campaign,
+
+    /// `scope`: the campaign id (the proofs' scope).
+    init(scope: u256)
+    uses (ctx, mut campaign)
+    {
+        campaign.owner = ctx.caller()
+        campaign.scope = scope
+    }
+
+    recv ClaimMsg {
+        Register { commitment } -> u256 uses (ctx, campaign, mut tree, mut log) {
+            assert(ctx.caller() == campaign.owner)
+            assert(tree.size() < MAX_MEMBERS)
+            tree.insert(leaf: Bn254Fr::from_canonical(commitment).unwrap())
+            let index = tree.size() - 1
+            log.emit(Registered { commitment: commitment, index: index })
+            index
+        }
+
+        Claim { recipient, merkle_tree_depth, merkle_tree_root, nullifier, points }
+        uses (ctx, call, mut campaign, tree, mut nulls, mut received, mut log)
+        {
+            // the message is an address: anything wider is not a recipient
+            assert(recipient < (1 << 160))
+            assert(tree.is_known_root(root: merkle_tree_root))
+            assert(
+                !nulls.is_spent(scope: campaign.scope, nullifier: nullifier),
+            )
+            assert(
+                verify_proof_low(
+                    merkle_tree_depth,
+                    merkle_tree_root,
+                    nullifier,
+                    recipient,
+                    campaign.scope,
+                    points,
+                ),
+            )
+            assert(nulls.spend(scope: campaign.scope, nullifier: nullifier))
+            received[recipient] = true
+            campaign.claims = campaign.claims + 1
+            // PAYOUT: transfer the claimed amount to `recipient` here
+            log.emit(Claimed { recipient: recipient, nullifier: nullifier })
+        }
+
+        IsClaimed { recipient } -> bool uses (received) {
+            received[recipient]
+        }
+
+        Claims -> u256 uses (campaign) {
+            campaign.claims
+        }
+
+        Scope -> u256 uses (campaign) {
+            campaign.scope
+        }
+
+        Root -> u256 uses (tree) {
+            tree.root().to_canonical()
+        }
+    }
+}

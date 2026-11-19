@@ -1,0 +1,127 @@
+//! Anonymous voting with Semaphore v4 proofs: one vote per member, nobody learns who voted what.
+//!
+//! * The owner (deployer) registers voters' Semaphore identity commitments with `register`.
+//! * `vote(option, depth, root, nullifier, points)` takes the fields of a `SemaphoreProof` made
+//!   by `@semaphore-protocol/proof` with
+//!     scope   = the poll id given at deployment (`scope()`),
+//!     message = the option voted for.
+//!   It checks, in this order: the option exists, the root is a root of the voter group, the
+//!   nullifier is not spent for this scope, the proof verifies, then spends the nullifier and
+//!   counts the vote.
+//!
+//! The scope is fixed at deployment: a caller who could choose it would get a fresh nullifier
+//! per call and vote any number of times. The option is the proof's message, so a front-runner
+//! who copies a pending proof can only cast the same option (changing it breaks the proof) and
+//! spends the voter's nullifier for that option, exactly the vote the voter was sending.
+//! Groth16 proofs are malleable: the proof is never stored or used as an id.
+use fe_zk::Field
+use fe_zk::anon::{LeanImt, Nullifiers}
+use fe_zk::Bn254Fr
+use fe_zk_semaphore::verify_proof_low
+use std::evm::{Address, Call, Ctx, Log, StorageMap}
+
+/// `verify_proof_low` has keys for tree depth <= 5, i.e. groups of up to 2^5 = 32 members. A larger
+/// group would silently contain members who cannot prove, so registration stops at 32. For bigger
+/// groups use `verify_proof` (all depths) and keep the tree in a separate group contract: the
+/// tree alone is 14 KB of code, `verify_proof` 11 KB.
+pub const MAX_MEMBERS: u256 = 32
+
+#[event]
+struct Registered { commitment: u256, index: u256 }
+
+#[event]
+struct Voted { option: u256, nullifier: u256 }
+
+msg VoteMsg {
+    #[selector = sol("register(uint256)")]
+    Register { commitment: u256 } -> u256,
+    #[selector = sol("vote(uint256,uint256,uint256,uint256,uint256[8])")]
+    Vote {
+        option: u256,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        points: [u256; 8],
+    },
+    #[selector = sol("tally(uint256)")]
+    Tally { option: u256 } -> u256,
+    #[selector = sol("scope()")]
+    Scope -> u256,
+    #[selector = sol("options()")]
+    Options -> u256,
+    #[selector = sol("root()")]
+    Root -> u256,
+    #[selector = sol("size()")]
+    Size -> u256,
+}
+
+struct Poll { owner: Address, scope: u256, options: u256 }
+
+pub contract AnonVote uses (ctx: Ctx, call: Call, log: mut Log) {
+    mut tree: LeanImt,
+    mut nulls: Nullifiers,
+    mut tallies: StorageMap<u256, u256>,
+    mut poll: Poll,
+
+    /// `scope`: the poll id (the proofs' scope); `options`: options are `0..options`.
+    init(scope: u256, options: u256)
+    uses (ctx, mut poll)
+    {
+        poll.owner = ctx.caller()
+        poll.scope = scope
+        poll.options = options
+    }
+
+    recv VoteMsg {
+        Register { commitment } -> u256 uses (ctx, poll, mut tree, mut log) {
+            assert(ctx.caller() == poll.owner)
+            // a commitment >= r reverts: it would alias another field element
+            assert(tree.size() < MAX_MEMBERS)
+            tree.insert(leaf: Bn254Fr::from_canonical(commitment).unwrap())
+            let index = tree.size() - 1
+            log.emit(Registered { commitment: commitment, index: index })
+            index
+        }
+
+        Vote { option, merkle_tree_depth, merkle_tree_root, nullifier, points }
+        uses (ctx, call, poll, tree, mut nulls, mut tallies, mut log)
+        {
+            assert(option < poll.options)
+            assert(tree.is_known_root(root: merkle_tree_root))
+            assert(!nulls.is_spent(scope: poll.scope, nullifier: nullifier))
+            assert(
+                verify_proof_low(
+                    merkle_tree_depth,
+                    merkle_tree_root,
+                    nullifier,
+                    option,
+                    poll.scope,
+                    points,
+                ),
+            )
+            assert(nulls.spend(scope: poll.scope, nullifier: nullifier))
+            tallies[option] = tallies[option] + 1
+            log.emit(Voted { option: option, nullifier: nullifier })
+        }
+
+        Tally { option } -> u256 uses (tallies) {
+            tallies[option]
+        }
+
+        Scope -> u256 uses (poll) {
+            poll.scope
+        }
+
+        Options -> u256 uses (poll) {
+            poll.options
+        }
+
+        Root -> u256 uses (tree) {
+            tree.root().to_canonical()
+        }
+
+        Size -> u256 uses (tree) {
+            tree.size()
+        }
+    }
+}
