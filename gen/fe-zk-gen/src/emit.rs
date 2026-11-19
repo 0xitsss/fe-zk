@@ -2,7 +2,7 @@
 //! `fe.toml`, `src/lib.fe` (the verifier contract) and optionally `src/tests.fe`.
 //!
 //! The emitted contract contains NO verification logic of its own: its only handler forwards the
-//! calldata words to the library's `groth16_verify_raw`, where every safety check lives
+//! calldata words to the library's `groth16::verify_calldata`, where every safety check lives
 //! (canonical inputs, curve membership, G2 handling, pairing result). There is no option to
 //! switch checks off, and the emitter refuses keys that do not pass `Groth16Vk::validate`.
 
