@@ -68,7 +68,7 @@ Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool 
 |---|---|---|---|---|---|---|
 | Groth16 | snarkjs, arkworks | [`groth16.fe`](src/verifier/groth16.fe) | `fe-zk-gen groth16` | `vectors/groth16` | `src/tests/groth16.fe` | 191,869 / 188,926 (N=1); 207,964 / 202,220 (N=3) |
 | PLONK | snarkjs 0.7.6 | [`plonk.fe`](src/verifier/plonk.fe) | `fe-zk-gen plonk` | `vectors/plonk` | `src/tests/plonk.fe` | 296,533 / 263,536 (N=3) |
-| PLONK | gnark v0.12.0 | [`gnark.fe`](src/verifier/gnark.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark_plonk.fe` | 333,614 / 261,868 |
+| PLONK | gnark v0.12.0 | [`gnark.fe`](src/verifier/gnark.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark.fe` | 333,614 / 261,868 |
 | halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 396,611 / 322,590 (SHPLONK) |
 | KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,161 single opening, no reference |
 | FRI/STARK | Plonky3 `uni-stark` Fibonacci, 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe` | 4.67 M as a contract (4.29 M in `verify`), no reference exists |

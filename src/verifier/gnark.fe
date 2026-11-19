@@ -793,7 +793,7 @@ uses (call: Call, ctx: Ctx)
 /// One call from the raw `MarshalSolidity()` words: `fixed` (24 words), the `NC` selector
 /// openings and the `NC` BSB22 commitments. `false` if the proof words are not canonical on-curve
 /// data, a public input is not canonical, or the proof does not verify.
-fn verify_words<const NP: usize, const NC: usize>(
+fn verify_parts<const NP: usize, const NC: usize>(
     _ vk: Vk<NP, NC>,
     _ fixed: [u256; 24],
     _ qcp_at_zeta: [u256; NC],
@@ -811,7 +811,7 @@ uses (call: Call, ctx: Ctx)
 /// gnark Solidity ABI adapter: `Verify(bytes proof, uint256[] public_inputs)`. The proof must be
 /// exactly `(24 + 3 NC)` words (`MarshalSolidity()`) and `public_inputs` exactly `NP` entries:
 /// any other length is rejected (`false`, never truncated or padded; safety rule 4), which gnark's
-/// Solidity verifier does with a revert. The word layout is that of `verify_words`.
+/// Solidity verifier does with a revert. The word layout is that of `verify_parts`.
 pub fn verify_calldata<const NP: usize, const NC: usize>(
     _ vk: Vk<NP, NC>,
     _ proof: Bytes,

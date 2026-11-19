@@ -231,7 +231,7 @@ the converter builds a throw-away receiver and overwrites every field.
 ## Compile-time keys for every verifier family
 
 Emitted key points are `pub const` words checked by `static_assert(g1_is_valid(..))` / `static_assert(g2_is_valid(..))`;
-domains by `const fn` (`plonk_domain_is_valid`, `gnark_domain_is_valid`). Typed constants come from
+domains by `const fn` (`plonk::domain_is_valid`, `gnark::domain_is_valid`). Typed constants come from
 `from_coords_or_infinity`, keys from `from_consts`. If a constant is invalid, `from_consts` poisons the key (`[x]_2` or the
 SRS points become infinity) and every verify returns false, so no usable unchecked key exists even without the
 assertions. PLONK key construction: 1.05M gas at runtime before, 673 gas now; halo2 `vk()`: 1.51M before, 1.3k now.
