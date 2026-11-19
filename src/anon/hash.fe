@@ -1,0 +1,11 @@
+//! Semaphore v4 `_hash`.
+use ingot::field::{Bn254Fr, Field}
+use std::evm::crypto::keccak_words
+
+/// `keccak256(abi.encodePacked(x)) >> 8` with `x` a 32-byte word, as `Semaphore.sol` and
+/// `@semaphore-protocol/proof` hash the `message` and `scope` signals. The shift keeps the
+/// result below 2^248 < r, so it is always a canonical `Bn254Fr` and no reduction happens.
+pub fn hash_to_field(_ x: u256) -> Bn254Fr {
+    let h: u256 = keccak_words([x]) >> 8
+    Bn254Fr::from_canonical(h).unwrap()
+}

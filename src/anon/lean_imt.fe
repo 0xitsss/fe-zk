@@ -1,0 +1,72 @@
+//! Insert-only LeanIMT, root-compatible with `@semaphore-protocol/group` 4.x.
+//!
+//! Port of zk-kit `InternalLeanIMT._insert`: the tree keeps one "side node" per level, an odd
+//! node is promoted to the next level unhashed, and the depth grows when the size passes
+//! 2^depth. Hash is Poseidon t=3 (`poseidon_2`). Not provided: update, remove (zk-kit has them,
+//! this kit is for append-only groups). Empty tree: root 0, size 0, depth 0.
+//!
+//! Every root ever produced stays valid in `is_known_root` (no expiry window), so a proof made
+//! against an older group state still verifies.
+use ingot::field::{Bn254Fr, Field}
+use ingot::hash::poseidon_2
+use std::evm::StorageMap
+
+pub struct LeanImt {
+    size: u256,
+    depth: u256,
+    side_nodes: StorageMap<u256, u256>,
+    /// leaf -> index + 1 (0 = absent), as zk-kit `leaves`
+    leaves: StorageMap<u256, u256>,
+    roots: StorageMap<u256, bool>,
+}
+
+impl LeanImt {
+    /// Appends `leaf` and returns the new root. Reverts if `leaf` is 0 or already present
+    /// (zk-kit `LeafCannotBeZero` / `LeafAlreadyExists`). A `Bn254Fr` is canonical by type.
+    pub fn insert(mut self, leaf: Bn254Fr) -> Bn254Fr {
+        let l = leaf.to_canonical()
+        assert(l != 0)
+        assert(self.leaves[l] == 0)
+        let index = self.size
+        var depth = self.depth
+        // depth stays far below 256 (size is bounded by gas), so the shift is safe
+        if (1 << depth) < index + 1 {
+            depth += 1
+        }
+        self.depth = depth
+        var node = leaf
+        var level: u256 = 0
+        while level < depth {
+            if (index >> level) & 1 == 1 {
+                let left = Bn254Fr::from_canonical(self.side_nodes[level]).unwrap()
+                node = poseidon_2(left, node)
+            } else {
+                self.side_nodes[level] = node.to_canonical()
+            }
+            level += 1
+        }
+        self.size = index + 1
+        let root = node.to_canonical()
+        self.side_nodes[depth] = root
+        self.leaves[l] = index + 1
+        self.roots[root] = true
+        node
+    }
+
+    pub fn root(self) -> Bn254Fr {
+        Bn254Fr::from_canonical(self.side_nodes[self.depth]).unwrap()
+    }
+
+    pub fn size(self) -> u256 {
+        self.size
+    }
+
+    pub fn depth(self) -> u256 {
+        self.depth
+    }
+
+    /// True for every root this tree has had after an insert. The empty root 0 is not known.
+    pub fn is_known_root(self, root: u256) -> bool {
+        self.roots[root]
+    }
+}

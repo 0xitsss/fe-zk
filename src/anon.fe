@@ -1,0 +1,13 @@
+//! Building blocks for anonymous actions compatible with Semaphore v4.
+//!
+//! - `LeanImt`: insert-only LeanIMT whose roots equal `@semaphore-protocol/group` (zk-kit
+//!   lean-imt, Poseidon t=3). Update and remove are not provided.
+//! - `Nullifiers`: a registry of spent nullifiers, separated by scope.
+//! - `hash_to_field`: Semaphore's `_hash(message)`, `keccak256(abi.encodePacked(x)) >> 8`.
+//!
+//! `LeanImt` and `Nullifiers` are storage structs. Declare them as fields of a contract (or of a
+//! store struct) and call their methods inside `uses (mut store)` blocks.
+
+pub use hash::hash_to_field
+pub use lean_imt::LeanImt
+pub use nullifier::Nullifiers

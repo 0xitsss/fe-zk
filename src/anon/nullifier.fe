@@ -1,0 +1,29 @@
+//! Nullifier registry with scope.
+use std::evm::StorageMap
+use std::evm::crypto::keccak_words
+
+/// Spent nullifiers per scope. A Semaphore nullifier is `Poseidon(scope, secret)`, so the same
+/// member yields the same nullifier for the same scope and a different one for another scope:
+/// "once per scope" is exactly what this registry enforces. The key is the keccak of
+/// `(scope, nullifier)`, so entries of different scopes cannot alias.
+pub struct Nullifiers { spent: StorageMap<u256, bool> }
+
+fn key(_ scope: u256, _ nullifier: u256) -> u256 {
+    keccak_words([scope, nullifier])
+}
+
+impl Nullifiers {
+    /// Marks `nullifier` spent for `scope`. Returns false (and changes nothing) if it already was.
+    pub fn spend(mut self, scope: u256, nullifier: u256) -> bool {
+        let k = key(scope, nullifier)
+        if self.spent[k] {
+            return false
+        }
+        self.spent[k] = true
+        true
+    }
+
+    pub fn is_spent(self, scope: u256, nullifier: u256) -> bool {
+        self.spent[key(scope, nullifier)]
+    }
+}

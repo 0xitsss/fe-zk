@@ -1,0 +1,247 @@
+//! `fe_zk::anon` tests: a wrapper contract keeps a `LeanImt` and `Nullifiers` in storage (the
+//! pattern for any contract using the kit). Reference-vector tests are in `anon_vectors.fe`
+//! (generated).
+use ingot::anon::{LeanImt, Nullifiers}
+use ingot::field::{Bn254Fr, Field}
+use std::evm::{Address, Evm}
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+msg AnonMsg {
+    #[selector = sol("insert(uint256)")]
+    Insert { leaf: u256 } -> u256,
+    #[selector = sol("root()")]
+    Root -> u256,
+    #[selector = sol("size()")]
+    Size -> u256,
+    #[selector = sol("depth()")]
+    Depth -> u256,
+    #[selector = sol("isKnownRoot(uint256)")]
+    IsKnownRoot { root: u256 } -> bool,
+    #[selector = sol("spend(uint256,uint256)")]
+    Spend { scope: u256, nullifier: u256 } -> bool,
+    #[selector = sol("isSpent(uint256,uint256)")]
+    IsSpent { scope: u256, nullifier: u256 } -> bool,
+}
+
+pub contract Anon {
+    mut tree: LeanImt,
+    mut nulls: Nullifiers,
+
+    recv AnonMsg {
+        Insert { leaf } -> u256 uses (mut tree) {
+            // a leaf >= r reverts instead of being reduced
+            tree.insert(leaf: Bn254Fr::from_canonical(leaf).unwrap()).to_canonical()
+        }
+        Root -> u256 uses (tree) {
+            tree.root().to_canonical()
+        }
+        Size -> u256 uses (tree) {
+            tree.size()
+        }
+        Depth -> u256 uses (tree) {
+            tree.depth()
+        }
+        IsKnownRoot { root } -> bool uses (tree) {
+            tree.is_known_root(root: root)
+        }
+        Spend { scope, nullifier } -> bool uses (mut nulls) {
+            nulls.spend(scope: scope, nullifier: nullifier)
+        }
+        IsSpent { scope, nullifier } -> bool uses (nulls) {
+            nulls.is_spent(scope: scope, nullifier: nullifier)
+        }
+    }
+}
+
+pub fn deploy() -> Address uses (evm: mut Evm) {
+    evm.create2<Anon>(value: Wei::zero(), args: (), salt: 0)
+}
+
+pub fn insert(_ g: Address, _ leaf: u256) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: g,
+        gas: 10000000,
+        value: Wei::zero(),
+        message: AnonMsg::Insert { leaf: leaf },
+    )
+}
+
+pub fn root_of(_ g: Address) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: g,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: AnonMsg::Root {},
+    )
+}
+
+pub fn depth_of(_ g: Address) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: g,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: AnonMsg::Depth {},
+    )
+}
+
+fn size_of(_ g: Address) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: g,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: AnonMsg::Size {},
+    )
+}
+
+fn known(_ g: Address, _ r: u256) -> bool uses (evm: mut Evm) {
+    evm.call(
+        addr: g,
+        gas: 1000000,
+        value: Wei::zero(),
+        message: AnonMsg::IsKnownRoot { root: r },
+    )
+}
+
+fn try_insert(_ g: Address, _ leaf: u256) -> bool uses (evm: mut Evm) {
+    evm.try_call(
+        addr: g,
+        gas: 10000000,
+        value: Wei::zero(),
+        message: AnonMsg::Insert { leaf: leaf },
+    )
+        .success()
+}
+
+#[test]
+fn lean_imt_empty_and_single() uses (evm: mut Evm) {
+    let g = deploy()
+    assert(root_of(g) == 0)
+    assert(size_of(g) == 0)
+    assert(depth_of(g) == 0)
+    assert(!known(g, 0))
+    // a single leaf is its own root (depth 0)
+    assert(insert(g, 5) == 5)
+    assert(size_of(g) == 1)
+    assert(known(g, 5))
+}
+
+#[test]
+fn lean_imt_rejects_zero_and_duplicate_leaf() uses (evm: mut Evm) {
+    let g = deploy()
+    assert(!try_insert(g, 0))
+    assert(try_insert(g, 7))
+    assert(!try_insert(g, 7))
+    // non-canonical leaf (>= r) reverts, it is not reduced to an existing leaf
+    assert(!try_insert(g, R + 7))
+    // failed inserts changed nothing
+    assert(size_of(g) == 1)
+    assert(root_of(g) == 7)
+    assert(try_insert(g, 8))
+    assert(size_of(g) == 2)
+}
+
+#[test]
+fn lean_imt_known_roots() uses (evm: mut Evm) {
+    let g = deploy()
+    let r1 = insert(g, 11)
+    let r2 = insert(g, 12)
+    let r3 = insert(g, 13)
+    assert(r1 != r2)
+    assert(r2 != r3)
+    // every earlier root stays known (no expiry window); unrelated values are not
+    assert(known(g, r1))
+    assert(known(g, r2))
+    assert(known(g, r3))
+    assert(root_of(g) == r3)
+    assert(!known(g, 0))
+    assert(!known(g, r3 + 1))
+}
+
+#[test]
+fn nullifier_once_per_scope() uses (evm: mut Evm) {
+    let g = deploy()
+    let n: u256 = 123456789
+    assert(
+        !evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::IsSpent { scope: 1, nullifier: n },
+        ),
+    )
+    assert(
+        evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::Spend { scope: 1, nullifier: n },
+        ),
+    )
+    assert(
+        evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::IsSpent { scope: 1, nullifier: n },
+        ),
+    )
+    // same scope again: refused
+    assert(
+        !evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::Spend { scope: 1, nullifier: n },
+        ),
+    )
+    // another scope: fresh
+    assert(
+        !evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::IsSpent { scope: 2, nullifier: n },
+        ),
+    )
+    assert(
+        evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::Spend { scope: 2, nullifier: n },
+        ),
+    )
+    // (scope, nullifier) is not interchangeable
+    assert(
+        !evm.call(
+            addr: g,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: AnonMsg::IsSpent { scope: n, nullifier: 1 },
+        ),
+    )
+}
+
+/// Gas per insert, `fe test --filter anon --show-logs`: what = size after the insert.
+#[test]
+fn lean_imt_gas_per_insert() uses (evm: mut Evm) {
+    let g = deploy()
+    insert(g, 1)
+    let g0 = evm.gas()
+    insert(g, 2)
+    let g1 = evm.gas()
+    evm.emit(GasUsed { what: 2, gas: g0 - g1 })
+    var i: u256 = 3
+    while i < 1024 {
+        insert(g, i)
+        i += 1
+    }
+    let h0 = evm.gas()
+    insert(g, 1024)
+    let h1 = evm.gas()
+    evm.emit(GasUsed { what: 1024, gas: h0 - h1 })
+}
