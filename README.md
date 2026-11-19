@@ -11,10 +11,10 @@ that turns verifying keys into Fe verifier contracts whose keys the Fe compiler 
 operations; then one Groth16 proof of 512 generations, checked by a verifier that `fe-zk-gen` generated.*
 
 Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
-Submission: release tag [`v0.1.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.1.0) (the full commit SHA is in the submission form).
+Submission: release tag [`v0.2.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.2.0) (the full commit SHA is in the submission form).
 Current version: **0.2.0** ([CHANGELOG.md](CHANGELOG.md)): one API per proof system, an anonymous-action kit (`fe_zk::anon`,
 Semaphore v4 ingot) and a Tornado Cash verifier demo.
-Demo video: [youtu.be/3lFUyRV3F7Q](https://youtu.be/3lFUyRV3F7Q) (2:44, every number and output comes from a real run).
+Demo video: [youtu.be/3lFUyRV3F7Q](https://youtu.be/3lFUyRV3F7Q) (2:57, every number and output comes from a real run).
 
 ## Try it
 
@@ -441,7 +441,7 @@ trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforc
 - **Pre-existing work:** the repository started from the contest starter at commit
   [`0646e48`](https://github.com/0xitsss/fe-zk/commit/0646e48) (Fe Builders Challenge starter: license, CI skeleton,
   `SUBMISSION.md`). Everything else, including all Fe code, the generator, vectors tooling, examples and docs, was
-  written on November 17-18, 2026.
+  written on November 17-19, 2026.
 - **Third-party code and tools** (none is copied into `src/`; fixtures are outputs of these tools):
   - circom 2.2.2, snarkjs 0.7.6, circomlib 2.0.5, circomlibjs 0.1.7: GPL-3.0. Used as test tooling only. Their output
     files are committed as fixtures; the snarkjs-generated `Verifier.sol` files under `vectors/groth16`,
