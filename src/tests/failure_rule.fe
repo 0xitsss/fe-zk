@@ -9,6 +9,8 @@
 //! starved pairing call is mapped to `false`, which would turn a revert into a "rejected" proof).
 //! The plonk and gnark low-gas and just-short tests also pass without the guard, because their
 //! strict `pairing_check` reverts on a failed call anyway; they pin the revert behaviour, not the guard.
+use ingot::ec::{G1, G2, G2Proof}
+use ingot::field::{Bn254Fr, Field}
 use ingot::verifier::{gnark, groth16, plonk}
 use super::gnark_plonk::gm_vk
 use super::gnark_plonk_fixtures::{gm_fixed, gm_pubs}
@@ -201,4 +203,19 @@ fn gnark_just_short_of_gas_reverts() uses (evm: mut Evm) {
     assert(gnark_call(w, 3000000, gm_fixed()).success())
     let used = g0 - evm.gas()
     assert(!gnark_call(w, just_short(used), gm_fixed()).success())
+}
+
+// A degenerate key (gamma at infinity) is poisoned: `verify` returns false before any gas check or
+// precompile call, and the runtime constructor refuses it.
+#[test]
+fn groth16_degenerate_key_never_verifies() uses (call: Call, ctx: Ctx) {
+    let g1 = G1::generator()
+    let g2 = G2::generator()
+    let inf2 = G2::from_coords_or_infinity(0, 0, 0, 0)
+    let vk = groth16::Vk::from_consts(g1, g2, inf2, g2, g1, [g1])
+    let proof = groth16::Proof { a: g1, b: G2Proof::from_g2(g2), c: g1 }
+    assert(!groth16::verify(vk, proof, [Bn254Fr::one()]))
+    assert(
+        groth16::Vk::from_coords(g1, g2, inf2, g2, g1, [g1]).is_none(),
+    )
 }
