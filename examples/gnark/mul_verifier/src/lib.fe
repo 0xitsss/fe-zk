@@ -4,14 +4,14 @@
 //! Key digest : 0xcf0f9cd693fedea604dfca5abedadd9033196b2b79fad993a862423f170af757
 //! (keccak256 over the canonical key encoding, see gen/README.md)
 //!
-//! The contract only forwards calldata to `gnark_plonk_verify_bytes` in fe_zk, which does all
+//! The contract only forwards calldata to `gnark::verify_calldata` in fe_zk, which does all
 //! proof checks: exact proof and input lengths, canonical public inputs and evaluations,
 //! commitments on curve and not infinity, the sha256 transcript over the key, inputs and every
 //! commitment, pairing == 1. ABI-compatible with gnark's Solidity verifier (`vk.ExportSolidity`):
 //! `Verify(bytes proof, uint256[] public_inputs) returns (bool)`, `proof` is `MarshalSolidity()` (24 words),
 //! `public_inputs` has exactly 2 entries. Any other length returns false (gnark's contract reverts).
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::verifier::{GnarkVk, gnark_domain_is_valid, gnark_plonk_verify_bytes}
+use fe_zk::gnark
 
 pub const N_PUBLIC: u256 = 2
 pub const N_COMMIT: u256 = 0
@@ -49,7 +49,7 @@ pub const X2_Y1: u256 = 15207030507740967976352749097256929091435606784526748170
 // fe-zk-gen did before emitting, and free of gas (the G2 subgroup check alone is ~750k gas at runtime).
 // gnark keys never contain a commitment at infinity, so none is accepted.
 static_assert(N_PUBLIC > 0)
-static_assert(gnark_domain_is_valid(POWER, OMEGA, COSET_SHIFT))
+static_assert(gnark::domain_is_valid(POWER, OMEGA, COSET_SHIFT))
 static_assert(N_PUBLIC <= (1 << POWER))
 static_assert(g1_is_valid(QL_X, QL_Y))
 static_assert(!VK_QL.is_infinity())
@@ -71,8 +71,8 @@ static_assert(g2_is_valid(X2_X0, X2_X1, X2_Y0, X2_Y1))
 static_assert(!VK_X2.is_infinity())
 
 // Typed key points. `from_coords_or_infinity` yields infinity for an invalid point, and
-// `GnarkVk::from_consts` poisons a key with a bad domain, a commitment at infinity or a bad
-// constraint index, which `gnark_plonk_verify` rejects, so no usable unchecked key can exist even
+// `gnark::Vk::from_consts` poisons a key with a bad domain, a commitment at infinity or a bad
+// constraint index, which `gnark::verify` rejects, so no usable unchecked key can exist even
 // if the assertions above were removed.
 const VK_QL: G1 = G1::from_coords_or_infinity(QL_X, QL_Y)
 const VK_QR: G1 = G1::from_coords_or_infinity(QR_X, QR_Y)
@@ -84,10 +84,10 @@ const VK_S2: G1 = G1::from_coords_or_infinity(S2_X, S2_Y)
 const VK_S3: G1 = G1::from_coords_or_infinity(S3_X, S3_Y)
 const VK_X2: G2 = G2::from_coords_or_infinity(X2_X0, X2_X1, X2_Y0, X2_Y1)
 
-fn vk() -> GnarkVk<2, 0> {
+fn vk() -> gnark::Vk<2, 0> {
     let qcp: [G1; 0] = []
     let cci: [u256; 0] = []
-    GnarkVk<2, 0>::from_consts(
+    gnark::Vk<2, 0>::from_consts(
         POWER,
         OMEGA,
         COSET_SHIFT,
@@ -107,8 +107,8 @@ pub msg GnarkMulVerifierMsg {
 
 pub contract GnarkMulVerifier {
     recv GnarkMulVerifierMsg {
-        Verify { proof, public_inputs } -> bool uses (call: Call) {
-            gnark_plonk_verify_bytes(vk(), proof, public_inputs)
+        Verify { proof, public_inputs } -> bool uses (call: Call, ctx: Ctx) {
+            gnark::verify_calldata(vk(), proof, public_inputs)
         }
 
         VkDigest -> u256 {

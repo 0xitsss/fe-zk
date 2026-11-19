@@ -2,12 +2,12 @@
 //! gnark's `MarshalSolidity()` proof split into the fixed 24 words, the commitment-selector
 //! openings and the BSB22 commitments, followed by the 2 public inputs.
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::verifier::gnark_plonk::{GnarkVk, gnark_domain_is_valid, gnark_plonk_verify_words}
-use std::evm::Call
+use fe_zk::gnark
+use std::evm::{Call, Ctx}
 use ingot::fx_gnark::*
 
 // Key points and domain are compile-time constants (CTFE-validated with static_assert, as in the
-// fe-zk-gen output) and the key is built with `GnarkVk::from_consts`: no on-curve, subgroup or
+// fe-zk-gen output) and the key is built with `gnark::Vk::from_consts`: no on-curve, subgroup or
 // root-of-unity check runs at call time.
 const GM_QL: G1 = G1::from_coords_or_infinity(GM_QL_X, GM_QL_Y)
 const GM_QR: G1 = G1::from_coords_or_infinity(GM_QR_X, GM_QR_Y)
@@ -28,7 +28,7 @@ static_assert(g1_is_valid(GM_S2_X, GM_S2_Y))
 static_assert(g1_is_valid(GM_S3_X, GM_S3_Y))
 static_assert(g2_is_valid(GM_X2_X0, GM_X2_X1, GM_X2_Y0, GM_X2_Y1))
 static_assert(!GM_X2.is_infinity())
-static_assert(gnark_domain_is_valid(GM_POWER, GM_W, GM_K))
+static_assert(gnark::domain_is_valid(GM_POWER, GM_W, GM_K))
 const GC_QL: G1 = G1::from_coords_or_infinity(GC_QL_X, GC_QL_Y)
 const GC_QR: G1 = G1::from_coords_or_infinity(GC_QR_X, GC_QR_Y)
 const GC_QM: G1 = G1::from_coords_or_infinity(GC_QM_X, GC_QM_Y)
@@ -50,9 +50,9 @@ static_assert(g1_is_valid(GC_S3_X, GC_S3_Y))
 static_assert(g1_is_valid(GC_QCP0_X, GC_QCP0_Y))
 static_assert(g2_is_valid(GC_X2_X0, GC_X2_X1, GC_X2_Y0, GC_X2_Y1))
 static_assert(!GC_X2.is_infinity())
-static_assert(gnark_domain_is_valid(GC_POWER, GC_W, GC_K))
+static_assert(gnark::domain_is_valid(GC_POWER, GC_W, GC_K))
 
-fn gm_vk() -> GnarkVk<2, 0> {
+fn gm_vk() -> gnark::Vk<2, 0> {
     let c = [
         GM_QL,
         GM_QR,
@@ -65,10 +65,10 @@ fn gm_vk() -> GnarkVk<2, 0> {
     ]
     let no_points: [G1; 0] = []
     let x2 = GM_X2
-    GnarkVk<2, 0>::from_consts(GM_POWER, GM_W, GM_K, c, no_points, gm_cci(), x2)
+    gnark::Vk<2, 0>::from_consts(GM_POWER, GM_W, GM_K, c, no_points, gm_cci(), x2)
 }
 
-fn gc_vk() -> GnarkVk<2, 1> {
+fn gc_vk() -> gnark::Vk<2, 1> {
     let c = [
         GC_QL,
         GC_QR,
@@ -81,7 +81,23 @@ fn gc_vk() -> GnarkVk<2, 1> {
     ]
     let q = [GC_QCP0]
     let x2 = GC_X2
-    GnarkVk<2, 1>::from_consts(GC_POWER, GC_W, GC_K, c, q, gc_cci(), x2)
+    gnark::Vk<2, 1>::from_consts(GC_POWER, GC_W, GC_K, c, q, gc_cci(), x2)
+}
+
+/// Raw words in, one bool out: `from_words` rejects non-canonical or off-curve proof data.
+fn verify_words<const NP: usize, const NC: usize>(
+    _ vk: gnark::Vk<NP, NC>,
+    _ fixed: [u256; 24],
+    _ qcp_at_zeta: [u256; NC],
+    _ bsb: [[u256; 2]; NC],
+    _ pubs: [u256; NP],
+) -> bool
+uses (call: Call, ctx: Ctx)
+{
+    match gnark::Proof<NC>::from_words(fixed, qcp_at_zeta, bsb) {
+        Option::Some(p) => gnark::verify(vk, p, pubs),
+        Option::None => false,
+    }
 }
 
 msg GnarkMulMsg {
@@ -91,9 +107,9 @@ msg GnarkMulMsg {
 
 pub contract GnarkMul {
     recv GnarkMulMsg {
-        Verify { fixed, pubs } -> bool uses (call: Call) {
+        Verify { fixed, pubs } -> bool uses (call: Call, ctx: Ctx) {
             let qe: [u256; 0] = []
-            gnark_plonk_verify_words(gm_vk(), fixed, qe, gm_bsb(), pubs)
+            verify_words(gm_vk(), fixed, qe, gm_bsb(), pubs)
         }
     }
 }
@@ -105,8 +121,8 @@ msg GnarkMulcommitMsg {
 
 pub contract GnarkMulcommit {
     recv GnarkMulcommitMsg {
-        Verify { fixed, qe, bsb, pubs } -> bool uses (call: Call) {
-            gnark_plonk_verify_words(gc_vk(), fixed, qe, bsb, pubs)
+        Verify { fixed, qe, bsb, pubs } -> bool uses (call: Call, ctx: Ctx) {
+            verify_words(gc_vk(), fixed, qe, bsb, pubs)
         }
     }
 }

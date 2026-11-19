@@ -2,8 +2,8 @@
 //! Inputs are checked canonical / on curve by the typed constructors (a bad input reverts).
 use fe_zk::ec::{G1, G2, g2_is_valid}
 use fe_zk::field::{Bn254Fr, Field}
-use fe_zk::verifier::kzg::{KzgVk, kzg_batch_verify_gwc, kzg_verify, kzg_verify_shplonk}
-use std::evm::Call
+use fe_zk::kzg
+use std::evm::{Call, Ctx}
 use ingot::fx_kzg::*
 
 // tau_g2 is a compile-time constant (CTFE-validated); the group generators come from the library.
@@ -11,8 +11,8 @@ const TAU_G2: G2 = G2::from_coords_or_infinity(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1)
 static_assert(g2_is_valid(TAU_X0, TAU_X1, TAU_Y0, TAU_Y1))
 static_assert(!TAU_G2.is_infinity())
 
-fn vk() -> KzgVk {
-    KzgVk::from_consts(G1::generator(), G2::generator(), TAU_G2)
+fn vk() -> kzg::Vk {
+    kzg::Vk::from_consts(G1::generator(), G2::generator(), TAU_G2)
 }
 
 fn fr(_ v: u256) -> Bn254Fr {
@@ -30,8 +30,8 @@ msg KzgSingleMsg {
 
 pub contract KzgSingle {
     recv KzgSingleMsg {
-        Verify { c, z, y, pi } -> bool uses (call: Call) {
-            kzg_verify(vk(), g1(c[0], c[1]), fr(z), fr(y), g1(pi[0], pi[1]))
+        Verify { c, z, y, pi } -> bool uses (call: Call, ctx: Ctx) {
+            kzg::verify(vk(), g1(c[0], c[1]), fr(z), fr(y), g1(pi[0], pi[1]))
         }
     }
 }
@@ -43,8 +43,8 @@ msg KzgGwcMsg {
 
 pub contract KzgGwc {
     recv KzgGwcMsg {
-        Verify { cs, z, ys, pi } -> bool uses (call: Call) {
-            kzg_batch_verify_gwc(
+        Verify { cs, z, ys, pi } -> bool uses (call: Call, ctx: Ctx) {
+            kzg::verify_gwc(
                 vk(),
                 [g1(cs[0][0], cs[0][1]), g1(cs[1][0], cs[1][1]), g1(cs[2][0], cs[2][1])],
                 fr(z),
@@ -62,8 +62,8 @@ msg KzgShplonkMsg {
 
 pub contract KzgShplonk {
     recv KzgShplonkMsg {
-        Verify { cs, z1, z2, evals, h, pi } -> bool uses (call: Call) {
-            kzg_verify_shplonk(
+        Verify { cs, z1, z2, evals, h, pi } -> bool uses (call: Call, ctx: Ctx) {
+            kzg::verify_shplonk(
                 vk(),
                 [g1(cs[0][0], cs[0][1]), g1(cs[1][0], cs[1][1]), g1(cs[2][0], cs[2][1])],
                 fr(z1),
