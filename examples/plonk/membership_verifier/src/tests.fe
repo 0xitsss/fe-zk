@@ -6,7 +6,7 @@
 use super::*
 use std::evm::{Address, Evm}
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::verifier::plonk_domain_is_valid
+use fe_zk::plonk
 
 const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -253,7 +253,7 @@ fn vk_constants_pass_full_checks() {
     assert(G1::from_coords(S2_X, S2_Y).is_some())
     assert(G1::from_coords(S3_X, S3_Y).is_some())
     assert(G2::from_coords(X2_X0, X2_X1, X2_Y0, X2_Y1).is_some())
-    assert(plonk_domain_is_valid(POWER, OMEGA, K1, K2))
+    assert(plonk::domain_is_valid(POWER, OMEGA, K1, K2))
 }
 
 /// What `static_assert` rejects at compile time, checked at runtime: each of these constants
@@ -269,10 +269,10 @@ fn invalid_keys_fail_the_compile_time_checks() {
     assert(!g1_is_valid(S1_X, S1_Y + 1))
     assert(!g1_is_valid(S1_X + Q, S1_Y))
     // domain: wrong power, w = 1, w not canonical, k1 = k2, k = 0, k in the domain
-    assert(!plonk_domain_is_valid(POWER + 1, OMEGA, K1, K2))
-    assert(!plonk_domain_is_valid(POWER, 1, K1, K2))
-    assert(!plonk_domain_is_valid(POWER, OMEGA + R, K1, K2))
-    assert(!plonk_domain_is_valid(POWER, OMEGA, K1, K1))
-    assert(!plonk_domain_is_valid(POWER, OMEGA, 0, K2))
-    assert(!plonk_domain_is_valid(POWER, OMEGA, 1, K2))
+    assert(!plonk::domain_is_valid(POWER + 1, OMEGA, K1, K2))
+    assert(!plonk::domain_is_valid(POWER, 1, K1, K2))
+    assert(!plonk::domain_is_valid(POWER, OMEGA + R, K1, K2))
+    assert(!plonk::domain_is_valid(POWER, OMEGA, K1, K1))
+    assert(!plonk::domain_is_valid(POWER, OMEGA, 0, K2))
+    assert(!plonk::domain_is_valid(POWER, OMEGA, 1, K2))
 }

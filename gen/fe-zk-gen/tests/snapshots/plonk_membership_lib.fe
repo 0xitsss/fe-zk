@@ -4,14 +4,14 @@
 //! Key digest : 0xa6eb817eb0ace229d3ec0aa7fac16d4627a795f56f96207b1d7a25cf2c184df7
 //! (keccak256 over the canonical key encoding, see gen/README.md)
 //!
-//! The contract only forwards calldata to `plonk_verify_words` in fe_zk, which does all
+//! The contract only forwards calldata to `plonk::verify_calldata` in fe_zk, which does all
 //! proof checks: canonical public inputs, evaluations and coordinates, commitments on curve
 //! and not infinity, Keccak transcript over the key, inputs and every commitment, pairing == 1.
 //! ABI-compatible with snarkjs' Verifier.sol: `verifyProof(uint256[24],uint256[3])`, proof words
 //! A, B, C, Z, T1, T2, T3, Wxi, Wxiw (x, y each) then eval_a, eval_b, eval_c, eval_s1, eval_s2,
 //! eval_zw, as printed by `snarkjs zkey export soliditycalldata`.
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::verifier::{PlonkVk, plonk_domain_is_valid, plonk_verify_words}
+use fe_zk::plonk
 
 pub const N_PUBLIC: u256 = 3
 pub const VK_DIGEST: u256 = 0xa6eb817eb0ace229d3ec0aa7fac16d4627a795f56f96207b1d7a25cf2c184df7
@@ -48,7 +48,7 @@ pub const X2_Y1: u256 = 15207030507740967976352749097256929091435606784526748170
 // gas: the constants are evaluated by the compiler (the G2 subgroup check alone is ~750k gas at
 // runtime). Commitments may be the point at infinity (zero selector polynomial); [x]_2 may not.
 static_assert(N_PUBLIC > 0)
-static_assert(plonk_domain_is_valid(POWER, OMEGA, K1, K2))
+static_assert(plonk::domain_is_valid(POWER, OMEGA, K1, K2))
 static_assert(g1_is_valid(QM_X, QM_Y))
 static_assert(g1_is_valid(QL_X, QL_Y))
 static_assert(g1_is_valid(QR_X, QR_Y))
@@ -61,7 +61,7 @@ static_assert(g2_is_valid(X2_X0, X2_X1, X2_Y0, X2_Y1))
 static_assert(!VK_X2.is_infinity())
 
 // Typed key points. `from_coords_or_infinity` yields infinity for an invalid point, and
-// `PlonkVk::from_consts` poisons a key with a bad domain, which `plonk_verify` rejects, so no
+// `plonk::Vk::from_consts` poisons a key with a bad domain, which `plonk::verify` rejects, so no
 // usable unchecked key can exist even if the assertions above were removed.
 const VK_QM: G1 = G1::from_coords_or_infinity(QM_X, QM_Y)
 const VK_QL: G1 = G1::from_coords_or_infinity(QL_X, QL_Y)
@@ -73,8 +73,8 @@ const VK_S2: G1 = G1::from_coords_or_infinity(S2_X, S2_Y)
 const VK_S3: G1 = G1::from_coords_or_infinity(S3_X, S3_Y)
 const VK_X2: G2 = G2::from_coords_or_infinity(X2_X0, X2_X1, X2_Y0, X2_Y1)
 
-fn vk() -> PlonkVk<3> {
-    PlonkVk<3>::from_consts(
+fn vk() -> plonk::Vk<3> {
+    plonk::Vk<3>::from_consts(
         POWER,
         OMEGA,
         K1,
@@ -93,8 +93,8 @@ pub msg FixtureVerifierMsg {
 
 pub contract FixtureVerifier {
     recv FixtureVerifierMsg {
-        VerifyProof { proof, input } -> bool uses (call: Call) {
-            plonk_verify_words(vk(), proof, input)
+        VerifyProof { proof, input } -> bool uses (call: Call, ctx: Ctx) {
+            plonk::verify_calldata(vk(), proof, input)
         }
 
         VkDigest -> u256 {

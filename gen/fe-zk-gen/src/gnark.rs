@@ -5,7 +5,7 @@
 //! (ark-bn254, independent of the emitted code) -> `gnark_key_digest` -> `emit_gnark_ingot`.
 //! The emitted contract has the ABI of gnark's own Solidity verifier,
 //! `Verify(bytes proof, uint256[] public_inputs) returns (bool)`, and forwards both dynamic
-//! arguments to `gnark_plonk_verify_bytes` in fe_zk, which rejects every length other than the
+//! arguments to `gnark::verify_calldata` in fe_zk, which rejects every length other than the
 //! key's fixed sizes (safety rule 4) and does all proof checks. The key is validated a second time
 //! by the Fe compiler (`static_assert`).
 //!
@@ -34,7 +34,7 @@ pub const GNARK_DIGEST_DOMAIN: &[u8] = b"fe-zk/gnark-plonk/bn254/vk/v1";
 pub const R_DEC: &str =
     "21888242871839275222246405745257275088548364400416034343698204186575808495617";
 
-/// Names of the eight fixed key commitments, in the order of `GnarkVk::from_consts`.
+/// Names of the eight fixed key commitments, in the order of `gnark::Vk::from_consts`.
 pub const GNARK_COMMITMENT_NAMES: [&str; 8] = ["QL", "QR", "QM", "QO", "QK", "S1", "S2", "S3"];
 
 /// Raw gnark PLONK verifying key.
@@ -378,14 +378,14 @@ pub fn emit_gnark_ingot(vk: &GnarkVk, opts: &GnarkEmitOptions) -> Result<Emitted
     l(w, &format!("//! Key digest : 0x{}", hex::encode(digest)));
     l(w, "//! (keccak256 over the canonical key encoding, see gen/README.md)");
     l(w, "//!");
-    l(w, "//! The contract only forwards calldata to `gnark_plonk_verify_bytes` in fe_zk, which does all");
+    l(w, "//! The contract only forwards calldata to `gnark::verify_calldata` in fe_zk, which does all");
     l(w, "//! proof checks: exact proof and input lengths, canonical public inputs and evaluations,");
     l(w, "//! commitments on curve and not infinity, the sha256 transcript over the key, inputs and every");
     l(w, "//! commitment, pairing == 1. ABI-compatible with gnark's Solidity verifier (`vk.ExportSolidity`):");
     l(w, &format!("//! `Verify(bytes proof, uint256[] public_inputs) returns (bool)`, `proof` is `MarshalSolidity()` ({} words),", 24 + 3 * nc));
     l(w, &format!("//! `public_inputs` has exactly {np} entries. Any other length returns false (gnark's contract reverts)."));
     l(w, "use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}");
-    l(w, "use fe_zk::verifier::{GnarkVk, gnark_domain_is_valid, gnark_plonk_verify_bytes}");
+    l(w, "use fe_zk::gnark");
     l(w, "");
     l(w, &format!("pub const N_PUBLIC: u256 = {np}"));
     l(w, &format!("pub const N_COMMIT: u256 = {nc}"));
@@ -416,7 +416,7 @@ pub fn emit_gnark_ingot(vk: &GnarkVk, opts: &GnarkEmitOptions) -> Result<Emitted
     l(w, "// fe-zk-gen did before emitting, and free of gas (the G2 subgroup check alone is ~750k gas at runtime).");
     l(w, "// gnark keys never contain a commitment at infinity, so none is accepted.");
     l(w, "static_assert(N_PUBLIC > 0)");
-    l(w, "static_assert(gnark_domain_is_valid(POWER, OMEGA, COSET_SHIFT))");
+    l(w, "static_assert(gnark::domain_is_valid(POWER, OMEGA, COSET_SHIFT))");
     l(w, "static_assert(N_PUBLIC <= (1 << POWER))");
     for nm in GNARK_COMMITMENT_NAMES {
         l(w, &format!("static_assert(g1_is_valid({nm}_X, {nm}_Y))"));
@@ -431,8 +431,8 @@ pub fn emit_gnark_ingot(vk: &GnarkVk, opts: &GnarkEmitOptions) -> Result<Emitted
     l(w, "static_assert(!VK_X2.is_infinity())");
     l(w, "");
     l(w, "// Typed key points. `from_coords_or_infinity` yields infinity for an invalid point, and");
-    l(w, "// `GnarkVk::from_consts` poisons a key with a bad domain, a commitment at infinity or a bad");
-    l(w, "// constraint index, which `gnark_plonk_verify` rejects, so no usable unchecked key can exist even");
+    l(w, "// `gnark::Vk::from_consts` poisons a key with a bad domain, a commitment at infinity or a bad");
+    l(w, "// constraint index, which `gnark::verify` rejects, so no usable unchecked key can exist even");
     l(w, "// if the assertions above were removed.");
     for nm in GNARK_COMMITMENT_NAMES {
         l(w, &format!("const VK_{nm}: G1 = G1::from_coords_or_infinity({nm}_X, {nm}_Y)"));
@@ -442,13 +442,13 @@ pub fn emit_gnark_ingot(vk: &GnarkVk, opts: &GnarkEmitOptions) -> Result<Emitted
     }
     l(w, "const VK_X2: G2 = G2::from_coords_or_infinity(X2_X0, X2_X1, X2_Y0, X2_Y1)");
     l(w, "");
-    l(w, &format!("fn vk() -> GnarkVk<{np}, {nc}> {{"));
+    l(w, &format!("fn vk() -> gnark::Vk<{np}, {nc}> {{"));
     let cs: Vec<String> = GNARK_COMMITMENT_NAMES.iter().map(|n| format!("VK_{n}")).collect();
     let qcp: Vec<String> = (0..nc).map(|j| format!("VK_QCP{j}")).collect();
     let cci: Vec<String> = (0..nc).map(|j| format!("CCI{j}")).collect();
     l(w, &format!("    let qcp: [G1; {nc}] = [{}]", qcp.join(", ")));
     l(w, &format!("    let cci: [u256; {nc}] = [{}]", cci.join(", ")));
-    l(w, &format!("    GnarkVk<{np}, {nc}>::from_consts("));
+    l(w, &format!("    gnark::Vk<{np}, {nc}>::from_consts("));
     l(w, "        POWER,");
     l(w, "        OMEGA,");
     l(w, "        COSET_SHIFT,");
@@ -468,8 +468,8 @@ pub fn emit_gnark_ingot(vk: &GnarkVk, opts: &GnarkEmitOptions) -> Result<Emitted
     l(w, "");
     l(w, &format!("pub contract {contract} {{"));
     l(w, &format!("    recv {msg} {{"));
-    l(w, "        Verify { proof, public_inputs } -> bool uses (call: Call) {");
-    l(w, "            gnark_plonk_verify_bytes(vk(), proof, public_inputs)");
+    l(w, "        Verify { proof, public_inputs } -> bool uses (call: Call, ctx: Ctx) {");
+    l(w, "            gnark::verify_calldata(vk(), proof, public_inputs)");
     l(w, "        }");
     l(w, "");
     l(w, "        VkDigest -> u256 {");
@@ -547,8 +547,8 @@ fn emit_tests(
     l(w, "use std::abi::{bytes_from_words, bytes_from_words_prefix, dyn_array_from}");
     l(w, "use std::evm::{Address, Evm}");
     l(w, "use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}");
-    l(w, "use fe_zk::verifier::{GnarkVk, gnark_domain_is_valid, gnark_plonk_verify_bytes}");
-    l(w, "use std::evm::Call");
+    l(w, "use fe_zk::gnark");
+    l(w, "use std::evm::{Call, Ctx}");
     l(w, "");
     l(w, "const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583");
     l(w, &format!("const R: u256 = {R_DEC}"));
@@ -679,7 +679,7 @@ fn emit_tests(
         l(w, &format!("    assert(N_PUBLIC + CCI{j} < (1 << POWER))"));
     }
     l(w, "    assert(G2::from_coords(X2_X0, X2_X1, X2_Y0, X2_Y1).is_some())");
-    l(w, "    assert(gnark_domain_is_valid(POWER, OMEGA, COSET_SHIFT))");
+    l(w, "    assert(gnark::domain_is_valid(POWER, OMEGA, COSET_SHIFT))");
     l(w, "}");
     l(w, "");
     l(w, "/// What `static_assert` rejects at compile time, checked at runtime: each of these constants");
@@ -695,32 +695,32 @@ fn emit_tests(
     l(w, "    assert(!g1_is_valid(S1_X, S1_Y + 1))");
     l(w, "    assert(!g1_is_valid(S1_X + Q, S1_Y))");
     l(w, "    // domain: wrong power, w = 1, w not canonical, k = 0, k in the domain, k^2 in the domain");
-    l(w, "    assert(!gnark_domain_is_valid(POWER + 1, OMEGA, COSET_SHIFT))");
-    l(w, "    assert(!gnark_domain_is_valid(0, OMEGA, COSET_SHIFT))");
-    l(w, "    assert(!gnark_domain_is_valid(POWER, 1, COSET_SHIFT))");
-    l(w, "    assert(!gnark_domain_is_valid(POWER, OMEGA + R, COSET_SHIFT))");
-    l(w, "    assert(!gnark_domain_is_valid(POWER, OMEGA, 0))");
-    l(w, "    assert(!gnark_domain_is_valid(POWER, OMEGA, 1))");
+    l(w, "    assert(!gnark::domain_is_valid(POWER + 1, OMEGA, COSET_SHIFT))");
+    l(w, "    assert(!gnark::domain_is_valid(0, OMEGA, COSET_SHIFT))");
+    l(w, "    assert(!gnark::domain_is_valid(POWER, 1, COSET_SHIFT))");
+    l(w, "    assert(!gnark::domain_is_valid(POWER, OMEGA + R, COSET_SHIFT))");
+    l(w, "    assert(!gnark::domain_is_valid(POWER, OMEGA, 0))");
+    l(w, "    assert(!gnark::domain_is_valid(POWER, OMEGA, 1))");
     l(w, "}");
     l(w, "");
-    l(w, "/// A key that fails the library checks is poisoned by `GnarkVk::from_consts`: it verifies nothing,");
+    l(w, "/// A key that fails the library checks is poisoned by `gnark::Vk::from_consts`: it verifies nothing,");
     l(w, "/// not even the valid proof, even if the compile-time assertions were removed.");
-    l(w, "fn key_with(_ omega: u256, _ cci0: u256) -> GnarkVk<%NP%, %NC%> {");
+    l(w, "fn key_with(_ omega: u256, _ cci0: u256) -> gnark::Vk<%NP%, %NC%> {");
     l(w, "    let qcp: [G1; %NC%] = [%QCP%]");
     l(w, "    let cci: [u256; %NC%] = [%CCI%]");
-    l(w, "    GnarkVk<%NP%, %NC%>::from_consts(POWER, omega, COSET_SHIFT, [%CS%], qcp, cci, VK_X2)");
+    l(w, "    gnark::Vk<%NP%, %NC%>::from_consts(POWER, omega, COSET_SHIFT, [%CS%], qcp, cci, VK_X2)");
     l(w, "}");
     l(w, "");
     l(w, "#[test]");
-    l(w, "fn poisoned_keys_reject_every_proof() uses (call: Call) {");
+    l(w, "fn poisoned_keys_reject_every_proof() uses (call: Call, ctx: Ctx) {");
     l(w, "    let ok = key_with(OMEGA, %CCI0%)");
-    l(w, "    assert(gnark_plonk_verify_bytes(ok, bytes_from_words(proof_words()), dyn_array_from(inputs())))");
+    l(w, "    assert(gnark::verify_calldata(ok, bytes_from_words(proof_words()), dyn_array_from(inputs())))");
     l(w, "    let bad_domain = key_with(1, %CCI0%)");
-    l(w, "    assert(!gnark_plonk_verify_bytes(bad_domain, bytes_from_words(proof_words()), dyn_array_from(inputs())))");
+    l(w, "    assert(!gnark::verify_calldata(bad_domain, bytes_from_words(proof_words()), dyn_array_from(inputs())))");
     if nc > 0 {
         l(w, "    // constraint index outside the domain");
         l(w, "    let bad_index = key_with(OMEGA, 1 << POWER)");
-        l(w, "    assert(!gnark_plonk_verify_bytes(bad_index, bytes_from_words(proof_words()), dyn_array_from(inputs())))");
+        l(w, "    assert(!gnark::verify_calldata(bad_index, bytes_from_words(proof_words()), dyn_array_from(inputs())))");
     }
     l(w, "}");
     let cs: Vec<String> = GNARK_COMMITMENT_NAMES.iter().map(|n| format!("VK_{n}")).collect();

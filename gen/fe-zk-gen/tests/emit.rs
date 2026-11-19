@@ -3,7 +3,7 @@
 //! Run the slow ones with `cargo test -- --ignored`.
 
 use fe_zk_gen::{
-    emit_fe, emit_ingot, key_digest, parse_arkworks, parse_arkworks_proof, parse_public,
+    emit_fe, emit_groth16_lib_module, emit_ingot, key_digest, parse_arkworks, parse_arkworks_proof, parse_public,
     parse_snarkjs, parse_snarkjs_proof, EmitOptions, Groth16Vk, TestFixture, G1, G2,
 };
 use std::path::PathBuf;
@@ -74,7 +74,7 @@ fn emission_is_deterministic_and_carries_digest() {
         // all logic is forwarded to the library
         assert!(a
             .lib_fe
-            .contains("groth16_verify_raw(vk(), a, b_real_first, c, input)"));
+            .contains("groth16::verify_calldata(vk(), a, b_real_first, c, input)"));
         assert!(a.fe_toml.contains("allow_unsafe = true"));
     }
 }
@@ -93,6 +93,32 @@ fn selector_signature_matches_snarkjs_solidity_verifier() {
             "sol(\"verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[{k}])\")"
         )));
     }
+}
+
+#[test]
+fn groth16_lib_module_emits_vk_fn() {
+    for (n, k) in [("multiplier", 1usize), ("membership", 3)] {
+        let (vk, _) = load(n);
+        let m = emit_groth16_lib_module(&vk, "my_vk", "verification_key.json").unwrap();
+        assert!(m.contains(&format!("pub fn vk() -> groth16::Vk<{k}>")), "{n}");
+        assert!(m.contains("groth16::Vk::from_consts("), "{n}");
+        assert!(m.contains("use fe_zk::groth16"), "{n}");
+        // one compile-time subgroup check per G2 point (beta, gamma, delta)
+        assert_eq!(m.matches("static_assert(g2_is_valid(").count(), 3, "{n}");
+        assert!(m.contains("static_assert(g1_is_valid(ALPHA_X, ALPHA_Y))"), "{n}");
+        assert!(m.contains("pub const VK_DIGEST: u256 = 0x"), "{n}");
+        assert!(m.contains("Module `my_vk`"), "{n}");
+        // a module, not a contract
+        assert!(!m.contains("contract"), "{n}");
+        assert!(!m.contains("recv "), "{n}");
+        assert!(!m.contains("#[selector"), "{n}");
+    }
+    // the key is validated first and the name must be an identifier
+    let (good, _) = load("multiplier");
+    let mut bad = good.clone();
+    bad.gamma_g2 = G2::identity();
+    assert!(emit_groth16_lib_module(&bad, "my_vk", "k.json").is_err());
+    assert!(emit_groth16_lib_module(&good, "Bad Name", "k.json").is_err());
 }
 
 #[test]

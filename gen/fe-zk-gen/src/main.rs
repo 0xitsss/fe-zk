@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fe_zk_gen::{
-    emit_gnark_ingot, gnark_key_digest, parse_gnark_proof_words, parse_gnark_public, parse_gnark_vk,
+    emit_gnark_ingot, emit_groth16_lib_module, gnark_key_digest, parse_gnark_proof_words, parse_gnark_public, parse_gnark_vk,
     GnarkEmitOptions, GnarkFixture,
     emit_halo2_ingot, emit_halo2_module, emit_ingot, emit_plonk_ingot, halo2_key_digest,
     key_digest, parse_arkworks, parse_arkworks_proof, parse_halo2_proof, parse_halo2_vk,
@@ -292,8 +292,15 @@ struct Groth16Args {
     #[arg(long, default_value = "Groth16")]
     name: String,
     /// Output directory for the Fe ingot; without it the key is only validated
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", conflicts_with = "lib_module")]
     out: Option<String>,
+    /// Write only a Fe module (no contract, no tests): `pub const` key words, `static_assert`s
+    /// and `pub fn vk() -> groth16::Vk<N>`, for use from an ingot that depends on fe_zk
+    #[arg(long, value_name = "FILE", conflicts_with = "out")]
+    lib_module: Option<String>,
+    /// Module name recorded in the header of the `--lib-module` file (lowercase identifier)
+    #[arg(long, value_name = "IDENT", default_value = "vk", requires = "lib_module")]
+    module_name: String,
     /// Path to the fe_zk ingot as written into fe.toml (relative to the output dir)
     #[arg(long, value_name = "PATH", default_value = "../..")]
     fe_zk_path: String,
@@ -439,6 +446,25 @@ fn main() -> ExitCode {
     println!("  public inputs : {}", vk.n_public);
     println!("  IC points     : {}", vk.ic.len());
     println!("  key digest    : 0x{}", hex::encode(digest));
+    if let Some(path) = &args.lib_module {
+        let file_name = Path::new(&src_path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or(src_path.clone());
+        let text = match emit_groth16_lib_module(&vk, &args.module_name, &file_name) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!("error: {path}: {e}");
+            return ExitCode::from(2);
+        }
+        println!("  emitted       : {path} (library module {})", args.module_name);
+        return ExitCode::SUCCESS;
+    }
     let Some(out) = &args.out else {
         return ExitCode::SUCCESS;
     };

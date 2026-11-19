@@ -10,12 +10,12 @@
 //! 4 (proof and instance lengths are array types),
 //! 5 (transcript absorbs the vk transcript_repr, the instances and every commitment and
 //! evaluation in reference order), 6 (precompile wrappers check success, length, result).
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use fe_zk::ec::{G1, G2, g1_is_valid, g1_mul, g2_is_valid}
 use fe_zk::field::{Bn254Fr, Field}
 use fe_zk::verifier::halo2::common::{
     Halo2Transcript,
-    Halo2Vk,
+    Vk,
     batch_inv,
     final_pairing,
     fr,
@@ -123,8 +123,8 @@ const VK_SG2: G1 = G1::from_coords_or_infinity(SG2_X, SG2_Y)
 const VK_SG3: G1 = G1::from_coords_or_infinity(SG3_X, SG3_Y)
 
 /// SRS and transcript constants (compile-time validated, no gas for validation).
-pub fn vk() -> Halo2Vk {
-    Halo2Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)
+pub fn vk() -> Vk {
+    Vk::from_consts(fr(TRANSCRIPT_REPR), SRS_G1, SRS_G2, SRS_S_G2)
 }
 
 /// Everything the opening step needs, after the evaluation at `x` has been derived.
@@ -145,12 +145,12 @@ pub struct Phase1 {
 /// Reads and validates the common part of the proof, derives theta, beta, gamma, y, x and the
 /// value `expected_h` of the quotient polynomial at `x` (SPEC sections 2-6). `None` = reject.
 pub fn phase1<const L: usize>(
-    _ vk: Halo2Vk,
+    _ vk: Vk,
     _ proof: [u256; L],
     _ instances: [u256; 1],
     _ tr: mut Halo2Transcript,
 ) -> Option<Phase1>
-uses (call: Call)
+uses (call: Call, ctx: Ctx)
 {
     assert(L >= COMMON_WORDS)
     tr.absorb(vk.transcript_repr().to_canonical())
@@ -430,8 +430,8 @@ pub fn shplonk_open<const L: usize>(_ proof: [u256; L], _ tr: mut Halo2Transcrip
 ///   S1 = {0}: adv1, adv2, lpt0, fx0, fx1, fx2, fx3, fx4, fx6, fx5, fx7, sgc0, sgc1, sgc2, sgc3, hc, rnd
 ///   S2 = {0, 1, -6}: zc0
 ///   S3 = {0, -1}: lpi0
-pub fn shplonk_check(_ vk: Halo2Vk, _ p1: Phase1, _ o: ShplonkOpen) -> bool
-uses (call: Call)
+pub fn shplonk_check(_ vk: Vk, _ p1: Phase1, _ o: ShplonkOpen) -> bool
+uses (call: Call, ctx: Ctx)
 {
     let adv0 = p1.pts[0]
     let adv1 = p1.pts[1]
@@ -690,8 +690,8 @@ uses (call: Call)
 
 /// Verifies a SHPLONK proof (`SHPLONK_PROOF_WORDS` big-endian words) for `instances`.
 /// Returns false for every rejected input (non-canonical, off curve, wrong proof).
-pub fn verify_shplonk(_ vk: Halo2Vk, _ proof: [u256; 57], _ instances: [u256; 1]) -> bool
-uses (call: Call)
+pub fn verify_shplonk(_ vk: Vk, _ proof: [u256; 57], _ instances: [u256; 1]) -> bool
+uses (call: Call, ctx: Ctx)
 {
     var tr = Halo2Transcript::new()
     let p1 = match phase1(vk, proof, instances, mut tr) {
@@ -751,8 +751,8 @@ pub fn gwc_open<const L: usize>(_ proof: [u256; L], _ tr: mut Halo2Transcript) -
 }
 
 /// SPEC 8 final check. Point groups (rotation of `x`): G0 = 0 (22 queries), G1 = 1 (4 queries), G2 = -6 (1 queries), G3 = -1 (1 queries).
-pub fn gwc_check(_ vk: Halo2Vk, _ p1: Phase1, _ o: GwcOpen) -> bool
-uses (call: Call)
+pub fn gwc_check(_ vk: Vk, _ p1: Phase1, _ o: GwcOpen) -> bool
+uses (call: Call, ctx: Ctx)
 {
     let adv0 = p1.pts[0]
     let adv1 = p1.pts[1]
@@ -947,8 +947,8 @@ uses (call: Call)
 }
 
 /// Verifies a GWC proof (`GWC_PROOF_WORDS` big-endian words) for `instances`.
-pub fn verify_gwc(_ vk: Halo2Vk, _ proof: [u256; 61], _ instances: [u256; 1]) -> bool
-uses (call: Call)
+pub fn verify_gwc(_ vk: Vk, _ proof: [u256; 61], _ instances: [u256; 1]) -> bool
+uses (call: Call, ctx: Ctx)
 {
     var tr = Halo2Transcript::new()
     let p1 = match phase1(vk, proof, instances, mut tr) {
@@ -980,7 +980,7 @@ pub msg Halo2CircuitShplonkVerifierMsg {
 pub contract Halo2CircuitShplonkVerifier {
     recv Halo2CircuitShplonkVerifierMsg {
         VerifyShplonk { proof, instances } -> bool
-        uses (call: Call)
+        uses (call: Call, ctx: Ctx)
         {
             verify_shplonk(vk(), proof, instances)
         }
@@ -1000,7 +1000,7 @@ pub msg Halo2CircuitGwcVerifierMsg {
 
 pub contract Halo2CircuitGwcVerifier {
     recv Halo2CircuitGwcVerifierMsg {
-        VerifyGwc { proof, instances } -> bool uses (call: Call) {
+        VerifyGwc { proof, instances } -> bool uses (call: Call, ctx: Ctx) {
             verify_gwc(vk(), proof, instances)
         }
 

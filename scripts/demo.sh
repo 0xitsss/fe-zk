@@ -9,6 +9,7 @@
 #      vectors/halo2/standard_plonk_lookup and tested
 #   5b. real-world Semaphore v4 key (public ceremony) emitted from vectors/groth16/real_semaphore_d10 and tested
 #   5c. gnark PLONK verifier (ABI of gnark's Solidity verifier) emitted from vectors/gnark/mul and tested
+#   5d. quickstart and Life verifier ingots emitted (built and size-checked in step 6)
 #   6. code size table: every generated verifier and example contract must fit EIP-170 (24,576 bytes)
 # Needs: `fe` (26.5.0) and a Rust toolchain on PATH. Set FE=/path/to/fe to override the binary.
 set -euo pipefail
@@ -58,6 +59,20 @@ GN=vectors/gnark/mul/fixture.json
     --vk "../$GN" --proof "../$GN" --public "../$GN" \
     --name GnarkMul --out ../examples/gnark/mul_verifier --fe-zk-path ../../..)
 (cd examples/gnark/mul_verifier && "$FE" fmt >/dev/null && "$FE" test)
+
+echo "== 5d. verifier ingots of the quickstart and the Life demo (emitted, built by step 6)"
+Q=vectors/groth16/multiplier2
+(cd gen && cargo run -q -p fe-zk-gen -- groth16 \
+    --snarkjs "../$Q/verification_key.json" \
+    --proof "../$Q/proof.json" --public "../$Q/public.json" \
+    --name Multiplier2 --out ../examples/quickstart/verifier --fe-zk-path ../../..)
+(cd examples/quickstart/verifier && "$FE" fmt >/dev/null)
+L=vectors/groth16/life_512
+(cd gen && cargo run -q -p fe-zk-gen -- groth16 \
+    --snarkjs "../$L/verification_key.json" \
+    --proof "../$L/proof.json" --public "../$L/public.json" \
+    --name Life512 --out ../examples/life/verifier --fe-zk-path ../../..)
+(cd examples/life/verifier && "$FE" fmt >/dev/null)
 
 echo "== 6. deployed code size (EIP-170 limit 24,576 bytes; fails if any contract is over)"
 scripts/code-size.sh examples/membership/verifier examples/membership \

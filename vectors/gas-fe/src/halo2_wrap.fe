@@ -1,13 +1,13 @@
 //! halo2-KZG verifier wrappers (standard_plonk_lookup circuit). Calldata: the instance word(s)
 //! followed by the raw proof words, the same layout as snark-verifier's Solidity verifier.
 use fe_zk::ec::{G2, g2_is_valid}
-use fe_zk::verifier::halo2::common::{Halo2Vk, fr, g1_const}
+use fe_zk::verifier::halo2::common::{Vk, fr, g1_const}
 use fe_zk::verifier::halo2::standard_plonk_lookup::{TRANSCRIPT_REPR, verify_gwc, verify_shplonk}
-use std::evm::Call
+use std::evm::{Call, Ctx}
 use ingot::fx_halo2::*
 
 // The SRS points are compile-time constants (CTFE-validated), as in a generated verifier and in the
-// library's own `vk()` (`Halo2Vk::from_consts`). The constants are the ones in `vk()` (copied by
+// library's own `vk()` (`Vk::from_consts`). The constants are the ones in `vk()` (copied by
 // scripts/gas-table.sh).
 const G2_PT: G2 = G2::from_coords_or_infinity(H_G2_X0, H_G2_X1, H_G2_Y0, H_G2_Y1)
 const S_G2_PT: G2 = G2::from_coords_or_infinity(H_S_X0, H_S_X1, H_S_Y0, H_S_Y1)
@@ -16,16 +16,16 @@ static_assert(g2_is_valid(H_S_X0, H_S_X1, H_S_Y0, H_S_Y1))
 static_assert(!G2_PT.is_infinity())
 static_assert(!S_G2_PT.is_infinity())
 
-fn vk() -> Halo2Vk {
-    Halo2Vk::from_consts(fr(TRANSCRIPT_REPR), g1_const(1, 2), G2_PT, S_G2_PT)
+fn vk() -> Vk {
+    Vk::from_consts(fr(TRANSCRIPT_REPR), g1_const(1, 2), G2_PT, S_G2_PT)
 }
 
 /// Runtime-validated key: both G2 points are built with `G2::from_coords` (on-curve and subgroup
 /// check at every call). Only for the `Halo2ShplonkRuntimeVk` comparison row.
-fn runtime_vk() -> Halo2Vk {
+fn runtime_vk() -> Vk {
     let g2 = G2::from_coords(H_G2_X0, H_G2_X1, H_G2_Y0, H_G2_Y1).unwrap()
     let s_g2 = G2::from_coords(H_S_X0, H_S_X1, H_S_Y0, H_S_Y1).unwrap()
-    Halo2Vk::new(fr(TRANSCRIPT_REPR), g1_const(1, 2), g2, s_g2).unwrap()
+    Vk::from_coords(fr(TRANSCRIPT_REPR), g1_const(1, 2), g2, s_g2).unwrap()
 }
 
 msg Halo2ShplonkMsg {
@@ -35,7 +35,7 @@ msg Halo2ShplonkMsg {
 
 pub contract Halo2Shplonk {
     recv Halo2ShplonkMsg {
-        Verify { instances, proof } -> bool uses (call: Call) {
+        Verify { instances, proof } -> bool uses (call: Call, ctx: Ctx) {
             verify_shplonk(vk(), proof, instances)
         }
     }
@@ -48,7 +48,7 @@ msg Halo2GwcMsg {
 
 pub contract Halo2Gwc {
     recv Halo2GwcMsg {
-        Verify { instances, proof } -> bool uses (call: Call) {
+        Verify { instances, proof } -> bool uses (call: Call, ctx: Ctx) {
             verify_gwc(vk(), proof, instances)
         }
     }
@@ -62,7 +62,7 @@ msg Halo2ShplonkRuntimeVkMsg {
 /// Same as `Halo2Shplonk` but the key is validated at runtime (`G2::from_coords` x2).
 pub contract Halo2ShplonkRuntimeVk {
     recv Halo2ShplonkRuntimeVkMsg {
-        Verify { instances, proof } -> bool uses (call: Call) {
+        Verify { instances, proof } -> bool uses (call: Call, ctx: Ctx) {
             verify_shplonk(runtime_vk(), proof, instances)
         }
     }

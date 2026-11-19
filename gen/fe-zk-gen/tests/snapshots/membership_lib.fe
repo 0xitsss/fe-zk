@@ -4,13 +4,13 @@
 //! Key digest : 0xc632f3eaa6f38f2318942edcca44d8153b08eacf8d5d9a8716049060c4274097
 //! (keccak256 over the canonical key encoding, see gen/README.md)
 //!
-//! The contract only forwards calldata to `groth16_verify_raw` in fe_zk, which does all
+//! The contract only forwards calldata to `groth16::verify_calldata` in fe_zk, which does all
 //! checks: canonical inputs and coordinates, A/B/C on curve, pairing result == 1.
 //! ABI-compatible with snarkjs' Verifier.sol: `b` is in EVM order, i.e. each Fq2 element
 //! is `[imaginary, real]` = `[c1, c0]`, exactly what `snarkjs zkey export soliditycalldata`
 //! prints. Groth16 proofs are malleable: never use a proof or its hash as a nullifier.
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::verifier::{Groth16Vk, groth16_verify_raw}
+use fe_zk::groth16
 
 pub const N_PUBLIC: u256 = 3
 pub const VK_DIGEST: u256 = 0xc632f3eaa6f38f2318942edcca44d8153b08eacf8d5d9a8716049060c4274097
@@ -68,15 +68,8 @@ const VK_IC1: G1 = G1::from_coords_or_infinity(IC1_X, IC1_Y)
 const VK_IC2: G1 = G1::from_coords_or_infinity(IC2_X, IC2_Y)
 const VK_IC3: G1 = G1::from_coords_or_infinity(IC3_X, IC3_Y)
 
-fn vk() -> Groth16Vk<3> {
-    Groth16Vk {
-        alpha: VK_ALPHA,
-        beta: VK_BETA,
-        gamma: VK_GAMMA,
-        delta: VK_DELTA,
-        ic0: VK_IC0,
-        ic: [VK_IC1, VK_IC2, VK_IC3],
-    }
+pub fn vk() -> groth16::Vk<3> {
+    groth16::Vk::from_consts(VK_ALPHA, VK_BETA, VK_GAMMA, VK_DELTA, VK_IC0, [VK_IC1, VK_IC2, VK_IC3])
 }
 
 pub msg FixtureVerifierMsg {
@@ -88,10 +81,10 @@ pub msg FixtureVerifierMsg {
 
 pub contract FixtureVerifier {
     recv FixtureVerifierMsg {
-        VerifyProof { a, b, c, input } -> bool uses (call: Call) {
+        VerifyProof { a, b, c, input } -> bool uses (call: Call, ctx: Ctx) {
             // calldata b = [[x_imag, x_real], [y_imag, y_real]]; the library wants real first
             let b_real_first: [[u256; 2]; 2] = [[b[0][1], b[0][0]], [b[1][1], b[1][0]]]
-            groth16_verify_raw(vk(), a, b_real_first, c, input)
+            groth16::verify_calldata(vk(), a, b_real_first, c, input)
         }
 
         VkDigest -> u256 {

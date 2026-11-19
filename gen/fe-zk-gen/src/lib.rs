@@ -14,7 +14,7 @@ pub mod plonk;
 pub mod validate;
 
 pub use digest::{key_digest, DIGEST_DOMAIN};
-pub use emit::{emit_fe, emit_ingot, EmitOptions, EmittedIngot, TestFixture};
+pub use emit::{emit_fe, emit_groth16_lib_module, emit_ingot, EmitOptions, EmittedIngot, TestFixture};
 pub use gnark::{
     emit_gnark_fe, emit_gnark_ingot, gnark_key_digest, parse_gnark_proof_words, parse_gnark_public,
     parse_gnark_vk, GnarkEmitOptions, GnarkFixture, GnarkVk,

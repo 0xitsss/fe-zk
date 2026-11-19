@@ -7,8 +7,8 @@ use super::*
 use std::abi::{bytes_from_words, bytes_from_words_prefix, dyn_array_from}
 use std::evm::{Address, Evm}
 use fe_zk::ec::{G1, G2, g1_is_valid, g2_is_valid}
-use fe_zk::verifier::{GnarkVk, gnark_domain_is_valid, gnark_plonk_verify_bytes}
-use std::evm::Call
+use fe_zk::gnark
+use std::evm::{Call, Ctx}
 
 const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 const R: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -307,7 +307,7 @@ fn vk_constants_pass_full_checks() {
     assert(G1::from_coords(QCP0_X, QCP0_Y).is_some())
     assert(N_PUBLIC + CCI0 < (1 << POWER))
     assert(G2::from_coords(X2_X0, X2_X1, X2_Y0, X2_Y1).is_some())
-    assert(gnark_domain_is_valid(POWER, OMEGA, COSET_SHIFT))
+    assert(gnark::domain_is_valid(POWER, OMEGA, COSET_SHIFT))
 }
 
 /// What `static_assert` rejects at compile time, checked at runtime: each of these constants
@@ -323,29 +323,29 @@ fn invalid_keys_fail_the_compile_time_checks() {
     assert(!g1_is_valid(S1_X, S1_Y + 1))
     assert(!g1_is_valid(S1_X + Q, S1_Y))
     // domain: wrong power, w = 1, w not canonical, k = 0, k in the domain, k^2 in the domain
-    assert(!gnark_domain_is_valid(POWER + 1, OMEGA, COSET_SHIFT))
-    assert(!gnark_domain_is_valid(0, OMEGA, COSET_SHIFT))
-    assert(!gnark_domain_is_valid(POWER, 1, COSET_SHIFT))
-    assert(!gnark_domain_is_valid(POWER, OMEGA + R, COSET_SHIFT))
-    assert(!gnark_domain_is_valid(POWER, OMEGA, 0))
-    assert(!gnark_domain_is_valid(POWER, OMEGA, 1))
+    assert(!gnark::domain_is_valid(POWER + 1, OMEGA, COSET_SHIFT))
+    assert(!gnark::domain_is_valid(0, OMEGA, COSET_SHIFT))
+    assert(!gnark::domain_is_valid(POWER, 1, COSET_SHIFT))
+    assert(!gnark::domain_is_valid(POWER, OMEGA + R, COSET_SHIFT))
+    assert(!gnark::domain_is_valid(POWER, OMEGA, 0))
+    assert(!gnark::domain_is_valid(POWER, OMEGA, 1))
 }
 
-/// A key that fails the library checks is poisoned by `GnarkVk::from_consts`: it verifies nothing,
+/// A key that fails the library checks is poisoned by `gnark::Vk::from_consts`: it verifies nothing,
 /// not even the valid proof, even if the compile-time assertions were removed.
-fn key_with(_ omega: u256, _ cci0: u256) -> GnarkVk<2, 1> {
+fn key_with(_ omega: u256, _ cci0: u256) -> gnark::Vk<2, 1> {
     let qcp: [G1; 1] = [VK_QCP0]
     let cci: [u256; 1] = [cci0]
-    GnarkVk<2, 1>::from_consts(POWER, omega, COSET_SHIFT, [VK_QL, VK_QR, VK_QM, VK_QO, VK_QK, VK_S1, VK_S2, VK_S3], qcp, cci, VK_X2)
+    gnark::Vk<2, 1>::from_consts(POWER, omega, COSET_SHIFT, [VK_QL, VK_QR, VK_QM, VK_QO, VK_QK, VK_S1, VK_S2, VK_S3], qcp, cci, VK_X2)
 }
 
 #[test]
-fn poisoned_keys_reject_every_proof() uses (call: Call) {
+fn poisoned_keys_reject_every_proof() uses (call: Call, ctx: Ctx) {
     let ok = key_with(OMEGA, CCI0)
-    assert(gnark_plonk_verify_bytes(ok, bytes_from_words(proof_words()), dyn_array_from(inputs())))
+    assert(gnark::verify_calldata(ok, bytes_from_words(proof_words()), dyn_array_from(inputs())))
     let bad_domain = key_with(1, CCI0)
-    assert(!gnark_plonk_verify_bytes(bad_domain, bytes_from_words(proof_words()), dyn_array_from(inputs())))
+    assert(!gnark::verify_calldata(bad_domain, bytes_from_words(proof_words()), dyn_array_from(inputs())))
     // constraint index outside the domain
     let bad_index = key_with(OMEGA, 1 << POWER)
-    assert(!gnark_plonk_verify_bytes(bad_index, bytes_from_words(proof_words()), dyn_array_from(inputs())))
+    assert(!gnark::verify_calldata(bad_index, bytes_from_words(proof_words()), dyn_array_from(inputs())))
 }

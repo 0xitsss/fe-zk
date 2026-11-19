@@ -2,7 +2,7 @@
 //!
 //! Same pipeline as Groth16: `parse_plonk_snarkjs` (raw, untrusted) -> `PlonkVk::validate`
 //! (ark-bn254, independent of the emitted code) -> `plonk_key_digest` -> `emit_plonk_ingot`.
-//! The emitted contract only forwards calldata to `plonk_verify_words` in fe_zk; every check on
+//! The emitted contract only forwards calldata to `plonk::verify_calldata` in fe_zk; every check on
 //! proofs lives in the library, and the key is validated a second time by the Fe compiler
 //! (`static_assert`).
 
@@ -278,7 +278,7 @@ pub fn emit_plonk_ingot(vk: &PlonkVk, opts: &PlonkEmitOptions) -> Result<Emitted
     writeln!(w, "//!").unwrap();
     writeln!(
         w,
-        "//! The contract only forwards calldata to `plonk_verify_words` in fe_zk, which does all"
+        "//! The contract only forwards calldata to `plonk::verify_calldata` in fe_zk, which does all"
     )
     .unwrap();
     writeln!(w, "//! proof checks: canonical public inputs, evaluations and coordinates, commitments on curve").unwrap();
@@ -293,7 +293,7 @@ pub fn emit_plonk_ingot(vk: &PlonkVk, opts: &PlonkEmitOptions) -> Result<Emitted
     writeln!(w, "use fe_zk::ec::{{G1, G2, g1_is_valid, g2_is_valid}}").unwrap();
     writeln!(
         w,
-        "use fe_zk::verifier::{{PlonkVk, plonk_domain_is_valid, plonk_verify_words}}"
+        "use fe_zk::plonk"
     )
     .unwrap();
     writeln!(w).unwrap();
@@ -322,7 +322,7 @@ pub fn emit_plonk_ingot(vk: &PlonkVk, opts: &PlonkEmitOptions) -> Result<Emitted
     writeln!(w, "static_assert(N_PUBLIC > 0)").unwrap();
     writeln!(
         w,
-        "static_assert(plonk_domain_is_valid(POWER, OMEGA, K1, K2))"
+        "static_assert(plonk::domain_is_valid(POWER, OMEGA, K1, K2))"
     )
     .unwrap();
     for nm in COMMITMENT_NAMES {
@@ -336,7 +336,7 @@ pub fn emit_plonk_ingot(vk: &PlonkVk, opts: &PlonkEmitOptions) -> Result<Emitted
         "// Typed key points. `from_coords_or_infinity` yields infinity for an invalid point, and"
     )
     .unwrap();
-    writeln!(w, "// `PlonkVk::from_consts` poisons a key with a bad domain, which `plonk_verify` rejects, so no").unwrap();
+    writeln!(w, "// `plonk::Vk::from_consts` poisons a key with a bad domain, which `plonk::verify` rejects, so no").unwrap();
     writeln!(
         w,
         "// usable unchecked key can exist even if the assertions above were removed."
@@ -355,8 +355,8 @@ pub fn emit_plonk_ingot(vk: &PlonkVk, opts: &PlonkEmitOptions) -> Result<Emitted
     )
     .unwrap();
     writeln!(w).unwrap();
-    writeln!(w, "fn vk() -> PlonkVk<{n}> {{").unwrap();
-    writeln!(w, "    PlonkVk<{n}>::from_consts(").unwrap();
+    writeln!(w, "fn vk() -> plonk::Vk<{n}> {{").unwrap();
+    writeln!(w, "    plonk::Vk<{n}>::from_consts(").unwrap();
     writeln!(w, "        POWER,").unwrap();
     writeln!(w, "        OMEGA,").unwrap();
     writeln!(w, "        K1,").unwrap();
@@ -383,10 +383,10 @@ pub fn emit_plonk_ingot(vk: &PlonkVk, opts: &PlonkEmitOptions) -> Result<Emitted
     writeln!(w, "    recv {msg} {{").unwrap();
     writeln!(
         w,
-        "        VerifyProof {{ proof, input }} -> bool uses (call: Call) {{"
+        "        VerifyProof {{ proof, input }} -> bool uses (call: Call, ctx: Ctx) {{"
     )
     .unwrap();
-    writeln!(w, "            plonk_verify_words(vk(), proof, input)").unwrap();
+    writeln!(w, "            plonk::verify_calldata(vk(), proof, input)").unwrap();
     writeln!(w, "        }}").unwrap();
     writeln!(w).unwrap();
     writeln!(w, "        VkDigest -> u256 {{").unwrap();
@@ -451,7 +451,7 @@ fn emit_tests(
     writeln!(w, "use super::*").unwrap();
     writeln!(w, "use std::evm::{{Address, Evm}}").unwrap();
     writeln!(w, "use fe_zk::ec::{{G1, G2, g1_is_valid, g2_is_valid}}").unwrap();
-    writeln!(w, "use fe_zk::verifier::plonk_domain_is_valid").unwrap();
+    writeln!(w, "use fe_zk::plonk").unwrap();
     writeln!(w).unwrap();
     writeln!(w, "const Q: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583").unwrap();
     writeln!(w, "const R: u256 = {R_DEC}").unwrap();
@@ -562,7 +562,7 @@ fn emit_tests(
         "    assert(G2::from_coords(X2_X0, X2_X1, X2_Y0, X2_Y1).is_some())"
     )
     .unwrap();
-    writeln!(w, "    assert(plonk_domain_is_valid(POWER, OMEGA, K1, K2))").unwrap();
+    writeln!(w, "    assert(plonk::domain_is_valid(POWER, OMEGA, K1, K2))").unwrap();
     writeln!(w, "}}").unwrap();
     writeln!(w).unwrap();
     writeln!(w, "/// What `static_assert` rejects at compile time, checked at runtime: each of these constants").unwrap();
@@ -600,22 +600,22 @@ fn emit_tests(
     .unwrap();
     writeln!(
         w,
-        "    assert(!plonk_domain_is_valid(POWER + 1, OMEGA, K1, K2))"
+        "    assert(!plonk::domain_is_valid(POWER + 1, OMEGA, K1, K2))"
     )
     .unwrap();
-    writeln!(w, "    assert(!plonk_domain_is_valid(POWER, 1, K1, K2))").unwrap();
+    writeln!(w, "    assert(!plonk::domain_is_valid(POWER, 1, K1, K2))").unwrap();
     writeln!(
         w,
-        "    assert(!plonk_domain_is_valid(POWER, OMEGA + R, K1, K2))"
+        "    assert(!plonk::domain_is_valid(POWER, OMEGA + R, K1, K2))"
     )
     .unwrap();
     writeln!(
         w,
-        "    assert(!plonk_domain_is_valid(POWER, OMEGA, K1, K1))"
+        "    assert(!plonk::domain_is_valid(POWER, OMEGA, K1, K1))"
     )
     .unwrap();
-    writeln!(w, "    assert(!plonk_domain_is_valid(POWER, OMEGA, 0, K2))").unwrap();
-    writeln!(w, "    assert(!plonk_domain_is_valid(POWER, OMEGA, 1, K2))").unwrap();
+    writeln!(w, "    assert(!plonk::domain_is_valid(POWER, OMEGA, 0, K2))").unwrap();
+    writeln!(w, "    assert(!plonk::domain_is_valid(POWER, OMEGA, 1, K2))").unwrap();
     writeln!(w, "}}").unwrap();
     Ok(s)
 }
