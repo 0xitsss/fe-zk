@@ -10,6 +10,8 @@
 #   5b. real-world Semaphore v4 key (public ceremony) emitted from vectors/groth16/real_semaphore_d10 and tested
 #   5c. gnark PLONK verifier (ABI of gnark's Solidity verifier) emitted from vectors/gnark/mul and tested
 #   5d. quickstart and Life verifier ingots emitted (built and size-checked in step 6)
+#   5e. Semaphore v4 ingot (semaphore/: real ceremony keys depth 1..10, real SDK proofs) and the anonymous
+#       examples built on it: anon_vote, anon_claim, anon_signal (tested; ~3 min of key compile time)
 #   6. code size table: every generated verifier and example contract must fit EIP-170 (24,576 bytes)
 # Needs: `fe` (26.5.0) and a Rust toolchain on PATH. Set FE=/path/to/fe to override the binary.
 set -euo pipefail
@@ -74,10 +76,15 @@ L=vectors/groth16/life_512
     --name Life512 --out ../examples/life/verifier --fe-zk-path ../../..)
 (cd examples/life/verifier && "$FE" fmt >/dev/null)
 
+echo "== 5e. Semaphore v4 ingot + anonymous examples (vote, claim, signal)"
+(cd semaphore && "$FE" test)
+for e in anon_vote anon_claim anon_signal; do (cd "examples/$e" && "$FE" test); done
+
 echo "== 6. deployed code size (EIP-170 limit 24,576 bytes; fails if any contract is over)"
 scripts/code-size.sh examples/membership/verifier examples/membership \
     examples/plonk/membership_verifier examples/halo2/circuit_verifier \
     examples/real_semaphore/verifier examples/gnark/mul_verifier examples/life/verifier examples/life \
-    examples/quickstart/verifier examples/quickstart examples/fri_stark
+    examples/quickstart/verifier examples/quickstart examples/fri_stark \
+    examples/anon_vote examples/anon_claim examples/anon_signal
 
 echo "demo OK"

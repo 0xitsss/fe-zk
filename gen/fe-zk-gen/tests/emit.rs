@@ -106,6 +106,10 @@ fn groth16_lib_module_emits_vk_fn() {
         // one compile-time subgroup check per G2 point (beta, gamma, delta)
         assert_eq!(m.matches("static_assert(g2_is_valid(").count(), 3, "{n}");
         assert!(m.contains("static_assert(g1_is_valid(ALPHA_X, ALPHA_Y))"), "{n}");
+        // a key point at infinity must not compile, whatever the Rust-side validation did
+        for p in ["VK_ALPHA", "VK_BETA", "VK_GAMMA", "VK_DELTA"] {
+            assert!(m.contains(&format!("static_assert(!{p}.is_infinity())")), "{n} {p}");
+        }
         assert!(m.contains("pub const VK_DIGEST: u256 = 0x"), "{n}");
         assert!(m.contains("Module `my_vk`"), "{n}");
         // a module, not a contract

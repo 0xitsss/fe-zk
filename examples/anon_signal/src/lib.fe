@@ -1,0 +1,99 @@
+//! Anonymous signals (Semaphore's "broadcast" pattern): any member of an open group publishes
+//! a 256-bit value (the hash of a text, an IPFS digest, a feedback code) once per topic, without
+//! revealing which member sent it.
+//!
+//! * `join(commitment)` is open: anyone can add an identity commitment. That makes the group
+//!   Sybil-prone by design (it is a demo of the proof path); gate `join` for a real group.
+//! * `signal(topic, text_hash, depth, root, nullifier, points)` takes the fields of a
+//!   `SemaphoreProof` with  scope = topic,  message = text_hash,  and emits `Signal`. Each member
+//!   can signal once per topic (the nullifier is `Poseidon(scope, secret)`), but on any number of
+//!   different topics, and the topics are unlinkable. The signal is bound by the proof: a
+//!   front-runner cannot swap the text.
+//! Groth16 proofs are malleable: the proof is never stored or used as an id.
+use fe_zk::Field
+use fe_zk::anon::{LeanImt, Nullifiers}
+use fe_zk::Bn254Fr
+use fe_zk_semaphore::verify_proof_low
+use std::evm::{Call, Ctx, Log}
+
+/// `verify_proof_low` has keys for tree depth <= 5, i.e. groups of up to 2^5 = 32 members. A larger
+/// group would silently contain members who cannot prove, so registration stops at 32. For bigger
+/// groups use `verify_proof` (all depths) and keep the tree in a separate group contract: the
+/// tree alone is 14 KB of code, `verify_proof` 11 KB.
+pub const MAX_MEMBERS: u256 = 32
+
+#[event]
+struct Joined { commitment: u256, index: u256 }
+
+#[event]
+struct Signal { topic: u256, text_hash: u256, nullifier: u256 }
+
+msg SignalMsg {
+    #[selector = sol("join(uint256)")]
+    Join { commitment: u256 } -> u256,
+    #[selector = sol(
+        "signal(uint256,uint256,uint256,uint256,uint256,uint256[8])",
+    )]
+    Post {
+        topic: u256,
+        text_hash: u256,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        points: [u256; 8],
+    },
+    #[selector = sol("spent(uint256,uint256)")]
+    Spent { topic: u256, nullifier: u256 } -> bool,
+    #[selector = sol("root()")]
+    Root -> u256,
+    #[selector = sol("size()")]
+    Size -> u256,
+}
+
+pub contract AnonSignal uses (ctx: Ctx, call: Call, log: mut Log) {
+    mut tree: LeanImt,
+    mut nulls: Nullifiers,
+
+    recv SignalMsg {
+        Join { commitment } -> u256 uses (mut tree, mut log) {
+            assert(tree.size() < MAX_MEMBERS)
+            tree.insert(leaf: Bn254Fr::from_canonical(commitment).unwrap())
+            let index = tree.size() - 1
+            log.emit(Joined { commitment: commitment, index: index })
+            index
+        }
+
+        Post { topic, text_hash, merkle_tree_depth, merkle_tree_root, nullifier, points }
+        uses (ctx, call, tree, mut nulls, mut log)
+        {
+            assert(tree.is_known_root(root: merkle_tree_root))
+            assert(!nulls.is_spent(scope: topic, nullifier: nullifier))
+            assert(
+                verify_proof_low(
+                    merkle_tree_depth,
+                    merkle_tree_root,
+                    nullifier,
+                    text_hash,
+                    topic,
+                    points,
+                ),
+            )
+            assert(nulls.spend(scope: topic, nullifier: nullifier))
+            log.emit(
+                Signal { topic: topic, text_hash: text_hash, nullifier: nullifier },
+            )
+        }
+
+        Spent { topic, nullifier } -> bool uses (nulls) {
+            nulls.is_spent(scope: topic, nullifier: nullifier)
+        }
+
+        Root -> u256 uses (tree) {
+            tree.root().to_canonical()
+        }
+
+        Size -> u256 uses (tree) {
+            tree.size()
+        }
+    }
+}
