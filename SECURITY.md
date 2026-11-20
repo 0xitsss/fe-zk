@@ -9,7 +9,7 @@ independent review. All demo keys in this repository are test-only (see README, 
 
 | Version | Supported |
 |---|---|
-| 0.1.x (latest `main`) | yes, fixes land on `main` |
+| 0.2.x (latest `main`) | yes, fixes land on `main` |
 | anything older | no |
 
 Fe 26.5.0 is the only supported compiler version.
