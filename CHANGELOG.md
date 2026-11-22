@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses semantic versioning.
 
+## [0.3.0] - 2026-11-22
+
+Fe 26.5.0. Cheaper verifiers and a FRI/STARK verifier generic over the AIR. Crate and ingot manifests and generated
+file headers still say 0.2.0: the generator embeds its own version, so bumping it means regenerating every emitted file.
+
+### Changed
+- Gas tuning of the BN254 verifiers: shared `inv_modexp` (modexp precompile) instead of Fermat inversion in PLONK, gnark
+  and KZG; closed-form `1 / 2^k` in the gnark key; contiguous `MemBuffer` halo2 transcript. Groth16 is now 1.02-1.03x,
+  snarkjs PLONK 1.05x, gnark PLONK 1.10-1.11x and halo2 1.17x of the Solidity verifier ([docs/GAS.md](docs/GAS.md)).
+- FRI/STARK verifier 70 % cheaper: 4.67 M down to 1.41 M execution gas (Plonky3 Fibonacci, 2^10 rows, 100 conjectured bits).
+
+### Added
+- `Air` trait (`src/verifier/fri/air.fe`) and `verify<A: Air>`: the FRI verifier is generic over the AIR. Fibonacci is ported
+  and a second AIR, `MulAir` (6 columns, proved by Plonky3 0.4.2, `vectors/plonky3-stark/mul`), shares the test suite.
+
 ## [0.2.0] - 2026-11-19
 
 Fe 26.5.0. A cleaner verifier API, a building kit for anonymous actions, and a Tornado Cash verifier demo.

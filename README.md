@@ -1,5 +1,9 @@
 # fe-zk
 
+[![CI](https://github.com/0xitsss/fe-zk/actions/workflows/ci.yml/badge.svg)](https://github.com/0xitsss/fe-zk/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Fe 26.5.0](https://img.shields.io/badge/Fe-26.5.0-orange.svg)](https://fe-lang.org)
+
 **Pitch:** fe-zk lets Fe contracts verify zero-knowledge proofs: a generic field, curve and hash layer behind Fe
 traits, on-chain verifiers for Groth16, PLONK, halo2-KZG, KZG and FRI/STARK proofs, and a generator, `fe-zk-gen`,
 that turns verifying keys into Fe verifier contracts whose keys the Fe compiler itself validates.
@@ -11,53 +15,53 @@ that turns verifying keys into Fe verifier contracts whose keys the Fe compiler 
 operations; then one Groth16 proof of 512 generations, checked by a verifier that `fe-zk-gen` generated.*
 
 Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
-Submission: release tag [`v0.2.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.2.0) (the full commit SHA is in the submission form).
-Current version: **0.2.0** ([CHANGELOG.md](CHANGELOG.md)): one API per proof system, an anonymous-action kit (`fe_zk::anon`,
-Semaphore v4 ingot) and a Tornado Cash verifier demo.
-Demo video: [youtu.be/3lFUyRV3F7Q](https://youtu.be/3lFUyRV3F7Q) (2:57, every number and output comes from a real run).
+Submission: release tag [`v0.3.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.3.0) (the full commit SHA is in the submission form).
+Current version: **0.3.0** ([CHANGELOG.md](CHANGELOG.md)): gas tuning of the BN254 verifiers, a FRI/STARK verifier 70 % cheaper
+and generic over an `Air` trait (second AIR: `MulAir`). Fe 26.5.0.
+
+## For judges: one screen
+
+| | |
+|---|---|
+| **What** | Proof verification for Fe contracts, plus the generator that makes it safe. Today Fe has no verifier; every zk project leaves for Solidity. |
+| **Proof systems** | Groth16 (snarkjs, arkworks); PLONK (snarkjs and gnark); halo2-KZG (SHPLONK and GWC); KZG with EIP-4844; FRI/STARK of Plonky3 with a generic `Air` trait (`verify<A: Air>`). |
+| **Generator** | [`fe-zk-gen`](gen/fe-zk-gen/src) validates the key (on curve, subgroup, digest), emits a contract and tests with a real proof and invalid ones. No flag skips a check; a corrupted key does not compile. |
+| **Real-world** | Semaphore v4 ceremony keys, depth 1..10, cross-checked with Semaphore's own Solidity verifier. Tornado Cash `withdraw` on real mainnet proofs. Anonymous vote, claim and signal examples. |
+| **Gas vs Solidity** | Same proof, same revm ([docs/GAS.md](docs/GAS.md)): Groth16 1.02-1.03x, snarkjs PLONK 1.05x, gnark PLONK 1.10-1.11x, halo2 1.17x. Poseidon is cheaper than circomlibjs (25,400 vs 29,005, t = 3). FRI/STARK 4.67 M to 1.41 M. |
+| **Fe-specific** | Key validation at compile time (`const fn` plus `static_assert`); typed `G1` / `G2` / `Fr` so an unchecked value cannot be passed; zero-cost `verify<A: Air>` and `Field` generics; effects keep verification free of storage access. See [Fe highlight](#fe-highlight). |
+| **Safety** | [docs/SAFETY.md](docs/SAFETY.md): each of nine rules with the file:line that enforces it and the test that fails without it. |
+| **Tests** | 208 in the root ingot, 232 in the example and Semaphore ingots, 58 Rust tests in `gen/`. Real proofs from snarkjs, gnark, halo2, Plonky3 and the Semaphore SDK; tampered ones rejected. |
+| **Found in Fe** | 11 compiler and std issues with repros: [Compiler issues](#compiler-issues-found--upstream-suggestions). |
+| **Watch** | [Demo video, 2:57](https://youtu.be/3lFUyRV3F7Q): every number comes from a real run. |
+| **Try** | `fe test` (about 5 min) / `scripts/demo.sh` (20+ min) / `cd examples/life/cli && cargo run --release -- --prove` |
 
 ## Try it
 
-Prerequisites: `fe` 26.5.0 and Rust. circom and snarkjs are needed only to regenerate fixtures, not to run anything below.
+Prerequisites: `fe` 26.5.0 and Rust. circom and snarkjs are needed only to regenerate fixtures.
 
 ```sh
-fe test                                  # library: 190 tests (about 5 min), real proofs from snarkjs, gnark, halo2, Plonky3 accepted; tampered ones rejected
-scripts/demo.sh                          # generate verifiers from keys (Groth16, PLONK, halo2, gnark), the Semaphore ingot, the anon_* examples; size guard (20+ min)
+fe test                                     # root ingot: 208 tests, about 5 min
+scripts/demo.sh                             # generate verifiers from keys, Semaphore ingot, anon_* examples, size guard (20+ min)
 (cd examples/tornado/verifier && fe test)   # Tornado Cash withdraw verifier on real mainnet proofs (about 90 s)
-cd examples/life/cli && cargo run --release -- --prove                                  # one proof of 512 generations vs 512 on-chain steps
-cd examples/life/cli && cargo run --release -- --pattern glider --gens 200 --delay 80   # watch the Fe contract play in your terminal
+cd examples/life/cli && cargo run --release -- --prove                                 # one proof of 512 generations vs 512 on-chain steps
+cd examples/life/cli && cargo run --release -- --pattern glider --gens 200 --delay 80  # watch the Fe contract play
 ```
 
 The Life CLI needs `fe build` run once in `examples/life` and `examples/life/verifier` (`scripts/life-demo.sh` does
-it for you).
-
-To build an anonymous vote, claim or signal in one evening, or to verify proofs from **your own** circuit, start with
-[docs/USAGE.md](docs/USAGE.md) (its first recipe is "Anonymous membership in one evening").
+it for you). To build an anonymous vote, claim or signal, or to verify proofs from your own circuit, start with
+[docs/USAGE.md](docs/USAGE.md).
 
 ## What to look at
 
-- **The Fe highlight: compile-time key validation.** The generator emits `static_assert(g2_is_valid(..))`; the G2
-  subgroup test runs inside the Fe compiler. Source: [`g2_is_valid`](src/ec/bn254.fe#L278), generated use in
-  [`examples/membership/verifier/src/lib.fe`](examples/membership/verifier/src/lib.fe#L47). See [Fe highlight](#fe-highlight).
-- **A corrupted key does not compile.** [`corrupted_key_constant_fails_to_compile`](gen/fe-zk-gen/tests/emit.rs#L218)
-  emits a verifier, corrupts it (off-curve alpha, a non-subgroup beta, ...) and expects `static assertion failed` from
-  `fe build`. It is `#[ignore]`d because it needs the `fe` binary: `cd gen && cargo test -- --ignored corrupted_key`.
-- **Safety, rule by rule.** [docs/SAFETY.md](docs/SAFETY.md) maps each of the nine rules (canonical inputs, curve and
-  subgroup checks, fixed input count, Fiat-Shamir binding, precompile results, malleability, generator hygiene) to the
-  file:line that enforces it and the test that fails without it.
-- **Gas, measured against the reference tools.** [docs/GAS.md](docs/GAS.md): Groth16 costs 1.02-1.03x the snarkjs
-  Solidity verifier on the same proof; Fe Poseidon is cheaper than circomlibjs' hand-written EVM contract (25,400 vs
-  29,005 gas for t = 3). PLONK is 1.04-1.11x and halo2 1.17x; we say why in [Limitations](#limitations).
-- **Anonymous actions in about 50 lines.** [`fe_zk::anon`](src/anon) (`LeanImt`, `Nullifiers`) plus the
-  [`semaphore/`](semaphore) ingot (real ceremony keys, depth 1..10) give [`examples/anon_vote`](examples/anon_vote),
-  [`anon_claim`](examples/anon_claim) and [`anon_signal`](examples/anon_signal); proofs come from the official Semaphore
-  SDK and are also accepted by Semaphore's own Solidity verifier.
-- **A real-world key.** [`examples/tornado`](examples/tornado): the Tornado Cash `withdraw` verifier generated by
-  `fe-zk-gen`, accepting real mainnet proofs, with the verdicts of the deployed `Verifier.sol`. A verifier demo, not a mixer.
-- **The generator.** [`gen/fe-zk-gen`](gen/fe-zk-gen/src) validates the key with arkworks, embeds its digest and emits
-  an ingot with a real proof and a battery of invalid ones; there is no flag to skip a check.
-- **zk Game of Life.** [`examples/life`](examples/life): a 16x16 torus in one `u256`, stepped for 657 gas per
-  generation, or advanced 512 generations by one proof. Break-even is about 392 generations.
+- **Compile-time key validation.** [`g2_is_valid`](src/ec/bn254.fe#L278) runs the G2 subgroup test inside the compiler;
+  generated use in [`examples/membership/verifier/src/lib.fe`](examples/membership/verifier/src/lib.fe#L47).
+- **A corrupted key does not compile:** [`corrupted_key_constant_fails_to_compile`](gen/fe-zk-gen/tests/emit.rs#L218)
+  (`#[ignore]`d, needs `fe`: `cd gen && cargo test -- --ignored corrupted_key`).
+- **Anonymous actions in about 50 lines:** [`fe_zk::anon`](src/anon) and the [`semaphore/`](semaphore) ingot give
+  [`anon_vote`](examples/anon_vote), [`anon_claim`](examples/anon_claim), [`anon_signal`](examples/anon_signal).
+- **Real key:** [`examples/tornado`](examples/tornado), a verifier demo, not a mixer.
+- **zk Game of Life:** [`examples/life`](examples/life), 657 gas per generation on chain, or 512 generations by one
+  proof; break-even about 392 generations.
 
 ## What's in the box
 
@@ -233,7 +237,7 @@ examples/anon_vote, anon_claim, anon_signal   (on src/anon + semaphore/)   examp
 ```sh
 fe --version   # fe 26.5.0 (3dab95f)
 fe fmt --check
-fe test        # root ingot: 190 tests, about 5 minutes (field, ec, hash, groth16, plonk, gnark plonk, halo2, kzg, fri)
+fe test        # root ingot: 208 tests, about 5 minutes (field, ec, hash, groth16, plonk, gnark plonk, halo2, kzg, fri)
 fe build       # run inside an example ingot (the root ingot has no contract), e.g. examples/life
 (cd gen && cargo test)
 scripts/demo.sh        # generator pipelines, Semaphore ingot, anon examples, size guard (20+ min)
@@ -448,7 +452,7 @@ trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforc
 - **Pre-existing work:** the repository started from the contest starter at commit
   [`0646e48`](https://github.com/0xitsss/fe-zk/commit/0646e48) (Fe Builders Challenge starter: license, CI skeleton,
   `SUBMISSION.md`). Everything else, including all Fe code, the generator, vectors tooling, examples and docs, was
-  written on November 17-19, 2026.
+  written on November 17-22, 2026.
 - **Third-party code and tools** (none is copied into `src/`; fixtures are outputs of these tools):
   - circom 2.2.2, snarkjs 0.7.6, circomlib 2.0.5, circomlibjs 0.1.7: GPL-3.0. Used as test tooling only. Their output
     files are committed as fixtures; the snarkjs-generated `Verifier.sol` files under `vectors/groth16`,
