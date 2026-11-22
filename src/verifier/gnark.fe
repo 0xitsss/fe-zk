@@ -118,6 +118,17 @@ fn finite(_ p: G1) -> bool {
     !p.is_infinity()
 }
 
+/// `1 / 2^power` in the scalar field, for `1 <= power <= 28` (callers check the range).
+/// `r - 1 = k * 2^power` for such `power` (the 2-adicity of `r - 1` is 28), so
+/// `2^power * (r - k) = r - (r - 1) = 1 (mod r)` and `r - k` is the inverse. No loop, no
+/// precompile: a handful of gas instead of the 25k of a Fermat inversion.
+fn inv_pow2(_ power: u256) -> Bn254Fr {
+    assert(power >= 1 && power <= 28)
+    let k = (Bn254Fr::MODULUS - 1) >> power
+    // 0 < k < r, so r - k is in (0, r): canonical and nonzero.
+    Bn254Fr::reduce(Bn254Fr::MODULUS - k)
+}
+
 impl<const NP: usize, const NC: usize> Vk<NP, NC> {
     /// `commitments` is `[Ql, Qr, Qm, Qo, Qk, S1, S2, S3]`; `qcp[j]` and `cci[j]` are the j-th
     /// BSB22 selector commitment and its constraint index (`VK_INDEX_COMMIT_API_j`).
@@ -170,7 +181,7 @@ impl<const NP: usize, const NC: usize> Vk<NP, NC> {
             Vk {
                 power,
                 w,
-                size_inv: Bn254Fr::reduce(n).inv().unwrap(),
+                size_inv: inv_pow2(power),
                 coset_shift,
                 ql: commitments[0],
                 qr: commitments[1],
@@ -218,15 +229,10 @@ impl<const NP: usize, const NC: usize> Vk<NP, NC> {
                 i += 1
             }
         }
-        let n_fr = Bn254Fr::reduce(1 << power)
         Vk {
             power,
             w: Bn254Fr::reduce(w),
-            size_inv: if ok {
-                n_fr.inv().unwrap()
-            } else {
-                Bn254Fr::one()
-            },
+            size_inv: if ok { inv_pow2(power) } else { Bn254Fr::one() },
             coset_shift: Bn254Fr::reduce(coset_shift),
             ql: commitments[0],
             qr: commitments[1],

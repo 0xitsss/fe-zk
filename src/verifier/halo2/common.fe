@@ -11,8 +11,9 @@
 //! curve, point at infinity rejected as SPEC section 2 demands).
 use core::ptr::MemBuffer
 use std::evm::{Call, Ctx}
-use std::evm::packed::Packed
+use std::evm::crypto::keccak256
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
+use ingot::ec::precompile::put_at
 pub use ingot::ec::precompile::inv_modexp
 use ingot::field::{Bn254Fr, Field}
 
@@ -137,44 +138,65 @@ pub fn read_scalars<const L: usize, const N: usize>(_ proof: [u256; L], _ off: u
     Option::Some(out)
 }
 
+/// Capacity of the transcript buffer in bytes. Memory is only paid for when touched; an absorb
+/// past the capacity reverts (never silently truncates). The largest absorb run between two
+/// squeezes of the shipped circuits is a few hundred bytes.
+const TRANSCRIPT_CAP: usize = 8192
+
 /// snark-verifier `EvmTranscript` state. The buffer holds the 32-byte big-endian words absorbed
 /// since the last squeeze, prefixed by the previous digest. A squeeze hashes the whole buffer
-/// and the digest becomes the new buffer; there are no labels (SPEC section 2).
-pub struct Halo2Transcript { buf: Packed }
+/// and the digest becomes the new buffer; there are no labels (SPEC section 2). One contiguous
+/// memory buffer: an absorb is one `MSTORE`, a squeeze one `KECCAK256` over the buffer.
+pub struct Halo2Transcript { buf: MemBuffer, len: usize }
 
 impl Halo2Transcript {
     pub fn new() -> Halo2Transcript {
-        Halo2Transcript { buf: Packed::with_capacity(bytes: 1024) }
+        Halo2Transcript { buf: MemBuffer::with_capacity(TRANSCRIPT_CAP), len: 0 }
     }
 
     /// Absorb one 32-byte word (a canonical scalar or one coordinate).
     pub fn absorb(mut self, _ w: u256) {
-        self.buf.u256(w)
+        assert(self.len + 32 <= TRANSCRIPT_CAP)
+        put_at(mut self.buf, self.len as u256, w)
+        self.len += 32
     }
 
     pub fn absorb_point(mut self, _ x: u256, _ y: u256) {
-        self.buf.u256(x)
-        self.buf.u256(y)
+        assert(self.len + 64 <= TRANSCRIPT_CAP)
+        put_at(mut self.buf, self.len as u256, x)
+        put_at(mut self.buf, (self.len + 32) as u256, y)
+        self.len += 64
     }
 
     /// Absorb `proof[from..to]` word by word (points and scalars are both 32-byte words).
     pub fn absorb_words<const L: usize>(mut self, _ proof: [u256; L], _ from: usize, _ to: usize) {
         assert(to <= L)
+        assert(from <= to)
+        assert(self.len + (to - from) * 32 <= TRANSCRIPT_CAP)
         var i = from
+        var at = self.len as u256
         while i < to {
-            self.buf.u256(proof[i])
+            put_at(mut self.buf, at, proof[i])
+            at += 32
             i += 1
         }
+        self.len += (to - from) * 32
     }
 
     /// `keccak256(buf)` (plus a `0x01` byte if `buf` is exactly one word), reduced mod r.
     pub fn squeeze(mut self) -> Bn254Fr {
-        if self.buf.len() == 32 {
-            self.buf.u8(1)
+        var n = self.len
+        if n == 32 {
+            // One byte 0x01 after the word; the rest of the written word is outside the hashed range.
+            put_at(mut self.buf, 32, 1 << 248)
+            n = 33
         }
-        let h = self.buf.keccak256()
-        self.buf = Packed::with_capacity(bytes: 1024)
-        self.buf.u256(h)
+        unsafe {
+            self.buf.set_len(n)
+        }
+        let h = keccak256(self.buf.span())
+        put_at(mut self.buf, 0, h)
+        self.len = 32
         Bn254Fr::reduce(h)
     }
 }
