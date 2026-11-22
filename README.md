@@ -47,7 +47,7 @@ To build an anonymous vote, claim or signal in one evening, or to verify proofs 
   file:line that enforces it and the test that fails without it.
 - **Gas, measured against the reference tools.** [docs/GAS.md](docs/GAS.md): Groth16 costs 1.02-1.03x the snarkjs
   Solidity verifier on the same proof; Fe Poseidon is cheaper than circomlibjs' hand-written EVM contract (25,400 vs
-  29,005 gas for t = 3). PLONK and halo2 are 1.13-1.34x; we say why in [Limitations](#limitations).
+  29,005 gas for t = 3). PLONK is 1.04-1.11x and halo2 1.17x; we say why in [Limitations](#limitations).
 - **Anonymous actions in about 50 lines.** [`fe_zk::anon`](src/anon) (`LeanImt`, `Nullifiers`) plus the
   [`semaphore/`](semaphore) ingot (real ceremony keys, depth 1..10) give [`examples/anon_vote`](examples/anon_vote),
   [`anon_claim`](examples/anon_claim) and [`anon_signal`](examples/anon_signal); proofs come from the official Semaphore
@@ -67,9 +67,9 @@ Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool 
 | Family | Source format | Fe module | Generator | Fixtures | Tests | Gas, Fe vs Solidity |
 |---|---|---|---|---|---|---|
 | Groth16 | snarkjs, arkworks | [`groth16.fe`](src/verifier/groth16.fe) | `fe-zk-gen groth16` | `vectors/groth16` | `src/tests/groth16.fe` | 191,869 / 188,926 (N=1); 207,964 / 202,220 (N=3) |
-| PLONK | snarkjs 0.7.6 | [`plonk.fe`](src/verifier/plonk.fe) | `fe-zk-gen plonk` | `vectors/plonk` | `src/tests/plonk.fe` | 296,533 / 263,536 (N=3) |
-| PLONK | gnark v0.12.0 | [`gnark.fe`](src/verifier/gnark.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark.fe` | 333,614 / 261,868 |
-| halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 396,611 / 322,590 (SHPLONK) |
+| PLONK | snarkjs 0.7.6 | [`plonk.fe`](src/verifier/plonk.fe) | `fe-zk-gen plonk` | `vectors/plonk` | `src/tests/plonk.fe` | 276,015 / 263,536 (N=3) |
+| PLONK | gnark v0.12.0 | [`gnark.fe`](src/verifier/gnark.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark.fe` | 287,328 / 261,868 |
+| halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 375,982 / 322,590 (SHPLONK) |
 | KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,161 single opening, no reference |
 | FRI/STARK | Plonky3 `uni-stark` Fibonacci, 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe` | 4.67 M as a contract (4.29 M in `verify`), no reference exists |
 | Poseidon (BN254) | circomlibjs 0.1.7 | [`src/hash/`](src/hash) | none | `vectors/poseidon` | `src/tests/hash.fe` | 25,400 / 29,005 (t=3) |
@@ -348,14 +348,16 @@ Solidity; break-even about 385 generations against `run`); and `fe test --show-l
 What works: everything listed under Approach is implemented and tested against real reference proofs. What does not,
 and the assumptions:
 
-- **Gas.** Fe verifiers cost 1.02-1.03x the Solidity ones for Groth16, 1.13x for snarkjs PLONK, 1.23x for halo2
-  and 1.27-1.34x for gnark PLONK (`docs/GAS.md`, revm, same proofs). Both sides are dominated by the same precompiles;
-  the difference is per-call overhead: Fe's `Call.raw_staticcall` takes a heap `MemBuffer`, adding about 190 gas of
-  buffer allocation to each precompile call, and Fe loops are not unrolled (`docs/DESIGN.md`). Groth16 makes few calls,
-  the PLONK family dozens. Deployed code is 1.28-1.99x the size of the Solidity versions (`docs/GAS.md`). Every generated
+- **Gas.** Fe verifiers cost 1.02-1.03x the Solidity ones for Groth16, 1.04-1.05x for snarkjs PLONK, 1.10-1.11x for
+  gnark PLONK and 1.17x for halo2 (`docs/GAS.md`, revm, same proofs). Both sides are dominated by the same precompiles;
+  the difference is per-call overhead: each precompile call costs about 300 gas of wrapper code in Fe (a heap
+  `MemBuffer` from `Call.raw_staticcall`, a checked returndata length and the typed `G1` result, all of which keep the
+  safety checks) against about 100 in hand-written Solidity assembly, and the typed field code is not unrolled
+  (`docs/DESIGN.md`). Groth16 makes few calls, the PLONK family dozens. Deployed code is 1.31-1.98x the size of the
+  Solidity versions (`docs/GAS.md`). Every generated
   verifier and example contract fits the EIP-170 limit of 24,576 bytes (guard: `scripts/code-size.sh`, run by
   `scripts/demo.sh`; ignored test `gen/fe-zk-gen/tests/code_size.rs`). `fe-zk-gen halo2` emits one contract per multiopen
-  scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 23.1 kB, GWC 21.6 kB, both together would be over. The FRI
+  scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 22.1 kB, GWC 21.4 kB, both together would be over. The FRI
   contract (`examples/fri_stark`, about 18 kB) fits as well.
 - **FRI/STARK.** One AIR (Fibonacci), Plonky3 0.4.2 `uni-stark`, KoalaBear with a degree-4 extension, Keccak commitments,
   arity 2. Query count, blowup, PoW bits and trace height are constants of a per-configuration module

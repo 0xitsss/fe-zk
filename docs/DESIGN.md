@@ -164,9 +164,11 @@ the KZG wrappers). Trade-off: execution gas rose about 1.9% (SHPLONK 384.7k to 3
 shrinks only one scheme noticeably (21.7k for SHPLONK alone) and does nothing for the two-scheme contract (42.6k), so the
 split is what makes it deployable. The size regression of the KZG wrapper (1,647 to 2,283 bytes) came from
 `kzg::Vk::is_degenerate`: `G2::is_infinity` was a short-circuit `&&` chain (branches per word); `(x0|x1|y0|y1) == 0` restores 1,647
-bytes with the check intact. Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 396.6k,
-GWC 428.3k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.23x (wrapper overhead per
-precompile call). The Fe numbers use the compile-time key path (`halo2::Vk::from_consts`). Limits: one circuit shape
+bytes with the check intact. Gas (`docs/GAS.md`, execution, same proof in revm): SHPLONK 376.0k,
+GWC 408.7k; the snark-verifier Solidity verifier costs 322.6k / 349.0k, so Fe is about 1.17x (wrapper overhead per
+precompile call). The transcript is one contiguous `MemBuffer` (an absorb is one `MSTORE`, a squeeze one `KECCAK256`):
+the first version used `std::evm::packed::Packed`, whose byte-wise `u256` append cost about 250 gas per absorbed word
+(about 18k of the 397k) and about 1.1 kB of code. The Fe numbers use the compile-time key path (`halo2::Vk::from_consts`). Limits: one circuit shape
 (single phase, one instance column, uncommitted instances); duplicate commitments are rejected by the generator.
 
 ## Groth16 and the generator
@@ -359,3 +361,23 @@ five mainnet withdrawals of the 0.1 ETH pool. Verdicts equal Tornado's `Verifier
 mutations) in revm (`vectors/tornado/crosscheck.py`). Gas: 231,117 in Fe against 236,365 for `Verifier.sol` (solc 0.7.6).
 A verifier demo only: no pool, no deposits, no funds. It shows the generator working on a production key that
 nobody here made, and the public-input binding that stops a front-runner from swapping the recipient.
+
+### Gas tuning log (2026-11-22)
+
+Method: `gas-run` with a temporary inspector that split top-frame gas into precompile gas and "own" gas, plus a
+per-program-counter profile (not committed; the numbers below are from `docs/GAS.md`). The own gas was the gap to the
+Solidity verifiers. What was found and fixed:
+
+- **Fermat inversion in verifiers.** `Field::inv` is square-and-multiply (about 25k gas for `r - 2`). The snarkjs and gnark
+  PLONK verifiers and the SHPLONK KZG check used it for the batched Lagrange inversion; they now call
+  `ec::precompile::inv_modexp` (modexp 0x05, about 1.4k gas, fixed buffers, success and length checked, result through
+  `from_canonical`). Saves about 21k per verification (snarkjs PLONK 293.1k to 272.6k).
+- **`1 / n` in the gnark key.** `gnark::Vk::from_consts` ran another Fermat inversion per call for `1 / 2^power`. It is
+  closed form: `r - 1 = k 2^power` (2-adicity 28), so `1 / 2^power = r - k` (`inv_pow2`, a shift and a subtraction).
+  gnark PLONK 333.6k to 287.3k (mul), 379.3k to 313.1k (mulcommit) together with the modexp change.
+- **halo2 transcript.** `Packed` replaced by one `MemBuffer` (SHPLONK 396.6k to 376.0k, code 23.2 kB to 22.1 kB).
+- **Tried, no gain:** `#[inline(always)]` on every `Fp` method (the backend already inlines them); `-O 2` (under 1%);
+  `#[arithmetic(unchecked)]` in `pairing_raw` (no change in Groth16 gas, reverted).
+- **What remains.** Per precompile call the wrapper costs about 300 gas (GAS-guard, struct and buffer allocation, the
+  returndata length check, the `G1` result): 25k to 30k of the 82k "own" gas of halo2 and 20k of gnark. It cannot go
+  lower without a std API taking a pointer and length (compiler issue 2 in the README).
