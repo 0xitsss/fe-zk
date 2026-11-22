@@ -278,9 +278,9 @@ BCIKS'20 commit-phase error `(m + 1/2)^7 / (3 rho^1.5) * n^2 / |F|` with `|F| = 
 domain. These are our reading of the literature, not an audit; the proven figures sit far below the conjectured one.
 
 Trade-off, Fibonacci AIR, 2^10 rows, `log_final = 3`, 20 PoW bits (execution gas of `verify` in the Fe test
-framework; proof words are calldata words, 32 bytes each; the code size, 18,009 bytes for the deployed contract, is the
-same for all configurations because only constants differ; deployed contract: 4,674,110 gas execution, 5,832,558 with
-calldata, `docs/GAS.md`):
+framework, measured before the optimisation below, so the absolute numbers are about 3x too high, the ratios between rows still hold; proof words are calldata words, 32 bytes each; the code size, 12,875 bytes for the deployed contract (18,009 before the optimisation), is the
+same for all configurations because only constants differ; deployed contract: see `docs/GAS.md` for the current
+execution gas of the secure configuration):
 
 | `log_blowup` | queries | conjectured | proven (Johnson / unique) | proof words | Fe gas |
 |---:|---:|---:|---:|---:|---:|
@@ -292,11 +292,44 @@ calldata, `docs/GAS.md`):
 
 Other axes at `log_blowup = 4`, 20 queries: `log_final = 1` instead of 3: 4,671,837 gas (3,081 words); 2^8 rows:
 3,514,576 (1,977 words); 2^12 rows: 5,108,141 (3,545 words). Chosen: 2^10 rows, `log_blowup = 4`, 20 queries,
-20 PoW bits: 100 conjectured bits, about 59 (Johnson) / 38 (unique decoding) proven, 4.29 M gas, 87 kB of calldata.
+20 PoW bits: 100 conjectured bits, about 59 (Johnson) / 38 (unique decoding) proven, 4.29 M gas at the time of that measurement (about 1.38 M after the optimisation), 87 kB of calldata.
 A higher blowup costs the prover (LDE of 2^14 points here, negligible) and buys fewer queries; the proven figure
 barely moves, so the proven security of every row is about 55-60 bits and only more queries would raise it. The demo
 configuration (4 queries, `log_blowup` 2, 3 PoW bits: 11 conjectured, about 6 proven bits) stays as a second test
 configuration and is not secure.
+
+### Gas profile and optimisation (2026-11-22)
+
+The first version cost 4,674,110 gas (deployed contract, execution only, `scripts/gas-table.sh`); the optimised one costs
+about 1.38 M with the same proof format and the same verdicts (the Plonky3 fixture verifies, every tamper,
+non-canonical and transcript test still rejects). The profile came from a per-PC gas histogram of the deployed code
+(a revm inspector, the throwaway `gas-run` variant is not committed) plus variants that return early at a chosen point.
+Measured steps, each on top of the previous (execution gas of `verify(uint256[2721],uint256[3])`):
+
+| Step | Gas |
+|---|---:|
+| baseline | 4,674,110 |
+| `Ext4::mul` with lazy reduction (one `% p` per coefficient, bound in `mul_lazy`); KoalaBear inversion as a straight-line addition chain (`Fp::inv_koalabear`); one reduced `1/(zeta - x)(zeta*g - x)` inversion per query instead of two; one `1/y0` per query and `y_{j+1} = y_j^2` for the fold points instead of a `pow`, a bit reversal and an inversion per round (`s_j = (-1)^(idx_j & 1) y_j`, see the comment in `check_query`); the query-independent part of the reduced opening (`alpha^k`, the claimed evaluations) computed once in `replay_transcript` | 2,839,632 |
+| proof copied with one `calldatacopy` instead of 2,721 `calldataload` + checked stores (`examples/fri_stark`) | 2,583,930 |
+| `betas`, `indices`, `alpha_pows` in `MemArray`s: a by-value struct with inline arrays is copied at every call (`check_query`, `open_input`) | 2,459,567 |
+| `climb_path`: the Merkle loop reads siblings through one pointer, unchecked counters | 2,367,941 |
+| `core::ptr::offset` multiplies by the element size with an overflow check; `offset_bytes(ptr, i * 32)` after a single range check does not | 1,975,142 |
+| fold rounds in raw `u256` lanes (`leaf8`: the 8 felts of a fold leaf are one word, one byte swap for all lanes; lane arithmetic with stated bounds; Horner of the final polynomial per lane) | 1,556,213 |
+| `verify` range-checks only the query-independent words up front; each query range-checks the words it reads (same verdict) | 1,442,214 |
+| unchecked reads inside `check_query`, y0 loop on pointers, `#[inline(always)]` on the small helpers | 1,384,751 |
+
+The transaction gas in `docs/GAS.md` (2,864,620) is no longer exec + intrinsic: with 87 kB of calldata it is the EIP-7623
+calldata floor (21,000 + 10 per calldata token), so only the execution column moved below it; a shorter proof (fewer queries,
+higher blowup) is what lowers it.
+
+Where the rest goes (opcode histogram): about 26 % `DUP`/`SWAP` (stack shuffling of many live scalars), 20 % `PUSH`
+(function-call addresses), 18 % `JUMP`/`JUMPI`, 6 % `KECCAK256` itself; the Merkle path loops (about 1,960 Keccak
+hashes per proof, 150 gas per level) are about 21 % of the total and cannot shrink below the hash cost. Per query:
+about 61 k gas, of which the 7 fold rounds are about half, `open_input` about 13 k (one extension inversion about 3 k,
+two Merkle paths about 4 k). Findings that may help others: loops cost 100-400 gas per iteration in Fe 26.5.0 at `-O1`
+(`-O2` was within 1 % here), so straight-line code on scalar locals wins; indexing a `MemArray` or calling
+`core::ptr::offset` costs about 100 gas per access because of the bounds and overflow checks; passing a struct with array
+fields by value copies the arrays.
 
 ### Fe findings from this work
 

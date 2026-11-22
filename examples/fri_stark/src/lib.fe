@@ -15,7 +15,7 @@
 //! `scripts/code-size.sh`.
 use core::abi::ByteSource
 use core::num::IntDowncast
-use core::ptr::MemArray
+use core::ptr::{MemArray, cast}
 use std::evm::CallData
 use fe_zk::verifier::fri::config_secure::{PROOF_WORDS, verify}
 
@@ -35,10 +35,14 @@ pub contract FriFibVerifier {
             var proof = unsafe {
                 MemArray<u256>::new_uninit(PROOF_WORDS)
             }
-            var i: usize = 0
-            while i < PROOF_WORDS {
-                proof[i] = cd.word_at((i * 32) as u256)
-                i += 1
+            // one calldatacopy of the whole proof (the size was checked above), instead of a
+            // loop of PROOF_WORDS calldataloads and bounds-checked stores
+            unsafe {
+                cd.copy_to_memory(
+                    dest: cast<u256, u8>(proof.ptr()),
+                    src_offset: 0,
+                    len: (PROOF_WORDS * 32) as u256,
+                )
             }
             let base = (PROOF_WORDS * 32) as u256
             verify(

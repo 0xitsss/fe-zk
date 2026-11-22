@@ -40,7 +40,7 @@ Calldata sizes (bytes), Fe / Solidity: Groth16 (snarkjs) multiplier: 292/292; Gr
 | KZG | single opening | 130,161 | 153,949 | no Solidity reference |
 | KZG | GWC, 3 polynomials at 1 point | 148,634 | 175,494 | no Solidity reference |
 | KZG | SHPLONK, 3 polynomials at 2 points | 162,122 | 190,622 | no Solidity reference |
-| FRI/STARK | Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 4,674,110 | 5,832,558 | no EVM reference verifier exists |
+| FRI/STARK | Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 1,384,751 | 2,864,620 | no EVM reference verifier exists |
 
 The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.4.2 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.
 
@@ -81,7 +81,7 @@ One `step()` call: exec 657, tx 21,897. Deployed `Life` code: 15,296 bytes (the 
 | KZG, single opening | 1,708 | n/a | 422,615 | n/a |
 | KZG, GWC, 3 polynomials at 1 point | 2,781 | n/a | 654,514 | n/a |
 | KZG, SHPLONK, 3 polynomials at 2 points | 3,599 | n/a | 831,216 | n/a |
-| FRI/STARK, Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 18,009 | n/a | 3,891,631 | n/a |
+| FRI/STARK, Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 12,875 | n/a | 2,829,463 | n/a |
 
 Fe bytes include the verifying-key constants and, for the generated Groth16 contracts, nothing else but the call into the library; Solidity bytes are the compiler output of the reference verifier (key constants included).
 

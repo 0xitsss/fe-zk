@@ -71,7 +71,7 @@ Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool 
 | PLONK | gnark v0.12.0 | [`gnark.fe`](src/verifier/gnark.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark.fe` | 287,328 / 261,868 |
 | halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 375,982 / 322,590 (SHPLONK) |
 | KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,161 single opening, no reference |
-| FRI/STARK | Plonky3 `uni-stark` Fibonacci, 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe` | 4.67 M as a contract (4.29 M in `verify`), no reference exists |
+| FRI/STARK | Plonky3 `uni-stark` Fibonacci, 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe` | 1.38 M as a contract, no reference exists |
 | Poseidon (BN254) | circomlibjs 0.1.7 | [`src/hash/`](src/hash) | none | `vectors/poseidon` | `src/tests/hash.fe` | 25,400 / 29,005 (t=3) |
 | Anonymous kit: `LeanImt`, `Nullifiers`, Semaphore v4 (depth 1..10) | `@semaphore-protocol` 4.14.5 SDK, ceremony keys | [`src/anon/`](src/anon), [`semaphore/`](semaphore) | `fe-zk-gen groth16 --lib-module` | `vectors/semaphore` | `src/tests/anon.fe`, `semaphore/src/tests.fe`, `examples/anon_*` | about 216k per proof; a vote 266k (execution) |
 | Tornado Cash `withdraw` | real mainnet proofs | [`examples/tornado`](examples/tornado) | `fe-zk-gen groth16` | `vectors/tornado` | `examples/tornado/verifier/src` | 231,117 / 236,365 (Verifier.sol, solc 0.7.6) |
@@ -358,7 +358,7 @@ and the assumptions:
   verifier and example contract fits the EIP-170 limit of 24,576 bytes (guard: `scripts/code-size.sh`, run by
   `scripts/demo.sh`; ignored test `gen/fe-zk-gen/tests/code_size.rs`). `fe-zk-gen halo2` emits one contract per multiopen
   scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 22.1 kB, GWC 21.4 kB, both together would be over. The FRI
-  contract (`examples/fri_stark`, about 18 kB) fits as well.
+  contract (`examples/fri_stark`, about 13 kB) fits as well.
 - **FRI/STARK.** One AIR (Fibonacci), Plonky3 0.4.2 `uni-stark`, KoalaBear with a degree-4 extension, Keccak commitments,
   arity 2. Query count, blowup, PoW bits and trace height are constants of a per-configuration module
   (`src/verifier/fri/config_secure.fe`, emitted from the proof). The secure configuration (2^10 rows, `log_blowup` 4,
@@ -434,6 +434,10 @@ Found with fe 26.5.0 (3dab95f):
    constructors map invalid input to infinity.
 9. **`fe fmt` moves a trailing `//` comment inside an argument list.** Put comments above the call.
 10. **Optimizer drops unused test results.** Gas measurements must emit the result in an event.
+11. **Hidden per-call and per-access costs in hot code** (found while taking the FRI verifier from 4.67 M to 1.38 M gas, `docs/DESIGN.md`):
+    a struct with inline array fields passed by value is copied at every call (use `MemArray` fields); `MemArray` indexing and
+    `core::ptr::offset` carry a bounds check and a checked multiplication (about 100 gas per access; `offset_bytes(ptr, i * 32)`
+    in `#[arithmetic(unchecked)]` after one range assert avoids it); loops cost 100-400 gas per iteration at `-O1`.
 
 Works well (and was a pleasant surprise): associated consts in traits, const generics over `u256`, generics over
 trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforcement, `uses` effect checking.
