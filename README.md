@@ -15,7 +15,7 @@ that turns verifying keys into Fe verifier contracts whose keys the Fe compiler 
 operations; then one Groth16 proof of 512 generations, checked by a verifier that `fe-zk-gen` generated.*
 
 Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
-Submission: release tag [`v0.3.0`](https://github.com/0xitsss/fe-zk/releases/tag/v0.3.0) (the full commit SHA is in the submission form).
+Submission: release tag [`v0.3.1`](https://github.com/0xitsss/fe-zk/releases/tag/v0.3.1) (the full commit SHA is in the submission form).
 Current version: **0.3.0** ([CHANGELOG.md](CHANGELOG.md)): gas tuning of the BN254 verifiers, a FRI/STARK verifier 70 % cheaper
 and generic over an `Air` trait (second AIR: `MulAir`). Fe 26.5.0.
 
@@ -31,7 +31,7 @@ and generic over an `Air` trait (second AIR: `MulAir`). Fe 26.5.0.
 | **Fe-specific** | Key validation at compile time (`const fn` plus `static_assert`); typed `G1` / `G2` / `Fr` so an unchecked value cannot be passed; zero-cost `verify<A: Air>` and `Field` generics; effects keep verification free of storage access. See [Fe highlight](#fe-highlight). |
 | **Safety** | [docs/SAFETY.md](docs/SAFETY.md): each of nine rules with the file:line that enforces it and the test that fails without it. |
 | **Tests** | 208 in the root ingot, 232 in the example and Semaphore ingots, 58 Rust tests in `gen/`. Real proofs from snarkjs, gnark, halo2, Plonky3 and the Semaphore SDK; tampered ones rejected. |
-| **Found in Fe** | 11 compiler and std issues with repros: [Compiler issues](#compiler-issues-found--upstream-suggestions). |
+| **Found in Fe** | 11 compiler and std issues with repros ([Compiler issues](#compiler-issues-found--upstream-suggestions)). Sent upstream with fixes and regression tests: PRs [argotorg/fe#2061](https://github.com/argotorg/fe/pull/2061) (std precompile wrappers fail open without the precompile), [#2062](https://github.com/argotorg/fe/pull/2062) (parser), [#2063](https://github.com/argotorg/fe/pull/2063) (`fe fmt`); issues [#2064](https://github.com/argotorg/fe/issues/2064), [#2065](https://github.com/argotorg/fe/issues/2065). |
 | **Watch** | [Demo video, 2:57](https://youtu.be/3lFUyRV3F7Q): every number comes from a real run. |
 | **Try** | `fe test` (about 5 min) / `scripts/demo.sh` (20+ min) / `cd examples/life/cli && cargo run --release -- --prove` |
 
@@ -417,6 +417,8 @@ and the assumptions:
 - **Not audited.** No external review. See `docs/SAFETY.md` for what is enforced and tested.
 
 ## Compiler issues found / upstream suggestions
+
+Filed upstream (from the account of this repository's author): [#2061](https://github.com/argotorg/fe/pull/2061) fixes the fixed-output precompile wrappers of `std::evm::crypto` (item 4: they returned `Ok` with zeroed output when the precompile is absent); [#2062](https://github.com/argotorg/fe/pull/2062) fixes item 1; [#2063](https://github.com/argotorg/fe/pull/2063) fixes item 9; [#2064](https://github.com/argotorg/fe/issues/2064) asks for item 2; [#2065](https://github.com/argotorg/fe/issues/2065) asks for item 8. Each PR has a regression test and passes the Fe test suite.
 
 Found with fe 26.5.0 (3dab95f):
 
