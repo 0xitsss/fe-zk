@@ -13,7 +13,7 @@ use core::ptr::MemBuffer
 use std::evm::{Call, Ctx}
 use std::evm::packed::Packed
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
-use ingot::ec::precompile::{call_checked, get, put}
+pub use ingot::ec::precompile::inv_modexp
 use ingot::field::{Bn254Fr, Field}
 
 /// Constant circuit data shared by all halo2-KZG circuits. Private fields: `Vk::from_coords`.
@@ -177,25 +177,6 @@ impl Halo2Transcript {
         self.buf.u256(h)
         Bn254Fr::reduce(h)
     }
-}
-
-/// `1 / a` through the modexp precompile (`a^(r-2)`): about 1.4k gas instead of ~25k for the
-/// square-and-multiply loop. `None` for zero.
-pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call, ctx: Ctx) {
-    if a.is_zero() {
-        return Option::None
-    }
-    var input = MemBuffer::with_capacity(192)
-    put(mut input, 0, 32)
-    put(mut input, 1, 32)
-    put(mut input, 2, 32)
-    put(mut input, 3, a.to_canonical())
-    put(mut input, 4, Bn254Fr::MODULUS - 2)
-    put(mut input, 5, Bn254Fr::MODULUS)
-    var out = MemBuffer::with_capacity(32)
-    call_checked(5, 30000, mut input, 192, mut out, 32)
-    // The result is `< r` by the precompile contract; a zero result is impossible for a != 0.
-    Bn254Fr::from_canonical(get(out, 0))
 }
 
 /// Montgomery batch inversion: one modexp for all of `xs`. `None` if any element is zero.

@@ -45,7 +45,7 @@ use core::ptr::MemBuffer
 use std::evm::{Call, Ctx}
 use std::evm::crypto::{keccak256, mulmod}
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
-use ingot::ec::precompile::put
+use ingot::ec::precompile::{inv_modexp, put}
 use ingot::field::{Bn254Fr, Field}
 
 /// Scalar field modulus `r` (raw word form, for the `const fn` domain checks below).
@@ -424,7 +424,8 @@ uses (call: Call, ctx: Ctx)
     if acc.is_zero() {
         return false
     }
-    var inv_acc = acc.inv().unwrap()
+    // acc != 0 (checked above), so the inverse exists.
+    var inv_acc = inv_modexp(acc).unwrap()
     var lag = [Bn254Fr::zero(); NP]
     // w^(NP-1) .. w^0, walking back
     var wpow = [Bn254Fr::zero(); NP]

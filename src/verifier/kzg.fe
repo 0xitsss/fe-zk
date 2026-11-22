@@ -20,7 +20,7 @@ use core::ptr::MemBuffer
 use std::evm::{Call, Ctx}
 use std::evm::crypto::keccak256
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
-use ingot::ec::precompile::put
+use ingot::ec::precompile::{inv_modexp, put}
 use ingot::field::{Bn254Fr, Field}
 
 /// "FEZK-KZG-GWC-V1" right-aligned in one word.
@@ -211,7 +211,7 @@ uses (call: Call, ctx: Ctx)
     let a1 = y.mul(u2)
     let a2 = y.square().mul(u1)
     // r_0(u): line through (z1, e00), (z2, e01)
-    let dz_inv = z1.sub(z2).inv().unwrap()
+    let dz_inv = inv_modexp(z1.sub(z2)).unwrap()
     let r0u = evals[0].mul(u2).sub(evals[1].mul(u1)).mul(dz_inv)
     let rsum = r0u.add(a1.mul(evals[2])).add(a2.mul(evals[3]))
     let zt = u1.mul(u2)

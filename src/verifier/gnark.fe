@@ -50,7 +50,7 @@ use core::ptr::MemBuffer
 use std::evm::{Call, Ctx}
 use std::evm::crypto::mulmod
 use ingot::ec::{G1, G2, g1_add, g1_mul, pairing_check}
-use ingot::ec::precompile::{call_checked, get, put, put_at}
+use ingot::ec::precompile::{call_checked, get, inv_modexp, put, put_at}
 use ingot::field::{Bn254Fr, Field}
 use std::abi::{Bytes, Vec}
 
@@ -607,7 +607,8 @@ uses (call: Call, ctx: Ctx)
     if acc.is_zero() {
         return failed
     }
-    var inv_acc = acc.inv().unwrap()
+    // acc != 0 (checked above), so the inverse exists.
+    var inv_acc = inv_modexp(acc).unwrap()
     var lag = [zero; NP]
     let zn = zh.mul(vk.size_inv)
     i = NP
@@ -632,7 +633,7 @@ uses (call: Call, ctx: Ctx)
         if den.is_zero() {
             return failed
         }
-        let lj = wj.mul(vk.size_inv).mul(den.inv().unwrap()).mul(zh)
+        let lj = wj.mul(vk.size_inv).mul(inv_modexp(den).unwrap()).mul(zh)
         pi = pi.add(hash_to_fr(p.bsb[j]).mul(lj))
         j += 1
     }

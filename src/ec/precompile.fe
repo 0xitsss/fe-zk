@@ -3,6 +3,7 @@
 use core::ptr::{self, FixedMemBuffer, MemBuffer}
 use core::abi::{load_word, store_word}
 use std::evm::{Address, Call, Ctx}
+use ingot::field::{Bn254Fr, Field}
 
 // Every call passes an explicit gas cap just above the precompile's price. A failing precompile
 // (invalid point, bad proof) consumes ALL gas forwarded to it, so forwarding "everything" would
@@ -158,4 +159,29 @@ uses (call: Call, ctx: Ctx)
         assert(r.returndata_len() == out_len)
     }
     r.success()
+}
+
+/// `1 / a` in the BN254 scalar field through the modexp precompile (0x05, `a^(r-2)`): about 1.4k
+/// gas instead of about 25k for the square-and-multiply loop of `Field::inv`. `None` for zero.
+/// Success flag, returned length (32) and canonical result are checked (rule 6).
+pub fn inv_modexp(_ a: Bn254Fr) -> Option<Bn254Fr> uses (call: Call, ctx: Ctx) {
+    if a.is_zero() {
+        return Option::None
+    }
+    let input = unsafe {
+        FixedMemBuffer<192>::alloc_uninit()
+    }
+    fput(input, 0, 32)
+    fput(input, 32, 32)
+    fput(input, 64, 32)
+    fput(input, 96, a.to_canonical())
+    fput(input, 128, Bn254Fr::MODULUS - 2)
+    fput(input, 160, Bn254Fr::MODULUS)
+    var out = unsafe {
+        FixedMemBuffer<32>::alloc_uninit().into_buffer()
+    }
+    assert(call_try_fixed(5, 30000, input, mut out, 32))
+    // The result is `< r` by the precompile contract; `from_canonical` re-checks it, and a zero
+    // result is impossible for a != 0 (r is prime).
+    Bn254Fr::from_canonical(get(out, 0))
 }
