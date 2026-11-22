@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [0.3.0] - 2026-11-22
 
 Fe 26.5.0. Cheaper verifiers and a FRI/STARK verifier generic over the AIR. Crate and ingot manifests and generated
-file headers still say 0.2.0: the generator embeds its own version, so bumping it means regenerating every emitted file.
+file headers now carry 0.3.0 (`fe-zk-gen 0.3.0`).
 
 ### Changed
 - Gas tuning of the BN254 verifiers: shared `inv_modexp` (modexp precompile) instead of Fermat inversion in PLONK, gnark

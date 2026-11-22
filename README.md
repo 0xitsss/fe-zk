@@ -1,8 +1,8 @@
 # fe-zk
 
-[![CI](https://github.com/0xitsss/fe-zk/actions/workflows/ci.yml/badge.svg)](https://github.com/0xitsss/fe-zk/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Fe 26.5.0](https://img.shields.io/badge/Fe-26.5.0-orange.svg)](https://fe-lang.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/0xitsss/fe-zk/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/0xitsss/fe-zk/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![Fe 26.5.0](https://img.shields.io/badge/Fe-26.5.0-orange?style=flat-square)](https://fe-lang.org)
 
 **Pitch:** fe-zk lets Fe contracts verify zero-knowledge proofs: a generic field, curve and hash layer behind Fe
 traits, on-chain verifiers for Groth16, PLONK, halo2-KZG, KZG and FRI/STARK proofs, and a generator, `fe-zk-gen`,

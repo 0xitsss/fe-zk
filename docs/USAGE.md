@@ -5,7 +5,7 @@ in one evening; the next ones turn a circuit and a proof system of your own into
 is a reference for the field, curve and hash layer. Every command and Fe file below was run (the last section lists
 what was not).
 
-Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.2.0`, Node 24 with `@semaphore-protocol/{group,identity,proof}` 4.14.5,
+Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.3.0`, Node 24 with `@semaphore-protocol/{group,identity,proof}` 4.14.5,
 circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go), arkworks 0.5.0, Plonky3 0.4.2, Foundry (`anvil`, `cast`) 1.8.3.
 
 fe-zk has **not been audited**; read the [integration checklist](#7-integration-safety-checklist) before you deploy
@@ -549,7 +549,7 @@ cargo run -q -p fe-zk-gen -- groth16 --snarkjs ../../my-project/circuit/verifica
 ```
 
 ```
-fe-zk-gen 0.2.0: groth16/bn254 key from snarkjs: VALID
+fe-zk-gen 0.3.0: groth16/bn254 key from snarkjs: VALID
   public inputs : 2
   IC points     : 3
   key digest    : 0xaef353092ee900d4a37ecfd0a1e7ef266791053734ac739609ccca3e3aaf9f9e

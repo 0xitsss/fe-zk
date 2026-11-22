@@ -1,6 +1,6 @@
 [ingot]
 name = "anon_vote"
-version = "0.2.0"
+version = "0.3.0"
 
 [dependencies]
 fe_zk = { path = "../..", allow_unsafe = true }
