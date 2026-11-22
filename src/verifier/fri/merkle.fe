@@ -11,6 +11,7 @@
 //!
 //! Scope: one matrix per commitment, all rows of one height (the shape of this fixture's
 //! Fibonacci proof). Plonky3's mixed-height injection is not implemented.
+use core::ptr::{MemArray, offset_bytes}
 use std::evm::crypto::keccak_words
 use std::evm::packed::Packed
 use ingot::field::{Field, KoalaBear}
@@ -26,6 +27,11 @@ impl RowHasher {
 
     pub fn felt(mut self, _ v: KoalaBear) {
         self.buf.u32(le_word(v.to_canonical()))
+    }
+
+    /// Append the felt `v`, which must be canonical (`v < p`): callers range-check first.
+    pub fn felt_canonical(mut self, _ v: u256) {
+        self.buf.u32(le_word(v))
     }
 
     pub fn ext(mut self, _ e: KoalaBearExt4) {
@@ -47,4 +53,49 @@ pub fn climb(_ node: u256, _ index: u256, _ sibling: u256) -> u256 {
     } else {
         keccak_words([sibling, node])
     }
+}
+
+/// `p[i]` with a bounds check, addressed without the checked element-size multiplication of
+/// `core::ptr::offset` (`i * 32` cannot overflow once `i < p.len()`, which is checked first).
+#[inline(always)]
+#[arithmetic(unchecked)]
+pub fn load(_ p: MemArray<u256>, _ i: u256) -> u256 {
+    assert(i < (p.len() as u256))
+    unsafe {
+        *offset_bytes(p.ptr(), i * 32)
+    }
+}
+
+/// `climb` over the `n` siblings `p[off .. off + n]`: the root of the path from `node`, whose index
+/// is `index`. Same result as calling `climb` with `p[off + k]` and `index >> k` for `k < n`;
+/// the loop reads the siblings through one pointer after a single range check, and its counters
+/// use unchecked arithmetic: `k < n` and `off + n <= p.len()` (asserted below), so `off + k`
+/// cannot overflow; `index >> 1` cannot overflow.
+#[arithmetic(unchecked)]
+pub fn climb_path(
+    _ node: u256,
+    _ index: u256,
+    _ p: MemArray<u256>,
+    _ off: u256,
+    _ n: u256,
+) -> u256 {
+    assert(off + n <= (p.len() as u256))
+    let base = p.ptr()
+    var h = node
+    var pos = index
+    var k = off
+    let end = off + n
+    while k < end {
+        let sibling = unsafe {
+            *offset_bytes(base, k * 32)
+        }
+        if pos & 1 == 0 {
+            h = keccak_words([h, sibling])
+        } else {
+            h = keccak_words([sibling, h])
+        }
+        pos = pos >> 1
+        k += 1
+    }
+    h
 }

@@ -60,6 +60,18 @@ fn small_fields() {
     assert(
         KoalaBear::reduce(3).inv().unwrap().to_canonical() == 710235478,
     )
+    // the KoalaBear addition chain agrees with Fermat's `pow(a, p - 2)`
+    var k: u256 = 1
+    while k < 40 {
+        let a = KoalaBear::reduce(k * 123456791 + 5)
+        assert(a.inv().unwrap().eq(a.pow(0x7f000001 - 2)))
+        assert(a.mul(a.inv().unwrap()).eq(KoalaBear::one()))
+        k += 1
+    }
+    assert(
+        KoalaBear::reduce(0x7f000000).inv().unwrap().to_canonical() == 0x7f000000,
+    )
+    assert(KoalaBear::reduce(1).inv().unwrap().to_canonical() == 1)
     let g = 0xffffffff00000001
     // Python: (g - 1) * (g - 2) % g, pow(7, -1, g)
     assert(

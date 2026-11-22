@@ -15,7 +15,7 @@ the code of v0.2.0 (the verifier API of `docs/API.md`); paths are relative to th
 | `src/ec/bn254.fe:147` `G1::from_coords`, `:319` `G2::from_coords`, `:398` `G2Proof::from_coords` | coordinates `>= q` rejected | `src/tests/ec.fe` `g1_rejects_invalid`, `g2_rejects_invalid` |
 | `src/ec/bls12_381.fe:84`, `:147` `from_words` | non-canonical Fp words rejected before the precompile | `src/tests/ec_bls.fe` `g1_validation` |
 | `src/verifier/kzg.fe` | all inputs typed `G1` / `G2` / `Bn254Fr`; raw words cannot be passed | `src/tests/kzg.fe` `raw_inputs_need_checked_constructors` |
-| `src/verifier/fri.fe:270` `proof_is_canonical` | runs first in `fri::verify` (`:655`); every KoalaBear element of proof and public values `< p` | `src/tests/fri_suite.fe` `rejects_non_canonical_elements` (run for both configurations from `fri.fe`, `fri_secure.fe`) |
+| `src/verifier/fri.fe:429` `proof_header_is_canonical` (public values, claimed evaluations, PoW witnesses, final polynomial) and `:410` `proof_is_canonical` (adds the per-query words); `fri::verify` (`:984`) runs the header check first, and `check_query` (`:739`, `open_input` `:589` for the opened rows, the fold loop for the siblings) range-checks every per-query word it reads with `noncanonical` (`:315`) and rejects the query: the verdict equals that of the full `proof_is_canonical` pre-check | `src/tests/fri_suite.fe` `rejects_non_canonical_elements` (run for both configurations from `fri.fe`, `fri_secure.fe`) |
 | `src/hash/poseidon.fe` | inputs typed `Bn254Fr` | `src/tests/hash.fe` `poseidon_inputs_must_be_canonical` |
 | `src/verifier/groth16.fe:115` `groth16::verify_calldata` | public inputs through `Bn254Fr::from_canonical` (`:127`), `A`/`C` through `G1::from_coords` (`:137`, `:143`), `B` through `G2Proof::from_coords` (`:149`); any failure returns `false`; the typed `groth16::verify` (`:90`) cannot receive a raw word | `src/tests/groth16.fe` `groth16_multiplier_battery`, `groth16_multiplier2_battery`, `groth16_membership_battery`, `groth16_arkworks_multiplier_battery` (inputs `r` and `x + r`, coordinates `+ q`); generated `non_canonical_public_input_rejected`, `non_canonical_coordinate_rejected` |
 | `src/verifier/plonk.fe:241` `plonk::Proof::from_words`, `:222` `proof_point`, `:375` `plonk::verify` | six evaluations through `from_canonical` (`:251`-`:256`), commitments through `G1::from_coords`, public inputs through `from_canonical` (`:386`) | `src/tests/plonk.fe` `rejects_non_canonical_public_input`, `rejects_non_canonical_evaluation`, `rejects_off_curve_and_non_canonical_points` |
@@ -55,7 +55,7 @@ untrusted input.
 | Where | How | Test |
 |---|---|---|
 | `src/verifier/kzg.fe:141` | batch size is a const generic `N`; `assert(N != 0)` | `src/tests/kzg.fe` `gwc_rejects_swapped_or_resized` |
-| `src/verifier/fri.fe:655` `fri::verify` | public values typed `[u256; 3]`; proof length must equal `proof_words(params)` (`:659`), `params_valid` bounds the configuration | `src/tests/fri_suite.fe` `rejects_wrong_public_values`, `rejects_wrong_configuration` |
+| `src/verifier/fri.fe:984` `fri::verify` | public values typed `[u256; 3]`; proof length must equal `proof_words(params)` (`:988`), `params_valid` bounds the configuration | `src/tests/fri_suite.fe` `rejects_wrong_public_values`, `rejects_wrong_configuration` |
 | `fe-zk-gen` | `IC.len() == nPublic + 1` (`gen/fe-zk-gen/src/validate.rs:98`) | `gen/fe-zk-gen/tests/vk.rs` (wrong IC count, three ways) |
 | `src/verifier/groth16.fe:39` `groth16::Vk<N>`, `:90`, `:115` | `N` is a const generic of the key; inputs are `[Bn254Fr; N]` / `[u256; N]`; the generated contract fixes `N_PUBLIC` and the ABI `uint256[N]` | `src/tests/groth16.fe` `groth16_multiplier2_battery` (swapped inputs); generated `swapped_public_inputs_rejected`, `all_zero_public_inputs_rejected` |
 | `src/verifier/plonk.fe:119` `plonk::Vk::from_coords` (`NP == 0` rejected), `:179` `from_consts` (same conditions, poisons the key), `:375`, `:520` | `NP` const generic; the proof is exactly `[u256; 24]`; the number of public inputs cannot exceed the evaluation domain size (`NP <= 2^power`) | `src/tests/plonk.fe` `rejects_swapped_public_inputs`, `rejects_proof_of_other_circuit`, `vk_rejects_bad_domain_parameters` |
@@ -69,7 +69,7 @@ untrusted input.
 |---|---|---|
 | `src/hash/transcript.fe:41`, `:62` | tagged keccak per operation, label and counter in every squeeze | `src/tests/hash.fe` `transcript_changing_any_input_changes_the_challenge`, `transcript_domain_separation` |
 | `src/verifier/kzg.fe:108` `gwc_challenge`, `:157` `shplonk_challenge_y`, `:180` `shplonk_challenge_u` | GWC `v` and SHPLONK `y`, `u` bind the whole key, points, commitments and values | `src/tests/kzg.fe` `gwc_challenge_binds_every_input`, `shplonk_challenges_bind_every_input`, `*_matches_reference` |
-| `src/verifier/fri.fe:306` `replay_transcript` | Plonky3 observation order, checked challenge by challenge against Plonky3 | `src/tests/fri.fe` `transcript_matches_plonky3`, `transcript_binds_public_values_and_trace_commitment`, `transcript_binds_claimed_evaluations`, `transcript_binds_fri_commitments`, `transcript_binds_final_poly_and_query_pow` (`src/tests/fri_suite.fe`) |
+| `src/verifier/fri.fe:456` `replay_transcript` | Plonky3 observation order, checked challenge by challenge against Plonky3 | `src/tests/fri.fe` `transcript_matches_plonky3`, `transcript_binds_public_values_and_trace_commitment`, `transcript_binds_claimed_evaluations`, `transcript_binds_fri_commitments`, `transcript_binds_final_poly_and_query_pow` (`src/tests/fri_suite.fe`) |
 | Groth16 | no transcript. The verifying key is fixed in the generated contract; its keccak digest is exposed as `VK_DIGEST` (`examples/membership/verifier/src/lib.fe:16`) | generated `vk_digest_exposed`; `gen/fe-zk-gen/tests/emit.rs` `emission_is_deterministic_and_carries_digest` |
 | `src/verifier/plonk.fe:317` `plonk::challenges` | `beta, gamma, alpha, xi, v, u` in the snarkjs 0.7.6 order, binding the 8 key commitments, public inputs, every proof commitment and evaluation | `src/tests/plonk.fe` `transcript_binds_every_vk_commitment`, `transcript_binds_every_public_input`, `transcript_binds_every_commitment`, `transcript_binds_every_evaluation`, `challenges_match_snarkjs_multiplier2`, `challenges_match_snarkjs_membership` |
 | `src/verifier/gnark.fe:478` `gnark::challenges`, `:556` `gnark::trace`, `:422` `hash_to_fr` | gnark's sha256 chain (gamma, beta, alpha, zeta, folding, random challenge) over key, public inputs, commitments, evaluations | `src/tests/gnark.fe` `gnark_transcript_binds_every_vk_commitment`, `gnark_transcript_binds_every_public_input`, `gnark_transcript_binds_every_commitment`, `gnark_folding_and_random_challenges_bind_everything`, `challenges_match_gnark_mul`, `challenges_match_gnark_mulcommit`, `bsb22_hash_to_field_matches_gnark` |
@@ -97,8 +97,16 @@ canonical by construction). Every `#[arithmetic(unchecked)]` in `src/hash/` (`po
 `poseidon_unrolled.fe` and `poseidon2_unrolled.fe`) states its bound next to the code (lazy
 reduction bounds, `docs/DESIGN.md` "Hash gas"). Tests: the fast paths equal the checked references at maximal
 inputs (`src/tests/hash.fe` `poseidon_fast_equals_reference`, `poseidon2_fast_equals_generic`) and the constant
-tables are canonical (`poseidon_tables_are_canonical`, `poseidon2_tables_are_canonical`). Verifier code has no
-`unchecked` arithmetic; calldata words enter only through the checked constructors of rules 1 to 3. The only
+tables are canonical (`poseidon_tables_are_canonical`, `poseidon2_tables_are_canonical`). The Groth16, PLONK, KZG
+and halo2 verifiers have no `unchecked` arithmetic; their calldata words enter only through the checked constructors of rules 1 to 3.
+The FRI/STARK verifier (`src/verifier/fri.fe`, `fri/merkle.fe`, `field/ext.fe`, `field/fp.fe`) uses `#[arithmetic(unchecked)]` for gas on
+KoalaBear values, each with its bound in the doc comment: `Ext4::mul_lazy` (`p, W < 2^64`, sums `< 2^195`), `noncanonical` and
+`words_canonical` (`v + 0xffffff` may wrap only when `v >= 2^31`, which the first term already flags), `dot6`, `leaf8`,
+`horner_final` (values `< p < 2^31`, sums `< 2^68`), `check_query` (`params_valid(c)` first; lanes `< 2p`, products `< 2^64`),
+`climb_path`/`load`/`rd` (range asserted once before the pointer reads). Every proof word is range-checked (`< p`) before
+it enters this arithmetic (rule 1 row for FRI above). Tests: `src/tests/fri.fe` `ext_mul_extreme_coefficients` (all coefficients
+`p - 1`), the Plonky3 vectors for the extension field and the real-proof suites in `src/tests/fri_suite.fe`.
+Calldata words enter only through the checked constructors of rules 1 to 3. The only
 shifts on untrusted values are `hash_to_field` (`src/anon/hash.fe:9`, a right shift of a hash, cannot overflow) and the
 depth shifts of `LeanImt` (`src/anon/lean_imt.fe:20`, `depth` is capped below 32 first, section 11).
 

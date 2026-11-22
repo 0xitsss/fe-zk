@@ -411,7 +411,7 @@ pub fn transcript_binds_final_poly_and_query_pow(
     }
 }
 
-fn indices_differ(_ c: FriParams, _ a: [u256; 128], _ b: [u256; 128]) -> bool {
+fn indices_differ(_ c: FriParams, _ a: MemArray<u256>, _ b: MemArray<u256>) -> bool {
     var d = false
     var i: usize = 0
     while (i as u256) < c.num_queries {

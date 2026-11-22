@@ -109,7 +109,44 @@ impl<const P: u256> Field for Fp<P> {
         if self.v == 0 {
             return Option::None
         }
+        if P == KOALABEAR_P {
+            return Option::Some(self.inv_koalabear())
+        }
         // Fermat: a^(P-2) = a^-1 for prime P and a != 0.
         Option::Some(self.pow(P - 2))
+    }
+}
+
+#[inline(always)]
+fn sq<const P: u256>(_ x: u256) -> u256 {
+    mulmod(x, x, P)
+}
+
+#[inline(always)]
+fn sq3<const P: u256>(_ x: u256) -> u256 {
+    sq<P>(sq<P>(sq<P>(x)))
+}
+
+#[inline(always)]
+fn sq6<const P: u256>(_ x: u256) -> u256 {
+    sq3<P>(sq3<P>(x))
+}
+
+impl<const P: u256> Fp<P> {
+    /// `a^(P-2)` for `P = 2^31 - 2^24 + 1` (KoalaBear), `a != 0`, as a straight-line addition
+    /// chain: `P - 2 = 2^31 - 2^24 - 1 = (2^7 - 2) * 2^24 + (2^24 - 1)`. The exponent bits are
+    /// `1111110` followed by 24 ones, so `a^(P-2) = (t6^2)^(2^24) * t24` with `t_k = a^(2^k - 1)`.
+    /// 48 squarings (1 + 1 + 3 + 6 + 12 + 25) and 6 multiplications, no loop and no branch; `Fp::pow` needs about
+    /// as many `mulmod`s plus the loop overhead. Tested against `pow` in `src/tests/field.fe`.
+    fn inv_koalabear(self) -> Self {
+        let a = self.v
+        let t2 = mulmod(sq<P>(a), a, P)
+        let t3 = mulmod(sq<P>(t2), a, P)
+        let t6 = mulmod(sq3<P>(t3), t3, P)
+        let t12 = mulmod(sq6<P>(t6), t6, P)
+        let t24 = mulmod(sq6<P>(sq6<P>(t12)), t12, P)
+        // (t6^2)^(2^24): 25 squarings of t6
+        let u = sq<P>(sq6<P>(sq6<P>(sq6<P>(sq6<P>(t6)))))
+        Fp { v: mulmod(u, t24, P) }
     }
 }

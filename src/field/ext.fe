@@ -81,6 +81,15 @@ impl<F: Field + Copy, const W: u256> Ext4<F, W> {
     }
 
     pub fn mul(self, _ o: Self) -> Self {
+        // Small fields (`p, W < 2^64`): lazy reduction, one `% p` per coefficient.
+        if F::MODULUS < 0x10000000000000000 && W < 0x10000000000000000 {
+            return self.mul_lazy(o)
+        }
+        self.mul_checked(o)
+    }
+
+    /// Schoolbook product with every intermediate reduced.
+    fn mul_checked(self, _ o: Self) -> Self {
         let w = F::reduce(W)
         // x^4 = W
         let c0 = self
@@ -109,6 +118,31 @@ impl<F: Field + Copy, const W: u256> Ext4<F, W> {
             .add(self.c2.mul(o.c1))
             .add(self.c3.mul(o.c0))
         Ext4 { c0, c1, c2, c3 }
+    }
+
+    /// Same product with lazy reduction. Only called when `p < 2^64` and `W < 2^64`.
+    ///
+    /// Bound (unchecked arithmetic below, safety rule 7): the coefficients are canonical, so
+    /// each is `< p < 2^64` and each product `< 2^128`. The largest sum is
+    /// `c0 = a0 b0 + W (a1 b3 + a2 b2 + a3 b1) < 2^128 + 2^64 * 3 * 2^128 < 2^195`,
+    /// far below `2^256`; `c1`, `c2`, `c3` are smaller. One `% p` per coefficient then gives
+    /// the canonical value, so the result equals `mul_checked` exactly.
+    #[arithmetic(unchecked)]
+    fn mul_lazy(self, _ o: Self) -> Self {
+        let a0 = self.c0.to_canonical()
+        let a1 = self.c1.to_canonical()
+        let a2 = self.c2.to_canonical()
+        let a3 = self.c3.to_canonical()
+        let b0 = o.c0.to_canonical()
+        let b1 = o.c1.to_canonical()
+        let b2 = o.c2.to_canonical()
+        let b3 = o.c3.to_canonical()
+        Ext4 {
+            c0: F::reduce(a0 * b0 + W * (a1 * b3 + a2 * b2 + a3 * b1)),
+            c1: F::reduce(a0 * b1 + a1 * b0 + W * (a2 * b3 + a3 * b2)),
+            c2: F::reduce(a0 * b2 + a1 * b1 + a2 * b0 + W * (a3 * b3)),
+            c3: F::reduce(a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0),
+        }
     }
 
     pub fn square(self) -> Self {

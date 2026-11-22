@@ -44,16 +44,21 @@
 //! `p3_fri::verify_fri` step by step; comments name the Plonky3 counterpart.
 //!
 //! Safety rules: 1 (every field element of the proof and the public values is checked
-//! `< p` before use, `proof_is_canonical`), 4 (public value count is the array type, the proof
-//! length is the array type and re-checked against the parameters), 5 (the transcript observes
-//! the same data in the same order as Plonky3, and tests check that every observed input
-//! changes the challenges), 7 (no unchecked arithmetic: field operations are
-//! `addmod`/`mulmod`; shifts and indices are bounded by `params_valid`).
-use core::ptr::MemArray
+//! `< p` before use: `proof_header_is_canonical` up front, the per-query words by `check_query`
+//! with `noncanonical`; `proof_is_canonical` is the full pre-check with the same verdict), 4 (public
+//! value count is the array type, the proof length is the array type and re-checked against the
+//! parameters), 5 (the transcript observes the same data in the same order as Plonky3, and tests
+//! check that every observed input changes the challenges), 7 (the base-field arithmetic of the
+//! hot paths uses `#[arithmetic(unchecked)]` on canonical values only, with the bound stated in the
+//! doc comment of each function: `check_query`, `dot6`, `leaf8`, `horner_final`, `noncanonical`,
+//! `words_canonical`, `Ext4::mul_lazy`, `climb_path`; shifts and indices are bounded by
+//! `params_valid`).
+use core::ptr::{MemArray, offset_bytes}
+use std::evm::crypto::{keccak_words, mulmod}
 use ingot::field::{Field, KoalaBear}
 use ingot::field::ext::KoalaBearExt4
 use ingot::verifier::fri::challenger::Challenger
-use ingot::verifier::fri::merkle::{RowHasher, climb}
+use ingot::verifier::fri::merkle::{RowHasher, climb_path, load}
 
 type E = KoalaBearExt4
 
@@ -62,6 +67,17 @@ pub const MAX_FOLDS: usize = 20
 pub const MAX_QUERIES: usize = 128
 
 const KB_P: u256 = 0x7f000001
+/// `1/2 mod p = (p + 1) / 2`.
+const HALF: u256 = 0x3f800001
+const M32: u256 = 0x100000000
+const T64: u256 = 0x10000000000000000
+const T96: u256 = 0x1000000000000000000000000
+const T128: u256 = 0x100000000000000000000000000000000
+const T160: u256 = 0x10000000000000000000000000000000000000000
+const T192: u256 = 0x1000000000000000000000000000000000000000000000000
+const T224: u256 = 0x100000000000000000000000000000000000000000000000000000000
+const BYTE_MASK: u256 = 0x00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff
+const HALF_MASK: u256 = 0x0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff
 /// Plonky3 `KoalaBear::GENERATOR`, the coset shift of the committed domains.
 const KB_GENERATOR: u256 = 3
 /// `KoalaBear::two_adic_generator(24)`; smaller generators are its powers.
@@ -91,13 +107,25 @@ pub struct Challenges {
     /// FRI batching challenge.
     pub fri_alpha: E,
     /// FRI folding challenges, one per commit-phase round (first `num_folds` are used).
-    pub betas: [E; 20],
+    pub betas: MemArray<E>,
+    /// The same betas as 4 canonical words each (`beta_words[4 j + k]` is coefficient `k`).
+    pub beta_words: MemArray<u256>,
     pub pow_ok: bool,
     /// Query indices in `[0, 2^log_h)` (first `num_queries` are used).
-    pub indices: [u256; 128],
+    pub indices: MemArray<u256>,
+    /// `fri_alpha^k` for `k < 8`, the powers that weight the 8 opened columns in the reduced
+    /// opening (trace_local 0, 1; trace_next 2, 3; quotient chunk 4..7).
+    pub alpha_pows: MemArray<E>,
+    /// `gen_tab[i] = g_{i+1}` (`KoalaBear::two_adic_generator(i + 1)`) for `i < log_h`, and
+    /// `inv_tab[i] = g_{i+1}^-1`: the factors of `g_{LH}^{rev(index)}` and of its inverse.
+    pub gen_tab: MemArray<u256>,
+    pub inv_tab: MemArray<u256>,
+    /// `sum_k fri_alpha^k f_k(zeta)` over the columns opened at `zeta`: trace_local and the
+    /// quotient chunk (the part of the reduced opening that does not depend on the query).
+    pub claim_z: E,
+    /// The same sum over the columns opened at `zeta * g`: trace_next.
+    pub claim_zn: E,
 }
-
-impl Copy for Challenges {}
 
 // ---------------------------------------------------------------------------------------
 // configuration and proof layout
@@ -212,8 +240,18 @@ pub fn proof_words(_ c: FriParams) -> u256 {
 // field helpers
 // ---------------------------------------------------------------------------------------
 
+/// `p[i]` without a bounds check: `i` must be inside the allocation (callers assert the range).
+#[inline(always)]
+#[arithmetic(unchecked)]
+fn rd(_ base: *u256, _ i: u256) -> u256 {
+    unsafe {
+        *offset_bytes(base, i * 32)
+    }
+}
+
+#[inline(always)]
 fn at(_ p: MemArray<u256>, _ i: u256) -> u256 {
-    p[i as usize]
+    load(p, i)
 }
 
 /// Decode a canonical felt. Callers must have run `proof_is_canonical`; a non-canonical
@@ -232,20 +270,121 @@ fn extw(_ p: MemArray<u256>, _ i: u256) -> E {
     )
 }
 
-/// All `n` words from `from` are `< p`.
+/// All `n` words from `from` are `< p`, without a branch per word.
+///
+/// A word `v` is canonical iff `v < p = 0x7f000001`. `v >> 31 != 0` catches every `v >= 2^31`
+/// (whatever its size); for `v < 2^31` the sum `v + 0xffffff` is `< 2^32` (no overflow) and
+/// `(v + 0xffffff) >> 31 != 0` iff `v >= 2^31 - 0xffffff = p`. For `v >= 2^31` the sum may wrap
+/// modulo `2^256` (unchecked arithmetic, the only bound needed is the one above), which cannot
+/// matter because the first term already flags it. The flags are OR-ed together.
+#[arithmetic(unchecked)]
 fn words_canonical(_ p: MemArray<u256>, _ from: u256, _ n: u256) -> bool {
-    var ok = true
-    var i: u256 = 0
-    while i < n {
-        ok = ok && at(p, from + i) < KB_P
+    var bad: u256 = 0
+    var i: u256 = from
+    let end = from + n
+    assert(end <= (p.len() as u256))
+    let base = p.ptr()
+    while i < end {
+        let v = unsafe {
+            *offset_bytes(base, i * 32)
+        }
+        bad = bad | (v >> 31) | ((v + 0xffffff) >> 31)
         i += 1
     }
-    ok
+    bad == 0
 }
 
 /// `KoalaBear::two_adic_generator(k)` for `k <= 24`.
 fn two_adic_generator(_ k: u256) -> KoalaBear {
     kb(KB_TWO_ADIC_24).pow(1 << (24 - k))
+}
+
+/// `x^(2^k)` by `k` squarings.
+fn pow2_loop(_ x: u256, _ k: u256) -> u256 {
+    var r = x
+    var i: u256 = 0
+    while i < k {
+        r = mulmod(r, r, KB_P)
+        i += 1
+    }
+    r
+}
+
+/// 0 iff `v < p`: `v >> 31` flags every `v >= 2^31` (any size); for `v < 2^31` the sum
+/// `v + 0xffffff` is `< 2^32` and reaches bit 31 iff `v >= 2^31 - 0xffffff = p`. For `v >= 2^31`
+/// the sum may wrap modulo `2^256` (unchecked), which cannot matter: the first term already
+/// flags it.
+#[inline(always)]
+#[arithmetic(unchecked)]
+fn noncanonical(_ v: u256) -> u256 {
+    (v >> 31) | ((v + 0xffffff) >> 31)
+}
+
+/// `keccak256` input of a fold-round leaf: the Plonky3 serialization of the 8 felts
+/// `a0..a3 || b0..b3` (each the 4 little-endian bytes of its Montgomery form `v * 2^32 mod p`),
+/// which is exactly one 32-byte word, built in one go: 8 reductions, then one byte swap of
+/// all 8 lanes at once. Inputs canonical (`< p < 2^31`), so `v * 2^32 < 2^63`, each lane
+/// `m < 2^31` and `m * 2^(32 k)` for `k <= 7` stays below `2^255` and the lanes do not overlap.
+#[inline(always)]
+#[arithmetic(unchecked)]
+fn leaf8(
+    _ a0: u256,
+    _ a1: u256,
+    _ a2: u256,
+    _ a3: u256,
+    _ b0: u256,
+    _ b1: u256,
+    _ b2: u256,
+    _ b3: u256,
+) -> u256 {
+    var w = ((a0 * M32) % KB_P) * T224
+    w = w | (((a1 * M32) % KB_P) * T192)
+    w = w | (((a2 * M32) % KB_P) * T160)
+    w = w | (((a3 * M32) % KB_P) * T128)
+    w = w | (((b0 * M32) % KB_P) * T96)
+    w = w | (((b1 * M32) % KB_P) * T64)
+    w = w | (((b2 * M32) % KB_P) * M32)
+    w = w | ((b3 * M32) % KB_P)
+    // swap the bytes inside every 32-bit lane; the masked parts shifted up stay in their lane
+    w = ((w & BYTE_MASK) * 256) | ((w >> 8) & BYTE_MASK)
+    keccak_words([((w & HALF_MASK) * 65536) | ((w >> 16) & HALF_MASK)])
+}
+
+/// Final polynomial `sum_i c_i x^i` (`n` extension coefficients at words `off ..`, 4 words each)
+/// evaluated by Horner at the base-field point `x` on each of the 4 lanes, compared with the
+/// lanes `f0..f3`. The coefficient words are range-checked by `proof_is_canonical`
+/// (`words_canonical` over the final polynomial) before this is reached, and are checked again
+/// here. Unchecked arithmetic: accumulators `< p < 2^31`, `x < p`, so `acc * x + w < 2^62 + 2^31`.
+#[arithmetic(unchecked)]
+fn horner_final(
+    _ p: MemArray<u256>,
+    _ off: u256,
+    _ n: u256,
+    _ x: u256,
+    _ f0: u256,
+    _ f1: u256,
+    _ f2: u256,
+    _ f3: u256,
+) -> bool {
+    var a0: u256 = 0
+    var a1: u256 = 0
+    var a2: u256 = 0
+    var a3: u256 = 0
+    var bad: u256 = 0
+    var i = n
+    while i > 0 {
+        i -= 1
+        let w0 = at(p, off + 4 * i)
+        let w1 = at(p, off + 4 * i + 1)
+        let w2 = at(p, off + 4 * i + 2)
+        let w3 = at(p, off + 4 * i + 3)
+        bad = bad | noncanonical(w0) | noncanonical(w1) | noncanonical(w2) | noncanonical(w3)
+        a0 = (a0 * x + w0) % KB_P
+        a1 = (a1 * x + w1) % KB_P
+        a2 = (a2 * x + w2) % KB_P
+        a3 = (a3 * x + w3) % KB_P
+    }
+    bad == 0 && a0 == f0 && a1 == f1 && a2 == f2 && a3 == f3
 }
 
 /// `reverse_bits_len`: reverse the low `bits` bits of `v`.
@@ -267,7 +406,31 @@ fn reverse_bits(_ v: u256, _ bits: u256) -> u256 {
 
 /// Every base-field element in the proof and the public values is `< p`. Commitments and
 /// Merkle siblings are 32-byte strings and need no range check.
+///
+/// `verify` runs only `proof_header_is_canonical` up front (the parts every query shares) and
+/// leaves the per-query rows and fold siblings to `check_query`, which range-checks exactly the
+/// words it reads and rejects the query otherwise; a proof is accepted only if every query
+/// passes, so the verdict is the same as with this full pre-check, at one pass over fewer words.
 pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool {
+    if !proof_header_is_canonical(c, p, public) {
+        return false
+    }
+    let f = num_folds(c)
+    var ok = true
+    var q: u256 = 0
+    while q < c.num_queries {
+        let base = query_base(c, q)
+        ok = ok && words_canonical(p, base + q_trace_row(), 2)
+        ok = ok && words_canonical(p, base + q_quotient_row(c), 4)
+        ok = ok && words_canonical(p, base + q_fold_sibling(c), 4 * f)
+        q += 1
+    }
+    ok
+}
+
+/// The query-independent part of `proof_is_canonical`: public values, claimed evaluations,
+/// proof-of-work witnesses, final polynomial.
+pub fn proof_header_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool {
     var ok = public[0] < KB_P && public[1] < KB_P && public[2] < KB_P
     // trace_local, trace_next, quotient_chunk: 32 contiguous words
     ok = ok && words_canonical(p, off_trace_local(), 32)
@@ -284,16 +447,7 @@ pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 
         i += 1
     }
     ok = ok && words_canonical(p, off_final_poly(c), 4 * (1 << c.log_final))
-    ok = ok && at(p, off_query_pow(c)) < KB_P
-    var q: u256 = 0
-    while q < c.num_queries {
-        let base = query_base(c, q)
-        ok = ok && words_canonical(p, base + q_trace_row(), 2)
-        ok = ok && words_canonical(p, base + q_quotient_row(c), 4)
-        ok = ok && words_canonical(p, base + q_fold_sibling(c), 4 * f)
-        q += 1
-    }
-    ok
+    ok && at(p, off_query_pow(c)) < KB_P
 }
 
 // ---------------------------------------------------------------------------------------
@@ -327,7 +481,14 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
 
     // FRI: batching challenge, then per commit-phase round commit, (pow), beta
     let fri_alpha = ch.sample_ext()
-    var betas: [E; 20] = [E::zero(); 20]
+    // betas, indices and alpha_pows live in memory arrays: `Challenges` is passed to every
+    // query check, and a by-value struct with inline arrays is copied on every call
+    var betas = unsafe {
+        MemArray<E>::new_uninit(num_folds(c) as usize)
+    }
+    var beta_words = unsafe {
+        MemArray<u256>::new_uninit((4 * num_folds(c)) as usize)
+    }
     var pow_ok = true
     let f = num_folds(c)
     i = 0
@@ -336,7 +497,12 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
         if !ch.check_witness(c.commit_pow_bits, kb(at(p, off_commit_pow(c) + i))) {
             pow_ok = false
         }
-        betas[i as usize] = ch.sample_ext()
+        let beta = ch.sample_ext()
+        betas[i as usize] = beta
+        beta_words[(4 * i) as usize] = beta.coeff(0).to_canonical()
+        beta_words[(4 * i + 1) as usize] = beta.coeff(1).to_canonical()
+        beta_words[(4 * i + 2) as usize] = beta.coeff(2).to_canonical()
+        beta_words[(4 * i + 3) as usize] = beta.coeff(3).to_canonical()
         i += 1
     }
     i = 0
@@ -347,46 +513,78 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
     if !ch.check_witness(c.query_pow_bits, kb(at(p, off_query_pow(c)))) {
         pow_ok = false
     }
-    var indices: [u256; 128] = [0; 128]
+    var indices = unsafe {
+        MemArray<u256>::new_uninit(c.num_queries as usize)
+    }
     i = 0
     while i < c.num_queries {
         indices[i as usize] = ch.sample_bits(log_h(c))
         i += 1
     }
-    Challenges { alpha, zeta, fri_alpha, betas, pow_ok, indices }
+    // Query-independent part of the reduced opening, computed once here instead of once per
+    // query: powers of fri_alpha and the claimed evaluations folded with them.
+    var alpha_pows = unsafe {
+        MemArray<E>::new_uninit(8)
+    }
+    alpha_pows[0] = E::one()
+    i = 1
+    while i < 8 {
+        alpha_pows[i as usize] = alpha_pows[(i - 1) as usize].mul(fri_alpha)
+        i += 1
+    }
+    let tl0 = extw(p, off_trace_local())
+    let tl1 = extw(p, off_trace_local() + 4)
+    let tn0 = extw(p, off_trace_next())
+    let tn1 = extw(p, off_trace_next() + 4)
+    var claim_z = alpha_pows[0].mul(tl0).add(alpha_pows[1].mul(tl1))
+    i = 0
+    while i < 4 {
+        claim_z = claim_z
+            .add(
+                alpha_pows[(4 + i) as usize].mul(extw(p, off_quotient_chunk() + 4 * i)),
+            )
+        i += 1
+    }
+    let claim_zn = alpha_pows[2].mul(tn0).add(alpha_pows[3].mul(tn1))
+    // tables of the two-adic generators g_1 .. g_LH and their inverses, from the top:
+    // g_LH = g_24^(2^(24-LH)), g_{k-1} = g_k^2
+    let lh = log_h(c)
+    var gen_tab = unsafe {
+        MemArray<u256>::new_uninit(lh as usize)
+    }
+    var inv_tab = unsafe {
+        MemArray<u256>::new_uninit(lh as usize)
+    }
+    var g = pow2_loop(KB_TWO_ADIC_24, 24 - lh)
+    // g_LH has multiplicative order 2^LH and is nonzero: the inverse exists
+    var gi = kb(g).inv().unwrap().to_canonical()
+    i = lh
+    while i > 0 {
+        i -= 1
+        gen_tab[i as usize] = g
+        inv_tab[i as usize] = gi
+        g = mulmod(g, g, KB_P)
+        gi = mulmod(gi, gi, KB_P)
+    }
+    Challenges {
+        alpha,
+        zeta,
+        fri_alpha,
+        betas,
+        beta_words,
+        pow_ok,
+        indices,
+        alpha_pows,
+        gen_tab,
+        inv_tab,
+        claim_z,
+        claim_zn,
+    }
 }
 
 // ---------------------------------------------------------------------------------------
 // FRI queries
 // ---------------------------------------------------------------------------------------
-
-/// Hash `n` leaf felts starting at word `from`, climb `LH` siblings starting at word `path`
-/// and compare with `root`.
-fn input_opening_ok(
-    _ c: FriParams,
-    _ p: MemArray<u256>,
-    _ from: u256,
-    _ n: u256,
-    _ path: u256,
-    _ index: u256,
-    _ root: u256,
-) -> bool {
-    var h = RowHasher::new()
-    var i: u256 = 0
-    while i < n {
-        h.felt(kb(at(p, from + i)))
-        i += 1
-    }
-    var node = h.finish()
-    var idx = index
-    i = 0
-    while i < log_h(c) {
-        node = climb(node, idx, at(p, path + i))
-        idx = idx >> 1
-        i += 1
-    }
-    node == root
-}
 
 /// `p3_fri::verify_fri::open_input` for one query: check both input Merkle openings and
 /// combine the opened values into the reduced opening
@@ -400,143 +598,278 @@ fn open_input(
     _ x: KoalaBear,
 ) -> Option<E> {
     let base = query_base(c, q)
-    let index = ch.indices[q as usize]
+    let index = load(ch.indices, q)
+    let b0 = at(p, base + 0)
+    let b1 = at(p, base + 1)
+    let qr = base + q_quotient_row(c)
+    let q0 = at(p, qr)
+    let q1 = at(p, qr + 1)
+    let q2 = at(p, qr + 2)
+    let q3 = at(p, qr + 3)
+    // The opened rows are range-checked before they are hashed or used (`verify` leaves the
+    // per-query words to this function, see `proof_is_canonical`); a non-canonical word rejects
+    // the query, it never reaches `kb` (which would revert) or `dot6` (which needs `< p`).
+    if (noncanonical(b0)
+            | noncanonical(b1)
+            | noncanonical(q0)
+            | noncanonical(q1)
+            | noncanonical(q2)
+            | noncanonical(q3))
+        != 0 {
+        return Option::None
+    }
     // trace commitment: one matrix, width 2, 2^LH rows
-    if !input_opening_ok(
-        c,
-        p,
-        base + q_trace_row(),
-        2,
-        base + q_trace_path(),
-        index,
-        at(p, 0),
-    ) {
+    var h = RowHasher::new()
+    h.felt_canonical(b0)
+    h.felt_canonical(b1)
+    if climb_path(h.finish(), index, p, base + q_trace_path(), log_h(c)) != at(p, 0) {
         return Option::None
     }
     // quotient commitment: one chunk, width 4 (the 4 coefficients of an extension value)
-    if !input_opening_ok(
-        c,
-        p,
-        base + q_quotient_row(c),
-        4,
-        base + q_quotient_path(c),
-        index,
-        at(p, 1),
-    ) {
+    var hq = RowHasher::new()
+    hq.felt_canonical(q0)
+    hq.felt_canonical(q1)
+    hq.felt_canonical(q2)
+    hq.felt_canonical(q3)
+    if climb_path(hq.finish(), index, p, base + q_quotient_path(c), log_h(c)) != at(p, 1) {
         return Option::None
     }
 
+    // sum_k a^k (f_k(z_k) - f_k(x)) / (z_k - x) = (claim_z - Sz) / (zeta - x)
+    //                                            + (claim_zn - Szn) / (zeta*g - x)
+    // with Sz = sum a^k f_k(x) over the columns opened at zeta, Szn over trace_next; the f_k(x)
+    // are the base-field openings of this query.
+    let sz = dot6(
+        ch.alpha_pows[0],
+        b0,
+        ch.alpha_pows[1],
+        b1,
+        ch.alpha_pows[4],
+        q0,
+        ch.alpha_pows[5],
+        q1,
+        ch.alpha_pows[6],
+        q2,
+        ch.alpha_pows[7],
+        q3,
+    )
+    let szn = ch.alpha_pows[2].scale(kb(b0)).add(ch.alpha_pows[3].scale(kb(b1)))
     let zeta = ch.zeta
     let zeta_next = zeta.scale(two_adic_generator(c.log_n))
     let x_ext = E::from_base(x)
-    let inv_z = match zeta.sub(x_ext).inv() {
+    let d0 = zeta.sub(x_ext)
+    let d1 = zeta_next.sub(x_ext)
+    // one inversion for both denominators: 1/d0 = d1 / (d0 d1), 1/d1 = d0 / (d0 d1);
+    // `None` when either is zero (x == zeta or x == zeta*g), as before.
+    let inv_d = match d0.mul(d1).inv() {
         Option::Some(v) => v,
         Option::None => {
             return Option::None
         },
     }
-    let inv_zn = match zeta_next.sub(x_ext).inv() {
-        Option::Some(v) => v,
-        Option::None => {
-            return Option::None
-        },
-    }
-    var ro = E::zero()
-    var alpha_pow = E::one()
-    var i: u256 = 0
-    while i < 2 {
-        let t = extw(p, off_trace_local() + 4 * i).sub(E::from_base(kb(at(p, base + i))))
-        ro = ro.add(alpha_pow.mul(t).mul(inv_z))
-        alpha_pow = alpha_pow.mul(ch.fri_alpha)
-        i += 1
-    }
-    i = 0
-    while i < 2 {
-        let t = extw(p, off_trace_next() + 4 * i).sub(E::from_base(kb(at(p, base + i))))
-        ro = ro.add(alpha_pow.mul(t).mul(inv_zn))
-        alpha_pow = alpha_pow.mul(ch.fri_alpha)
-        i += 1
-    }
-    i = 0
-    while i < 4 {
-        let t = extw(p, off_quotient_chunk() + 4 * i)
-            .sub(E::from_base(kb(at(p, base + q_quotient_row(c) + i))))
-        ro = ro.add(alpha_pow.mul(t).mul(inv_z))
-        alpha_pow = alpha_pow.mul(ch.fri_alpha)
-        i += 1
-    }
-    Option::Some(ro)
+    let n0 = ch.claim_z.sub(sz).mul(d1)
+    let n1 = ch.claim_zn.sub(szn).mul(d0)
+    Option::Some(n0.add(n1).mul(inv_d))
+}
+
+/// `sum_i a_i * v_i` for extension elements `a_i` and canonical base-field values `v_i < p`,
+/// one reduction per coefficient. Unchecked arithmetic: every `a_i` coefficient and `v_i` is
+/// `< p < 2^31` (the `a_i` are field elements; the `v_i` are checked by `proof_is_canonical`),
+/// so each product is `< 2^62` and the sum of 6 products `< 2^65`, no overflow of `u256`.
+#[arithmetic(unchecked)]
+fn dot6(
+    _ a0: E,
+    _ v0: u256,
+    _ a1: E,
+    _ v1: u256,
+    _ a2: E,
+    _ v2: u256,
+    _ a3: E,
+    _ v3: u256,
+    _ a4: E,
+    _ v4: u256,
+    _ a5: E,
+    _ v5: u256,
+) -> E {
+    E::new(
+        KoalaBear::reduce(
+            a0.coeff(0).to_canonical() * v0
+                + a1.coeff(0).to_canonical() * v1
+                + a2.coeff(0).to_canonical() * v2
+                + a3.coeff(0).to_canonical() * v3
+                + a4.coeff(0).to_canonical() * v4
+                + a5.coeff(0).to_canonical() * v5,
+        ),
+        KoalaBear::reduce(
+            a0.coeff(1).to_canonical() * v0
+                + a1.coeff(1).to_canonical() * v1
+                + a2.coeff(1).to_canonical() * v2
+                + a3.coeff(1).to_canonical() * v3
+                + a4.coeff(1).to_canonical() * v4
+                + a5.coeff(1).to_canonical() * v5,
+        ),
+        KoalaBear::reduce(
+            a0.coeff(2).to_canonical() * v0
+                + a1.coeff(2).to_canonical() * v1
+                + a2.coeff(2).to_canonical() * v2
+                + a3.coeff(2).to_canonical() * v3
+                + a4.coeff(2).to_canonical() * v4
+                + a5.coeff(2).to_canonical() * v5,
+        ),
+        KoalaBear::reduce(
+            a0.coeff(3).to_canonical() * v0
+                + a1.coeff(3).to_canonical() * v1
+                + a2.coeff(3).to_canonical() * v2
+                + a3.coeff(3).to_canonical() * v3
+                + a4.coeff(3).to_canonical() * v4
+                + a5.coeff(3).to_canonical() * v5,
+        ),
+    )
 }
 
 /// `p3_fri::verify_fri` loop body for one query: open the inputs, fold `num_folds` times
 /// checking each commit-phase Merkle opening, compare with the final polynomial.
+///
+/// Unchecked arithmetic (safety rule 7), with these bounds. Parameters: `params_valid(c)` is
+/// tested first, so every loop counter, shift, offset and `lh`, `j`, `4 * j` is below `2^32`
+/// and `lh - 1 - j >= 0` (`j < num_folds <= lh - 1`). Field values: `y, y_inv, den_inv, s`,
+/// the lanes `f_k`, `e0_k`, `e1_k` and the beta words are canonical (`< p < 2^31`; the siblings
+/// are checked into `bad`, and a query with `bad != 0` returns `false` before the final
+/// comparison; the beta words come from `sample_ext`). Then `d_k = e1_k + p - e0_k < 2p`,
+/// `b0 = beta_0 + p - s < 2p`, `b_k < p`, each product `< 4 p^2 < 2^64`, and the sums above
+/// consist of at most 10 products, `< 2^68`; `(sum % p) * den_inv < 2^62`; adding `e0_k < 2^31`
+/// stays far below `2^256`.
+#[arithmetic(unchecked)]
 pub fn check_query(_ c: FriParams, _ p: MemArray<u256>, _ ch: Challenges, _ q: u256) -> bool {
+    if !params_valid(c) {
+        return false
+    }
     let base = query_base(c, q)
-    let index = ch.indices[q as usize]
+    let index = load(ch.indices, q)
     let lh = log_h(c)
-    // x = GENERATOR * g_{LH}^{rev(index)}
-    let g_lh = two_adic_generator(lh)
-    let x = kb(KB_GENERATOR).mul(g_lh.pow(reverse_bits(index, lh)))
-    var folded = match open_input(c, p, ch, q, x) {
+    // the whole query record and the commit-phase commitments lie inside the proof: the reads
+    // below use `rd` (no per-word bounds check) on offsets inside these two ranges
+    assert(base + query_words(c) <= (p.len() as u256))
+    assert(off_fri_commits() + num_folds(c) <= (p.len() as u256))
+    let pb = p.ptr()
+    // y0 = g_{LH}^{rev(index)}. Bit i of `index` contributes g_{LH}^(2^(LH-1-i)) = g_{i+1},
+    // so y0 is the product of the table entries of the set bits (no bit reversal, no pow); the
+    // same loop builds y0^-1 from the inverse table. The coset shift: x = GENERATOR * y0.
+    assert(
+        lh <= (ch.gen_tab.len() as u256) && lh <= (ch.inv_tab.len() as u256),
+    )
+    let gb = ch.gen_tab.ptr()
+    let ib = ch.inv_tab.ptr()
+    var y0: u256 = 1
+    var y0_inv: u256 = 1
+    var bits = index
+    var i: u256 = 0
+    while i < lh {
+        if bits & 1 == 1 {
+            y0 = mulmod(y0, unsafe { *offset_bytes(gb, i * 32) }, KB_P)
+            y0_inv = mulmod(y0_inv, unsafe { *offset_bytes(ib, i * 32) }, KB_P)
+        }
+        bits = bits >> 1
+        i += 1
+    }
+    let y0k = kb(y0)
+    let x = kb(KB_GENERATOR).mul(y0k)
+    let first = match open_input(c, p, ch, q, x) {
         Option::Some(v) => v,
         Option::None => {
             return false
         },
     }
+    // The folded value is carried as 4 canonical lanes (`u256` locals `< p`) through the fold
+    // rounds: the base-field products below are `mulmod`-free raw arithmetic with the bounds
+    // stated at `fold_step`, and the proof's own words are read raw and range-checked into
+    // `bad` (OR of `noncanonical` flags, tested after the loop).
+    var f0 = first.coeff(0).to_canonical()
+    var f1 = first.coeff(1).to_canonical()
+    var f2 = first.coeff(2).to_canonical()
+    var f3 = first.coeff(3).to_canonical()
+    var bad: u256 = 0
+    // y_j = y0^(2^j) = g_{LH}^{rev(idx_j)} (idx_j = index >> j) because shifting the index
+    // squares the point, and the fold point of round j is s_j = (-1)^(idx_j & 1) y_j (the
+    // lowest bit of idx_j is the top exponent bit and g^(2^(LH-1)) = -1). Hence no `pow` or bit
+    // reversal per round, and 1/(-2 s_j) comes from y0^-1 (squared each round) instead of one
+    // inversion per round.
+    var y: u256 = y0
+    var y_inv: u256 = y0_inv
     var idx = index
     var j: u256 = 0
-    var g_fold = g_lh
     var off: u256 = base + q_fold_paths(c)
+    let sib_base = base + q_fold_sibling(c)
     while j < num_folds(c) {
         // height of the folded codeword: 2^lhj, so the path has lhj siblings
         let lhj = lh - 1 - j
-        let sib = extw(p, base + q_fold_sibling(c) + 4 * j)
-        var e0 = folded
-        var e1 = sib
-        if idx & 1 == 1 {
-            e0 = sib
-            e1 = folded
+        let sb = sib_base + 4 * j
+        let t0 = rd(pb, sb)
+        let t1 = rd(pb, sb + 1)
+        let t2 = rd(pb, sb + 2)
+        let t3 = rd(pb, sb + 3)
+        bad = bad | noncanonical(t0) | noncanonical(t1) | noncanonical(t2) | noncanonical(t3)
+        // (e0, e1) = (folded, sibling) in index order
+        let odd = idx & 1 == 1
+        var leaf: u256 = 0
+        if odd {
+            leaf = leaf8(t0, t1, t2, t3, f0, f1, f2, f3)
+        } else {
+            leaf = leaf8(f0, f1, f2, f3, t0, t1, t2, t3)
         }
         idx = idx >> 1
-        var hr = RowHasher::new()
-        hr.ext(e0)
-        hr.ext(e1)
-        var node = hr.finish()
-        var k: u256 = 0
-        var pos = idx
-        while k < lhj {
-            node = climb(node, pos, at(p, off + k))
-            pos = pos >> 1
-            k += 1
-        }
-        if node != at(p, off_fri_commits() + j) {
+        if climb_path(leaf, idx, p, off, lhj) != rd(pb, off_fri_commits() + j) {
             return false
         }
         off += lhj
-        // TwoAdicFriFolding::fold_row: xs = [s, -s], s = g_{lhj+1}^{rev(idx, lhj)}
-        // g_{lhj+1} = g_{lh-j}: the generator of the previous round squared
-        let s = g_fold.pow(reverse_bits(idx, lhj))
-        g_fold = g_fold.square()
-        let den_inv = match s.add(s).neg().inv() {
-            Option::Some(v) => v,
-            Option::None => {
-                return false
-            },
+        // TwoAdicFriFolding::fold_row: xs = [s, -s], s = (-1)^odd y_j;
+        // folded = e0 + (beta - s) (e1 - e0) / (-2 s)
+        // 1/(-2 s) = (-1)^(odd+1) * (1/2) * y_j^-1
+        let half_inv = mulmod(HALF, y_inv, KB_P)
+        var s = y
+        var den_inv = KB_P - half_inv
+        var e00 = f0
+        var e01 = f1
+        var e02 = f2
+        var e03 = f3
+        var e10 = t0
+        var e11 = t1
+        var e12 = t2
+        var e13 = t3
+        if odd {
+            s = KB_P - y
+            den_inv = half_inv
+            e00 = t0
+            e01 = t1
+            e02 = t2
+            e03 = t3
+            e10 = f0
+            e11 = f1
+            e12 = f2
+            e13 = f3
         }
-        folded = e0.add(
-                ch.betas[j as usize].sub(E::from_base(s)).mul(e1.sub(e0)).scale(den_inv),
-            )
+        // e1 - e0 and beta - s as lanes: d_k < 2p, t_k < 2p (bounds at the function head)
+        let d0 = e10 + KB_P - e00
+        let d1 = e11 + KB_P - e01
+        let d2 = e12 + KB_P - e02
+        let d3 = e13 + KB_P - e03
+        let bw = 4 * j
+        let b0 = load(ch.beta_words, bw) + KB_P - s
+        let b1 = load(ch.beta_words, bw + 1)
+        let b2 = load(ch.beta_words, bw + 2)
+        let b3 = load(ch.beta_words, bw + 3)
+        // (beta - s)(e1 - e0) in F[x]/(x^4 - 3), then * den_inv, then + e0
+        f0 = (e00 + ((b0 * d0 + 3 * (b1 * d3 + b2 * d2 + b3 * d1)) % KB_P) * den_inv) % KB_P
+        f1 = (e01 + ((b0 * d1 + b1 * d0 + 3 * (b2 * d3 + b3 * d2)) % KB_P) * den_inv) % KB_P
+        f2 = (e02 + ((b0 * d2 + b1 * d1 + b2 * d0 + 3 * (b3 * d3)) % KB_P) * den_inv) % KB_P
+        f3 = (e03 + ((b0 * d3 + b1 * d2 + b2 * d1 + b3 * d0) % KB_P) * den_inv) % KB_P
+        y = mulmod(y, y, KB_P)
+        y_inv = mulmod(y_inv, y_inv, KB_P)
         j += 1
     }
-    // final polynomial (2^log_final coefficients, Horner) at x = g_{LH}^{rev(idx, LH)}
-    let xf = g_lh.pow(reverse_bits(idx, lh))
-    var eval = E::zero()
-    var i: u256 = 1 << c.log_final
-    while i > 0 {
-        i -= 1
-        eval = eval.scale(xf).add(extw(p, off_final_poly(c) + 4 * i))
-    }
-    eval.eq(folded)
+    if bad != 0 { return false }
+    // final polynomial (2^log_final coefficients, Horner) at x = g_{LH}^{rev(idx, LH)} = y_F
+    horner_final(p, off_final_poly(c), 1 << c.log_final, y, f0, f1, f2, f3)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -659,7 +992,7 @@ pub fn verify(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool 
     if (p.len() as u256) != proof_words(c) {
         return false
     }
-    if !proof_is_canonical(c, p, public) {
+    if !proof_header_is_canonical(c, p, public) {
         return false
     }
     let ch = replay_transcript(c, p, public)

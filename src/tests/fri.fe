@@ -67,6 +67,23 @@ fn ext_matches_plonky3() {
     assert(KoalaBearExt4::zero().inv().is_none())
 }
 
+/// Lazy reduction in `Ext4::mul` at the extreme coefficients (all `p - 1`, mixed values near `p`).
+/// Expected values from Python (`(a * b) mod (x^4 - 3)`, coefficients mod p).
+#[test]
+fn ext_mul_extreme_coefficients() {
+    let m = ext([P - 1, P - 1, P - 1, P - 1])
+    assert(same(m.mul(m), [10, 8, 6, 4]))
+    assert(same(m.square(), [10, 8, 6, 4]))
+    let a = ext([P - 1, 1, P - 2, 12345678])
+    let b = ext([2, P - 1, P - 1, P - 3])
+    assert(
+        same(a.mul(b), [2093669394, 2093669420, 2019595327, 24691360]),
+    )
+    assert(
+        same(b.mul(a), [2093669394, 2093669420, 2019595327, 24691360]),
+    )
+}
+
 #[test]
 fn two_adic_generators_match_plonky3() {
     // the verifier derives g_k from g_24 by repeated squaring
