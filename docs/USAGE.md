@@ -854,11 +854,12 @@ fn eip4844_point_evaluation() uses (call: Call, ctx: Ctx) {
 
 ### (g) FRI/STARK (Plonky3)
 
-What is supported: **one family**. A Plonky3 0.4.2 `p3-uni-stark` proof of the **Fibonacci AIR** (2 columns, public
-values `(a, b, x)`), over KoalaBear with the degree-4 extension, FRI with arity 2, Keccak-256 Merkle commitments and
+What is supported: **one family**. A Plonky3 0.4.2 `p3-uni-stark` proof of any AIR that implements the `Air` trait
+(`verify<A: Air>`; shipped: the **Fibonacci AIR** with 2 columns and public values `(a, b, x)`, and a 6-column
+multiplication AIR; constraint degree at most 2), over KoalaBear with the degree-4 extension, FRI with arity 2, Keccak-256 Merkle commitments and
 the Keccak `SerializingChallenger32`. The verifier logic is written once; what varies is a small
-configuration module (`FriParams`: trace height, blowup, final polynomial, number of queries, proof-of-work bits). Other
-AIRs need new verifier code, not a new config. The shipped secure configuration (2^10 rows, blowup 16, 20 queries, 20
+configuration module (`FriParams`: trace width, trace height, blowup, final polynomial, number of queries, proof-of-work bits). Another AIR
+needs one `impl Air` (see `docs/DESIGN.md`, "Adding an AIR"), not new verifier code. The shipped secure configuration (2^10 rows, blowup 16, 20 queries, 20
 PoW bits) has 100 bits of security under Plonky3's conjecture, and about 59 bits (Johnson bound) or 38 bits (unique
 decoding) by our own estimate of what is proven; it costs about 4.3 M gas of execution. Research-grade (see the
 [checklist](#7-integration-safety-checklist)).

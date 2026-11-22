@@ -6,10 +6,13 @@
 use core::ptr::MemArray
 use ingot::field::{Field, KoalaBear}
 use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::air::Air
 use ingot::verifier::fri::{
+    public_values,
     Challenges,
     FriParams,
     check_air,
+    air_matches,
     check_query,
     num_folds,
     off_commit_pow,
@@ -65,6 +68,13 @@ fn clone_words(_ p: MemArray<u256>) -> MemArray<u256> {
     r
 }
 
+/// A copy of the public values with value `i` replaced by `v`.
+fn with_public(_ public: MemArray<u256>, _ i: usize, _ v: u256) -> MemArray<u256> {
+    var r = clone_words(public)
+    r[i] = v
+    r
+}
+
 /// Tamper modes of `rejects_all` and `challenges_after`.
 const FLIP: u256 = 0
 const BUMP: u256 = 1
@@ -82,22 +92,22 @@ fn tampered(_ old: u256, _ mode: u256, _ v: u256) -> u256 {
 /// For every word index in `idx`: `verify` rejects `p` with that word tampered (`FLIP` the low
 /// bit of a hash, `BUMP` a field element plus one, `ADD_P` a non-canonical encoding, `PUT` set to
 /// `v`). One copy of the proof is made and the word restored after each check.
-fn rejects_all<const N: usize>(
+fn rejects_all<A: Air>(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
-    _ idx: [u256; N],
+    _ public: MemArray<u256>,
+    _ idx: MemArray<u256>,
     _ mode: u256,
     _ v: u256,
 ) -> bool {
     var r = clone_words(p)
     var ok = true
     var k: usize = 0
-    while k < N {
+    while k < idx.len() {
         let i = idx[k] as usize
         let old = r[i]
         r[i] = tampered(old, mode, v)
-        ok = ok && !verify(c, r, public)
+        ok = ok && !verify<A>(c, r, public)
         r[i] = old
         k += 1
     }
@@ -108,7 +118,7 @@ fn rejects_all<const N: usize>(
 fn challenges_after(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
     _ i: u256,
     _ mode: u256,
 ) -> Challenges {
@@ -125,23 +135,24 @@ pub fn layout_is_consistent(_ c: FriParams, _ p: MemArray<u256>) {
     assert(query_base(c, 1) - query_base(c, 0) == query_words(c))
 }
 
-pub fn accepts(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn accepts<A: Air>(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) {
     assert(proof_is_canonical(c, p, public))
     let ch = replay_transcript(c, p, public)
     assert(ch.pow_ok)
-    assert(check_air(c, p, public, ch))
+    assert(air_matches<A>(c))
+    assert(check_air<A>(c, p, public, ch))
     var q: u256 = 0
     while q < c.num_queries {
         assert(check_query(c, p, ch, q))
         q += 1
     }
-    assert(verify(c, p, public))
+    assert(verify<A>(c, p, public))
 }
 
 pub fn transcript_matches<const F: usize, const Q: usize>(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
     _ alpha: [u256; 4],
     _ zeta: [u256; 4],
     _ fri_alpha: [u256; 4],
@@ -167,160 +178,263 @@ pub fn transcript_matches<const F: usize, const Q: usize>(
     }
 }
 
-pub fn rejects_tampered_merkle_siblings(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn rejects_tampered_merkle_siblings<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     let last = c.num_queries - 1
     let lh = c.log_n + c.log_blowup
     let fp = q_fold_paths(c)
     let n_fp = query_words(c) - fp
     // trace and quotient input paths: first, middle and last sibling, first, middle and last query
     assert(
-        rejects_all(
+        rejects_all<A>(
             c,
             p,
             public,
-            [
-                query_base(c, 1) + q_trace_path() + 3,
-                query_base(c, last) + q_trace_path(),
-                query_base(c, 0) + q_trace_path() + lh - 1,
-                query_base(c, 2) + q_quotient_path(c),
-                query_base(c, 1) + q_quotient_path(c) + lh - 1,
-                // commit-phase openings: first, a middle and the last sibling of the concatenated paths
-                query_base(c, 0) + fp,
-                query_base(c, last) + fp + n_fp / 2,
-                query_base(c, last) + fp + n_fp - 1,
-            ],
+            public_values(
+                [
+                    query_base(c, 1) + q_trace_path(c) + 3,
+                    query_base(c, last) + q_trace_path(c),
+                    query_base(c, 0) + q_trace_path(c) + lh - 1,
+                    query_base(c, 2) + q_quotient_path(c),
+                    query_base(c, 1) + q_quotient_path(c) + lh - 1,
+                    // commit-phase openings: first, a middle and the last sibling of the concatenated paths
+                    query_base(c, 0) + fp,
+                    query_base(c, last) + fp + n_fp / 2,
+                    query_base(c, last) + fp + n_fp - 1,
+                ],
+            ),
             FLIP,
             0,
         ),
     )
     // the input is untouched
-    assert(verify(c, p, public))
+    assert(verify<A>(c, p, public))
 }
 
-pub fn rejects_tampered_opened_values(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn rejects_tampered_opened_values<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     let f = num_folds(c)
     assert(
-        rejects_all(
+        rejects_all<A>(
             c,
             p,
             public,
-            [
-                // rows opened from the trace and quotient commitments
-                query_base(c, 0) + q_trace_row() + 1,
-                query_base(c, 0) + q_quotient_row(c) + 2,
-                // commit-phase sibling values: first and last fold
-                query_base(c, 1) + q_fold_sibling(c) + 4,
-                query_base(c, c.num_queries - 1) + q_fold_sibling(c) + 4 * (f - 1) + 3,
-                // claimed evaluations at zeta (FRI and the AIR check both catch them)
-                off_trace_local(),
-                off_trace_next() + 7,
-                off_quotient_chunk(),
-                off_quotient_chunk() + 15,
-            ],
+            public_values(
+                [
+                    // rows opened from the trace and quotient commitments
+                    query_base(c, 0) + q_trace_row() + 1,
+                    query_base(c, 0) + q_quotient_row(c) + 2,
+                    // commit-phase sibling values: first and last fold
+                    query_base(c, 1) + q_fold_sibling(c) + 4,
+                    query_base(c, c.num_queries - 1) + q_fold_sibling(c) + 4 * (f - 1) + 3,
+                    // claimed evaluations at zeta (FRI and the AIR check both catch them)
+                    off_trace_local(),
+                    off_trace_next(c) + 7,
+                    off_quotient_chunk(c),
+                    off_quotient_chunk(c) + 15,
+                ],
+            ),
             BUMP,
             0,
         ),
     )
 }
 
-pub fn rejects_tampered_final_poly(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn rejects_tampered_final_poly<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     // first and last coefficient word
     assert(
-        rejects_all(
+        rejects_all<A>(
             c,
             p,
             public,
-            [off_final_poly(c), off_query_pow(c) - 1],
+            public_values([off_final_poly(c), off_query_pow(c) - 1]),
             BUMP,
             0,
         ),
     )
 }
 
-pub fn rejects_wrong_public_values(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
-    // a wrong output, start value or second value must be rejected
-    assert(!verify(c, p, [public[0], public[1], (public[2] + 1) % P]))
-    assert(!verify(c, p, [public[0], (public[1] + 1) % P, public[2]]))
-    assert(!verify(c, p, [(public[0] + 1) % P, public[1], public[2]]))
-    // swapped inputs
-    assert(!verify(c, p, [public[1], public[0], public[2]]))
+pub fn rejects_wrong_public_values<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
+    // every public value changed by one must be rejected
+    var i: usize = 0
+    while i < public.len() {
+        assert(
+            !verify<A>(c, p, with_public(public, i, (public[i] + 1) % P)),
+        )
+        i += 1
+    }
+    // swapped inputs (two or more public values)
+    if public.len() >= 2 {
+        var sw = clone_words(public)
+        sw[0] = public[1]
+        sw[1] = public[0]
+        assert(!verify<A>(c, p, sw))
+    }
+    // wrong number of public values: one fewer and one more
+    var fewer = unsafe {
+        MemArray<u256>::new_uninit(public.len() - 1)
+    }
+    i = 0
+    while i < fewer.len() {
+        fewer[i] = public[i]
+        i += 1
+    }
+    assert(!verify<A>(c, p, fewer))
+    var more = unsafe {
+        MemArray<u256>::new_uninit(public.len() + 1)
+    }
+    i = 0
+    while i < public.len() {
+        more[i] = public[i]
+        i += 1
+    }
+    more[public.len()] = 0
+    assert(!verify<A>(c, p, more))
 }
 
-pub fn rejects_changed_commitments(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn rejects_changed_commitments<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     assert(
-        rejects_all(
+        rejects_all<A>(
             c,
             p,
             public,
-            [0, 1, off_fri_commits() + 1, off_fri_commits() + num_folds(c) - 1],
+            public_values(
+                [0, 1, off_fri_commits(c) + 1, off_fri_commits(c) + num_folds(c) - 1],
+            ),
             FLIP,
             0,
         ),
     )
 }
 
-pub fn rejects_bad_proof_of_work_witness(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
-    assert(rejects_all(c, p, public, [off_query_pow(c)], BUMP, 0))
+pub fn rejects_bad_proof_of_work_witness<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
+    assert(
+        rejects_all<A>(c, p, public, public_values([off_query_pow(c)]), BUMP, 0),
+    )
 }
 
 /// Witnesses of a zero-bit commit-phase pow are pinned to zero (one encoding per proof).
-pub fn rejects_nonzero_commit_pow_witness(
+pub fn rejects_nonzero_commit_pow_witness<A: Air>(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
 ) {
     assert(c.commit_pow_bits == 0)
-    assert(rejects_all(c, p, public, [off_commit_pow(c)], PUT, 1))
+    assert(
+        rejects_all<A>(c, p, public, public_values([off_commit_pow(c)]), PUT, 1),
+    )
 }
 
-pub fn rejects_non_canonical_elements(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn rejects_non_canonical_elements<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     // `add_p`: the same field element plus p; PUT: p itself, p + 5, 2^32 - 1
     assert(
-        rejects_all(
+        rejects_all<A>(
             c,
             p,
             public,
-            [
-                query_base(c, 2) + q_trace_row(),
-                query_base(c, 0) + q_fold_sibling(c) + 1,
-                query_base(c, c.num_queries - 1) + q_quotient_row(c) + 3,
-                off_query_pow(c),
-                off_trace_local(),
-                off_quotient_chunk() + 3,
-                off_final_poly(c) + 1,
-            ],
+            public_values(
+                [
+                    query_base(c, 2) + q_trace_row(),
+                    query_base(c, 0) + q_fold_sibling(c) + 1,
+                    query_base(c, c.num_queries - 1) + q_quotient_row(c) + 3,
+                    off_query_pow(c),
+                    off_trace_local(),
+                    off_quotient_chunk(c) + 3,
+                    off_final_poly(c) + 1,
+                ],
+            ),
             ADD_P,
             0,
         ),
     )
-    assert(rejects_all(c, p, public, [off_trace_local()], PUT, P))
     assert(
-        rejects_all(c, p, public, [off_final_poly(c) + 2], PUT, 0xffffffff),
+        rejects_all<A>(c, p, public, public_values([off_trace_local()]), PUT, P),
     )
-    // public values: a + p is the same field element but a different encoding
-    assert(!verify(c, p, [public[0] + P, public[1], public[2]]))
-    assert(!verify(c, p, [public[0], public[1] + P, public[2]]))
-    assert(!verify(c, p, [public[0], public[1], public[2] + P]))
+    assert(
+        rejects_all<A>(
+            c,
+            p,
+            public,
+            public_values([off_final_poly(c) + 2]),
+            PUT,
+            0xffffffff,
+        ),
+    )
+    // a huge word in an opened row (hashed before the range flag is tested) rejects, never reverts
+    assert(
+        rejects_all<A>(
+            c,
+            p,
+            public,
+            public_values(
+                [query_base(c, 1) + q_trace_row(), query_base(c, 0) + q_quotient_row(c)],
+            ),
+            PUT,
+            0x8000000000000000000000000000000000000000000000000000000000000000,
+        ),
+    )
+    // public values: v + p is the same field element but a different encoding
+    var i: usize = 0
+    while i < public.len() {
+        assert(!verify<A>(c, p, with_public(public, i, public[i] + P)))
+        i += 1
+    }
 }
 
 /// A proof is only valid for the configuration it was made for.
-pub fn rejects_wrong_configuration(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn rejects_wrong_configuration<A: Air>(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     var c2 = c
     c2.num_queries = c.num_queries + 1
     assert(params_valid(c2))
-    assert(!verify(c2, p, public))
+    assert(!verify<A>(c2, p, public))
     c2 = c
     c2.log_blowup = c.log_blowup + 1
-    assert(!verify(c2, p, public))
+    assert(!verify<A>(c2, p, public))
     c2 = c
     c2.query_pow_bits = 0
     assert(proof_words(c2) == proof_words(c))
-    assert(!verify(c2, p, public))
+    assert(!verify<A>(c2, p, public))
+    // a configuration whose trace width is not the AIR's is rejected
+    c2 = c
+    c2.width = c.width + 1
+    assert(params_valid(c2))
+    assert(!air_matches<A>(c2))
+    assert(!verify<A>(c2, p, public))
     // out-of-range parameters are rejected up front
     c2 = c
     c2.num_queries = 0
     assert(!params_valid(c2))
-    assert(!verify(c2, p, public))
+    assert(!verify<A>(c2, p, public))
     c2 = c
     c2.log_final = c.log_n
     assert(!params_valid(c2))
@@ -336,14 +450,12 @@ pub fn rejects_wrong_configuration(_ c: FriParams, _ p: MemArray<u256>, _ public
 pub fn transcript_binds_public_values_and_trace_commitment(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
 ) {
     let base = replay_transcript(c, p, public)
     var i: usize = 0
-    while i < 3 {
-        var pv = public
-        pv[i] = (pv[i] + 1) % P
-        let cc = replay_transcript(c, p, pv)
+    while i < public.len() {
+        let cc = replay_transcript(c, p, with_public(public, i, (public[i] + 1) % P))
         assert(ne(cc.alpha, base.alpha))
         assert(ne(cc.zeta, base.zeta))
         assert(ne(cc.fri_alpha, base.fri_alpha))
@@ -358,16 +470,16 @@ pub fn transcript_binds_public_values_and_trace_commitment(
     assert(ne(cc.zeta, base.zeta))
 }
 
-/// Rule 5, part 2: each claimed evaluation (all 8 extension elements of trace_local, trace_next
-/// and the quotient chunk: 32 words, every one tried) changes the FRI batching challenge.
+/// Rule 5, part 2: each claimed evaluation (all `2 W + 4` extension elements of trace_local, trace_next
+/// and the quotient chunk: `8 W + 16` words, every one tried) changes the FRI batching challenge.
 pub fn transcript_binds_claimed_evaluations(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
 ) {
     let base = replay_transcript(c, p, public)
     var w: u256 = 0
-    while w < 32 {
+    while w < 8 * c.width + 16 {
         let cc = challenges_after(c, p, public, off_trace_local() + w, BUMP)
         assert(!ne(cc.zeta, base.zeta))
         assert(ne(cc.fri_alpha, base.fri_alpha))
@@ -376,12 +488,16 @@ pub fn transcript_binds_claimed_evaluations(
 }
 
 /// Rule 5, part 3: each commit-phase commitment changes its own beta and the last beta.
-pub fn transcript_binds_fri_commitments(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) {
+pub fn transcript_binds_fri_commitments(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) {
     let base = replay_transcript(c, p, public)
     let f = num_folds(c)
     var j: u256 = 0
     while j < f {
-        let cc = challenges_after(c, p, public, off_fri_commits() + j, FLIP)
+        let cc = challenges_after(c, p, public, off_fri_commits(c) + j, FLIP)
         assert(!ne(cc.fri_alpha, base.fri_alpha))
         assert(ne(cc.betas[j as usize], base.betas[j as usize]))
         assert(
@@ -396,7 +512,7 @@ pub fn transcript_binds_fri_commitments(_ c: FriParams, _ p: MemArray<u256>, _ p
 pub fn transcript_binds_final_poly_and_query_pow(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
 ) {
     let base = replay_transcript(c, p, public)
     let f = num_folds(c)

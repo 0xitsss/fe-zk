@@ -87,15 +87,15 @@ After `use fe_zk::fri`, call `fri::<name>`.
 | `log_h` | fn | `pub fn log_h(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `num_folds` | fn | `pub fn num_folds(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `off_trace_local` | fn | `pub fn off_trace_local() -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `off_trace_next` | fn | `pub fn off_trace_next() -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `off_quotient_chunk` | fn | `pub fn off_quotient_chunk() -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `off_fri_commits` | fn | `pub fn off_fri_commits() -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `off_trace_next` | fn | `pub fn off_trace_next(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `off_quotient_chunk` | fn | `pub fn off_quotient_chunk(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `off_fri_commits` | fn | `pub fn off_fri_commits(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `off_commit_pow` | fn | `pub fn off_commit_pow(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `off_final_poly` | fn | `pub fn off_final_poly(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `off_query_pow` | fn | `pub fn off_query_pow(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `off_queries` | fn | `pub fn off_queries(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `q_trace_row` | fn | `pub fn q_trace_row() -> u256` | Offsets inside one query record (relative to its start). [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `q_trace_path` | fn | `pub fn q_trace_path() -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `q_trace_path` | fn | `pub fn q_trace_path(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `q_quotient_row` | fn | `pub fn q_quotient_row(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `q_quotient_path` | fn | `pub fn q_quotient_path(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `q_fold_sibling` | fn | `pub fn q_fold_sibling(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
@@ -103,12 +103,14 @@ After `use fe_zk::fri`, call `fri::<name>`.
 | `query_words` | fn | `pub fn query_words(_ c: FriParams) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `query_base` | fn | `pub fn query_base(_ c: FriParams, _ q: u256) -> u256` | - [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `proof_words` | fn | `pub fn proof_words(_ c: FriParams) -> u256` | Length of a proof for `c`. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `proof_is_canonical` | fn | `pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool` | Every base-field element in the proof and the public values is `< p`. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `proof_header_is_canonical` | fn | `pub fn proof_header_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool` | The query-independent part of `proof_is_canonical`: public values, claimed evaluations, proof-of-work witnesses, final polynomial. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `replay_transcript` | fn | `pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> Challenges` | Replay the transcript exactly as `p3_uni_stark::verify` + `TwoAdicFriPcs::verify` + `p3_fri::verify_fri` do. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `proof_is_canonical` | fn | `pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) -> bool` | Every base-field element in the proof and the public values is `< p`. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `proof_header_is_canonical` | fn | `pub fn proof_header_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) -> bool` | The query-independent part of `proof_is_canonical`: public values, claimed evaluations, proof-of-work witnesses, final polynomial. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `replay_transcript` | fn | `pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) -> Challenges` | Replay the transcript exactly as `p3_uni_stark::verify` + `TwoAdicFriPcs::verify` + `p3_fri::verify_fri` do. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 | `check_query` | fn | `pub fn check_query(_ c: FriParams, _ p: MemArray<u256>, _ ch: Challenges, _ q: u256) -> bool` | `p3_fri::verify_fri` loop body for one query: open the inputs, fold `num_folds` times checking each commit-phase Merkle opening, compare with the final polynomial. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `check_air` | fn | `pub fn check_air(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3], _ ch: Challenges) -> bool` | `p3_uni_stark::verify_constraints` + `recompose_quotient_from_chunks` for the Fibonacci AIR: `folded(zeta) / Z_H(zeta) == quotient(zeta)`. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
-| `verify` | fn | `pub fn verify(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool` | Verify a Fibonacci STARK proof for configuration `c`: `public = [a, b, x]`, the trace starts with `(a, b)` and its last row's right column is `x`. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `check_air` | fn | `pub fn check_air<A: Air>(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>, _ ch: Challenges) -> bool` | `p3_uni_stark::verify_constraints` + `recompose_quotient_from_chunks` for the AIR `A`: `A::eval(..) / Z_H(zeta) == quotient(zeta)`, where `A::eval` folds the constraints with `alpha` in Plonky3's assertion order (`fri/air.fe`). [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `public_values` | fn | `pub fn public_values<const N: usize>(_ a: [u256; N]) -> MemArray<u256>` | The public values `a` as a memory array (what `verify` takes). [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `air_matches` | fn | `pub fn air_matches<A: Air>(_ c: FriParams) -> bool` | The configuration matches the AIR: trace width, supported constraint degree (one quotient chunk). [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
+| `verify` | fn | `pub fn verify<A: Air>(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) -> bool` | Verify a STARK proof of the AIR `A` for configuration `c`. [`src/verifier/fri.fe`](../src/verifier/fri.fe) |
 
 ## `verifier::gnark`
 

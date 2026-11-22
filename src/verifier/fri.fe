@@ -1,32 +1,40 @@
-//! FRI / STARK verifier for a Plonky3 `p3-uni-stark` proof (v0.4.2) of a Fibonacci AIR.
+//! FRI / STARK verifier for a Plonky3 `p3-uni-stark` proof (v0.4.2), generic over the AIR.
+//!
+//! `verify<A: Air>` takes the AIR as a type parameter (`fri/air.fe`; `fri/air_fib.fe` and
+//! `fri/air_mul.fe` are two real ones). Everything that depends on the AIR is a compile-time
+//! constant of `A` (`A::WIDTH`, `A::NUM_PUBLIC`, `A::MAX_DEGREE`) or the body of `A::eval`, so
+//! each instantiation is plain monomorphised code. How to add an AIR: `docs/DESIGN.md`.
 //!
 //! What is fixed: base field KoalaBear, challenge field `BinomialExtensionField<KoalaBear, 4>`
-//! (`x^4 = 3`), FRI arity 2, one trace commitment (2 columns), one quotient chunk, Keccak-256
-//! Merkle commitments over little-endian `u32` rows and the Keccak `SerializingChallenger32`
-//! transcript (`fri/challenger.fe`, `fri/merkle.fe`), 3 public values `(a, b, x)`.
+//! (`x^4 = 3`), FRI arity 2, one trace commitment (`WIDTH` columns), one quotient chunk (AIR
+//! constraint degree at most 2), Keccak-256 Merkle commitments over little-endian `u32` rows and
+//! the Keccak `SerializingChallenger32` transcript (`fri/challenger.fe`, `fri/merkle.fe`).
 //!
-//! What is a per-configuration constant: everything in `FriParams` (trace height, blowup,
-//! final polynomial length, number of queries, proof-of-work bits). The constants live in a
-//! small module emitted from the Plonky3 proof's own configuration by
-//! `vectors/plonky3-stark/emit_fe.py` (`fri/config_secure.fe`, `fri/config_demo.fe`); the
-//! verifier logic below is the same code for every configuration and loops over the queries,
-//! the fold rounds and the Merkle levels instead of unrolling them.
+//! What is a per-configuration constant: everything in `FriParams` (trace width, trace height,
+//! blowup, final polynomial length, number of queries, proof-of-work bits). The constants live in
+//! a small module emitted from the Plonky3 proof's own configuration by
+//! `vectors/plonky3-stark/emit_fe.py` (`fri/config_secure.fe`, `fri/config_demo.fe`,
+//! `fri/config_mul.fe`); the verifier logic below is the same code for every configuration and
+//! loops over the queries, the fold rounds, the Merkle levels and the trace columns instead of
+//! unrolling them.
 //!
 //! The proof is one flat array of `proof_words(params)` words (field elements are canonical
-//! integers, hashes are 32-byte words). Layout (offsets are functions of the parameters):
+//! integers, hashes are 32-byte words). Layout (offsets are functions of the parameters), with
+//! `W = width`:
 //!
 //! ```text
 //! trace_commit, quotient_commit,
-//! trace_local[2] (4 words each), trace_next[2], quotient_chunk[4],
+//! trace_local[W] (4 words each), trace_next[W], quotient_chunk[4],
 //! fri_commits[F], commit_pow_witnesses[F], final_poly[2^log_final] (4 words each),
 //! query_pow_witness,
 //! then NUM_QUERIES times:
-//!   trace_row[2], trace_path[LH], quotient_row[4], quotient_path[LH],
+//!   trace_row[W], trace_path[LH], quotient_row[4], quotient_path[LH],
 //!   fold_sibling[F] (4 words each), fold_paths (F paths, lengths LH-1, LH-2, ..., LH-F)
 //! ```
 //!
 //! with `F = log_n - log_final` fold rounds and `LH = log_n + log_blowup`. A proof with any
-//! other length is rejected by the array type (ABI) or by `verify` itself.
+//! other length is rejected by `verify` (the public values are a `MemArray` whose length is
+//! checked against `A::NUM_PUBLIC`: safety rule 4).
 //!
 //! SECURITY. The soundness of a proof is set by the configuration constants, not by this
 //! code. Plonky3's own convention (`FriParameters::conjectured_soundness_bits`, the ethSTARK
@@ -46,17 +54,18 @@
 //! Safety rules: 1 (every field element of the proof and the public values is checked
 //! `< p` before use: `proof_header_is_canonical` up front, the per-query words by `check_query`
 //! with `noncanonical`; `proof_is_canonical` is the full pre-check with the same verdict), 4 (public
-//! value count is the array type, the proof length is the array type and re-checked against the
-//! parameters), 5 (the transcript observes the same data in the same order as Plonky3, and tests
+//! value count is checked against `A::NUM_PUBLIC`, the trace width against `A::WIDTH`, the proof
+//! length against the parameters), 5 (the transcript observes the same data in the same order as Plonky3, and tests
 //! check that every observed input changes the challenges), 7 (the base-field arithmetic of the
 //! hot paths uses `#[arithmetic(unchecked)]` on canonical values only, with the bound stated in the
-//! doc comment of each function: `check_query`, `dot6`, `leaf8`, `horner_final`, `noncanonical`,
-//! `words_canonical`, `Ext4::mul_lazy`, `climb_path`; shifts and indices are bounded by
+//! doc comment of each function: `check_query`, `open_input`, `leaf8`, `horner_final`, `noncanonical`,
+//! `words_canonical`, `open_input`, `Ext4::mul_lazy`, `climb_path`; shifts and indices are bounded by
 //! `params_valid`).
 use core::ptr::{MemArray, offset_bytes}
 use std::evm::crypto::{keccak_words, mulmod}
 use ingot::field::{Field, KoalaBear}
 use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::air::{Air, AirCtx}
 use ingot::verifier::fri::challenger::Challenger
 use ingot::verifier::fri::merkle::{RowHasher, climb_path, load}
 
@@ -86,6 +95,8 @@ const KB_TWO_ADIC_24: u256 = 1791270792
 /// One FRI/STARK configuration. Emitted into `fri/config_*.fe` from the Plonky3 proof's
 /// `config.json`; `params_valid` must hold.
 pub struct FriParams {
+    /// Trace width (number of columns); `verify<A>` requires `A::WIDTH`.
+    pub width: u256,
     /// log2 of the trace height.
     pub log_n: u256,
     pub log_blowup: u256,
@@ -113,9 +124,10 @@ pub struct Challenges {
     pub pow_ok: bool,
     /// Query indices in `[0, 2^log_h)` (first `num_queries` are used).
     pub indices: MemArray<u256>,
-    /// `fri_alpha^k` for `k < 8`, the powers that weight the 8 opened columns in the reduced
-    /// opening (trace_local 0, 1; trace_next 2, 3; quotient chunk 4..7).
-    pub alpha_pows: MemArray<E>,
+    /// `fri_alpha^k` for `k < 2 W + 4`, the powers that weight the `2 W + 4` opened columns in the
+    /// reduced opening (trace_local `0..W`; trace_next `W..2W`; quotient chunk `2W..2W+4`), as 4
+    /// canonical words each (`alpha_words[4 k + i]` is coefficient `i` of the power `k`).
+    pub alpha_words: MemArray<u256>,
     /// `gen_tab[i] = g_{i+1}` (`KoalaBear::two_adic_generator(i + 1)`) for `i < log_h`, and
     /// `inv_tab[i] = g_{i+1}^-1`: the factors of `g_{LH}^{rev(index)}` and of its inverse.
     pub gen_tab: MemArray<u256>,
@@ -139,7 +151,9 @@ pub fn conjectured_bits(_ c: FriParams) -> u256 {
 /// Parameter ranges this verifier supports: shifts, generator tables and the 32-bit
 /// samples of the transcript bound every quantity used below.
 pub fn params_valid(_ c: FriParams) -> bool {
-    c.log_blowup >= 1
+    c.width >= 1
+        && c.width <= 64
+        && c.log_blowup >= 1
         && c.log_blowup <= 8
         && c.log_final <= c.log_n
         && c.log_n - c.log_final >= 1
@@ -164,24 +178,24 @@ pub fn off_trace_local() -> u256 {
     2
 }
 
-pub fn off_trace_next() -> u256 {
-    10
+pub fn off_trace_next(_ c: FriParams) -> u256 {
+    2 + 4 * c.width
 }
 
-pub fn off_quotient_chunk() -> u256 {
-    18
+pub fn off_quotient_chunk(_ c: FriParams) -> u256 {
+    2 + 8 * c.width
 }
 
-pub fn off_fri_commits() -> u256 {
-    34
+pub fn off_fri_commits(_ c: FriParams) -> u256 {
+    18 + 8 * c.width
 }
 
 pub fn off_commit_pow(_ c: FriParams) -> u256 {
-    34 + num_folds(c)
+    off_fri_commits(c) + num_folds(c)
 }
 
 pub fn off_final_poly(_ c: FriParams) -> u256 {
-    34 + 2 * num_folds(c)
+    off_fri_commits(c) + 2 * num_folds(c)
 }
 
 pub fn off_query_pow(_ c: FriParams) -> u256 {
@@ -203,24 +217,24 @@ pub fn q_trace_row() -> u256 {
     0
 }
 
-pub fn q_trace_path() -> u256 {
-    2
+pub fn q_trace_path(_ c: FriParams) -> u256 {
+    c.width
 }
 
 pub fn q_quotient_row(_ c: FriParams) -> u256 {
-    2 + log_h(c)
+    c.width + log_h(c)
 }
 
 pub fn q_quotient_path(_ c: FriParams) -> u256 {
-    6 + log_h(c)
+    c.width + 4 + log_h(c)
 }
 
 pub fn q_fold_sibling(_ c: FriParams) -> u256 {
-    6 + 2 * log_h(c)
+    c.width + 4 + 2 * log_h(c)
 }
 
 pub fn q_fold_paths(_ c: FriParams) -> u256 {
-    6 + 2 * log_h(c) + 4 * num_folds(c)
+    c.width + 4 + 2 * log_h(c) + 4 * num_folds(c)
 }
 
 pub fn query_words(_ c: FriParams) -> u256 {
@@ -411,7 +425,7 @@ fn reverse_bits(_ v: u256, _ bits: u256) -> u256 {
 /// leaves the per-query rows and fold siblings to `check_query`, which range-checks exactly the
 /// words it reads and rejects the query otherwise; a proof is accepted only if every query
 /// passes, so the verdict is the same as with this full pre-check, at one pass over fewer words.
-pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool {
+pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) -> bool {
     if !proof_header_is_canonical(c, p, public) {
         return false
     }
@@ -420,7 +434,7 @@ pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 
     var q: u256 = 0
     while q < c.num_queries {
         let base = query_base(c, q)
-        ok = ok && words_canonical(p, base + q_trace_row(), 2)
+        ok = ok && words_canonical(p, base + q_trace_row(), c.width)
         ok = ok && words_canonical(p, base + q_quotient_row(c), 4)
         ok = ok && words_canonical(p, base + q_fold_sibling(c), 4 * f)
         q += 1
@@ -430,10 +444,19 @@ pub fn proof_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 
 
 /// The query-independent part of `proof_is_canonical`: public values, claimed evaluations,
 /// proof-of-work witnesses, final polynomial.
-pub fn proof_header_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool {
-    var ok = public[0] < KB_P && public[1] < KB_P && public[2] < KB_P
-    // trace_local, trace_next, quotient_chunk: 32 contiguous words
-    ok = ok && words_canonical(p, off_trace_local(), 32)
+pub fn proof_header_is_canonical(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) -> bool {
+    var ok = true
+    var k: usize = 0
+    while k < public.len() {
+        ok = ok && public[k] < KB_P
+        k += 1
+    }
+    // trace_local, trace_next, quotient_chunk: 8 W + 16 contiguous words
+    ok = ok && words_canonical(p, off_trace_local(), 8 * c.width + 16)
     let f = num_folds(c)
     // With zero proof-of-work bits the witness is unread by Plonky3; pin it to zero so a
     // proof has one encoding.
@@ -457,31 +480,37 @@ pub fn proof_header_is_canonical(_ c: FriParams, _ p: MemArray<u256>, _ public: 
 /// Replay the transcript exactly as `p3_uni_stark::verify` + `TwoAdicFriPcs::verify` +
 /// `p3_fri::verify_fri` do. Everything the prover sent is observed before the challenge
 /// that depends on it.
-pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> Challenges {
+pub fn replay_transcript(
+    _ c: FriParams,
+    _ p: MemArray<u256>,
+    _ public: MemArray<u256>,
+) -> Challenges {
     var ch = Challenger::new()
     // instance: degree_bits, degree_bits - is_zk (zk off), preprocessed width (none)
     ch.observe_felt(kb(c.log_n))
     ch.observe_felt(kb(c.log_n))
     ch.observe_felt(kb(0))
     ch.observe_hash(at(p, 0))
-    ch.observe_felt(kb(public[0]))
-    ch.observe_felt(kb(public[1]))
-    ch.observe_felt(kb(public[2]))
+    var k: usize = 0
+    while k < public.len() {
+        ch.observe_felt(kb(public[k]))
+        k += 1
+    }
     let alpha = ch.sample_ext()
     ch.observe_hash(at(p, 1))
     let zeta = ch.sample_ext()
 
     // PCS: all claimed evaluations, in commitment / matrix / point order
-    // (trace_local, trace_next, quotient_chunk are contiguous: 8 + 8 + 16 words)
+    // (trace_local, trace_next, quotient_chunk are contiguous: 2 W + 4 extension elements)
     var i: u256 = 0
-    while i < 8 {
+    while i < 2 * c.width + 4 {
         ch.observe_ext(extw(p, off_trace_local() + 4 * i))
         i += 1
     }
 
     // FRI: batching challenge, then per commit-phase round commit, (pow), beta
     let fri_alpha = ch.sample_ext()
-    // betas, indices and alpha_pows live in memory arrays: `Challenges` is passed to every
+    // betas, indices and alpha_words live in memory arrays: `Challenges` is passed to every
     // query check, and a by-value struct with inline arrays is copied on every call
     var betas = unsafe {
         MemArray<E>::new_uninit(num_folds(c) as usize)
@@ -493,7 +522,7 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
     let f = num_folds(c)
     i = 0
     while i < f {
-        ch.observe_hash(at(p, off_fri_commits() + i))
+        ch.observe_hash(at(p, off_fri_commits(c) + i))
         if !ch.check_witness(c.commit_pow_bits, kb(at(p, off_commit_pow(c) + i))) {
             pow_ok = false
         }
@@ -522,30 +551,32 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
         i += 1
     }
     // Query-independent part of the reduced opening, computed once here instead of once per
-    // query: powers of fri_alpha and the claimed evaluations folded with them.
-    var alpha_pows = unsafe {
-        MemArray<E>::new_uninit(8)
+    // query: powers of fri_alpha and the claimed evaluations folded with them. Column order of
+    // the powers: trace_local (W), trace_next (W), quotient chunk (4).
+    let w = c.width
+    let np = 2 * w + 4
+    var alpha_words = unsafe {
+        MemArray<u256>::new_uninit((4 * np) as usize)
     }
-    alpha_pows[0] = E::one()
-    i = 1
-    while i < 8 {
-        alpha_pows[i as usize] = alpha_pows[(i - 1) as usize].mul(fri_alpha)
-        i += 1
-    }
-    let tl0 = extw(p, off_trace_local())
-    let tl1 = extw(p, off_trace_local() + 4)
-    let tn0 = extw(p, off_trace_next())
-    let tn1 = extw(p, off_trace_next() + 4)
-    var claim_z = alpha_pows[0].mul(tl0).add(alpha_pows[1].mul(tl1))
+    var pw = E::one()
+    var claim_z = E::zero()
+    var claim_zn = E::zero()
     i = 0
-    while i < 4 {
-        claim_z = claim_z
-            .add(
-                alpha_pows[(4 + i) as usize].mul(extw(p, off_quotient_chunk() + 4 * i)),
-            )
+    while i < np {
+        alpha_words[(4 * i) as usize] = pw.coeff(0).to_canonical()
+        alpha_words[(4 * i + 1) as usize] = pw.coeff(1).to_canonical()
+        alpha_words[(4 * i + 2) as usize] = pw.coeff(2).to_canonical()
+        alpha_words[(4 * i + 3) as usize] = pw.coeff(3).to_canonical()
+        // claimed evaluation of column i (the claims are contiguous: local, next, chunk)
+        let term = pw.mul(extw(p, off_trace_local() + 4 * i))
+        if i >= w && i < 2 * w {
+            claim_zn = claim_zn.add(term)
+        } else {
+            claim_z = claim_z.add(term)
+        }
+        pw = pw.mul(fri_alpha)
         i += 1
     }
-    let claim_zn = alpha_pows[2].mul(tn0).add(alpha_pows[3].mul(tn1))
     // tables of the two-adic generators g_1 .. g_LH and their inverses, from the top:
     // g_LH = g_24^(2^(24-LH)), g_{k-1} = g_k^2
     let lh = log_h(c)
@@ -574,7 +605,7 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
         beta_words,
         pow_ok,
         indices,
-        alpha_pows,
+        alpha_words,
         gen_tab,
         inv_tab,
         claim_z,
@@ -590,6 +621,17 @@ pub fn replay_transcript(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3
 /// combine the opened values into the reduced opening
 /// `sum alpha^k (f_k(z) - f_k(x)) / (z - x)`, over the trace (points zeta and zeta*g) and
 /// the quotient chunk (point zeta). `None` if a Merkle path is wrong or `z == x`.
+///
+/// One pass over the opened trace row (`W` words) and one over the quotient row (4 words) does
+/// the range check, the leaf hash and the dot products with the powers of `fri_alpha`.
+/// Unchecked arithmetic (safety rule 7): every opened word `v` is flagged into `bad` by
+/// `noncanonical` and a query with `bad != 0` returns `None` before any sum is used; for
+/// canonical `v < p < 2^31` and `alpha` coefficients `< p`, each product is `< 2^62` and each lane
+/// sums at most `W + 4 <= 68` products, `< 2^69`, no overflow of `u256`. (For a non-canonical `v`
+/// the sums are garbage or wrap, but they are discarded.) All indices are inside the asserted
+/// ranges: the row `base .. base + W`, the quotient row `qr .. qr + 4` and the `4 (2 W + 4)`
+/// alpha words.
+#[arithmetic(unchecked)]
 fn open_input(
     _ c: FriParams,
     _ p: MemArray<u256>,
@@ -599,61 +641,85 @@ fn open_input(
 ) -> Option<E> {
     let base = query_base(c, q)
     let index = load(ch.indices, q)
-    let b0 = at(p, base + 0)
-    let b1 = at(p, base + 1)
+    let w = c.width
     let qr = base + q_quotient_row(c)
-    let q0 = at(p, qr)
-    let q1 = at(p, qr + 1)
-    let q2 = at(p, qr + 2)
-    let q3 = at(p, qr + 3)
-    // The opened rows are range-checked before they are hashed or used (`verify` leaves the
-    // per-query words to this function, see `proof_is_canonical`); a non-canonical word rejects
-    // the query, it never reaches `kb` (which would revert) or `dot6` (which needs `< p`).
-    if (noncanonical(b0)
-            | noncanonical(b1)
-            | noncanonical(q0)
-            | noncanonical(q1)
-            | noncanonical(q2)
-            | noncanonical(q3))
-        != 0 {
-        return Option::None
-    }
-    // trace commitment: one matrix, width 2, 2^LH rows
+    assert(base + w <= (p.len() as u256))
+    assert(qr + 4 <= (p.len() as u256))
+    assert(4 * (2 * w + 4) <= (ch.alpha_words.len() as u256))
+    let pb = p.ptr()
+    let ab = ch.alpha_words.ptr()
+    var bad: u256 = 0
+    // trace commitment: one matrix, width W, 2^LH rows. Sz lanes: columns opened at zeta (trace
+    // local weights `alpha^k`, then the quotient chunk `alpha^(2W+i)`); Szn lanes: trace_next
+    // (weights `alpha^(W+k)`).
     var h = RowHasher::new()
-    h.felt_canonical(b0)
-    h.felt_canonical(b1)
-    if climb_path(h.finish(), index, p, base + q_trace_path(), log_h(c)) != at(p, 0) {
-        return Option::None
+    var s0: u256 = 0
+    var s1: u256 = 0
+    var s2: u256 = 0
+    var s3: u256 = 0
+    var n0: u256 = 0
+    var n1: u256 = 0
+    var n2: u256 = 0
+    var n3: u256 = 0
+    var k: u256 = 0
+    while k < w {
+        let v = rd(pb, base + k)
+        bad = bad | noncanonical(v)
+        h.felt_canonical(v)
+        let ls = 4 * k
+        let ln = 4 * (w + k)
+        s0 += rd(ab, ls) * v
+        s1 += rd(ab, ls + 1) * v
+        s2 += rd(ab, ls + 2) * v
+        s3 += rd(ab, ls + 3) * v
+        n0 += rd(ab, ln) * v
+        n1 += rd(ab, ln + 1) * v
+        n2 += rd(ab, ln + 2) * v
+        n3 += rd(ab, ln + 3) * v
+        k += 1
     }
     // quotient commitment: one chunk, width 4 (the 4 coefficients of an extension value)
     var hq = RowHasher::new()
-    hq.felt_canonical(q0)
-    hq.felt_canonical(q1)
-    hq.felt_canonical(q2)
-    hq.felt_canonical(q3)
+    k = 0
+    while k < 4 {
+        let v = rd(pb, qr + k)
+        bad = bad | noncanonical(v)
+        hq.felt_canonical(v)
+        let lq = 4 * (2 * w + k)
+        s0 += rd(ab, lq) * v
+        s1 += rd(ab, lq + 1) * v
+        s2 += rd(ab, lq + 2) * v
+        s3 += rd(ab, lq + 3) * v
+        k += 1
+    }
+    // A non-canonical word rejects the query before any of the values is used (the range check
+    // of `proof_is_canonical`, done per query: see there).
+    if bad != 0 {
+        return Option::None
+    }
+    if climb_path(h.finish(), index, p, base + q_trace_path(c), log_h(c)) != at(p, 0) {
+        return Option::None
+    }
     if climb_path(hq.finish(), index, p, base + q_quotient_path(c), log_h(c)) != at(p, 1) {
         return Option::None
     }
 
     // sum_k a^k (f_k(z_k) - f_k(x)) / (z_k - x) = (claim_z - Sz) / (zeta - x)
     //                                            + (claim_zn - Szn) / (zeta*g - x)
-    // with Sz = sum a^k f_k(x) over the columns opened at zeta, Szn over trace_next; the f_k(x)
-    // are the base-field openings of this query.
-    let sz = dot6(
-        ch.alpha_pows[0],
-        b0,
-        ch.alpha_pows[1],
-        b1,
-        ch.alpha_pows[4],
-        q0,
-        ch.alpha_pows[5],
-        q1,
-        ch.alpha_pows[6],
-        q2,
-        ch.alpha_pows[7],
-        q3,
+    // with Sz = sum a^k f_k(x) over the columns opened at zeta (trace_local, quotient chunk),
+    // Szn over trace_next; the f_k(x) are the base-field openings of this query.
+    let sz = E::new(
+        KoalaBear::reduce(s0),
+        KoalaBear::reduce(s1),
+        KoalaBear::reduce(s2),
+        KoalaBear::reduce(s3),
     )
-    let szn = ch.alpha_pows[2].scale(kb(b0)).add(ch.alpha_pows[3].scale(kb(b1)))
+    let szn = E::new(
+        KoalaBear::reduce(n0),
+        KoalaBear::reduce(n1),
+        KoalaBear::reduce(n2),
+        KoalaBear::reduce(n3),
+    )
     let zeta = ch.zeta
     let zeta_next = zeta.scale(two_adic_generator(c.log_n))
     let x_ext = E::from_base(x)
@@ -670,61 +736,6 @@ fn open_input(
     let n0 = ch.claim_z.sub(sz).mul(d1)
     let n1 = ch.claim_zn.sub(szn).mul(d0)
     Option::Some(n0.add(n1).mul(inv_d))
-}
-
-/// `sum_i a_i * v_i` for extension elements `a_i` and canonical base-field values `v_i < p`,
-/// one reduction per coefficient. Unchecked arithmetic: every `a_i` coefficient and `v_i` is
-/// `< p < 2^31` (the `a_i` are field elements; the `v_i` are checked by `proof_is_canonical`),
-/// so each product is `< 2^62` and the sum of 6 products `< 2^65`, no overflow of `u256`.
-#[arithmetic(unchecked)]
-fn dot6(
-    _ a0: E,
-    _ v0: u256,
-    _ a1: E,
-    _ v1: u256,
-    _ a2: E,
-    _ v2: u256,
-    _ a3: E,
-    _ v3: u256,
-    _ a4: E,
-    _ v4: u256,
-    _ a5: E,
-    _ v5: u256,
-) -> E {
-    E::new(
-        KoalaBear::reduce(
-            a0.coeff(0).to_canonical() * v0
-                + a1.coeff(0).to_canonical() * v1
-                + a2.coeff(0).to_canonical() * v2
-                + a3.coeff(0).to_canonical() * v3
-                + a4.coeff(0).to_canonical() * v4
-                + a5.coeff(0).to_canonical() * v5,
-        ),
-        KoalaBear::reduce(
-            a0.coeff(1).to_canonical() * v0
-                + a1.coeff(1).to_canonical() * v1
-                + a2.coeff(1).to_canonical() * v2
-                + a3.coeff(1).to_canonical() * v3
-                + a4.coeff(1).to_canonical() * v4
-                + a5.coeff(1).to_canonical() * v5,
-        ),
-        KoalaBear::reduce(
-            a0.coeff(2).to_canonical() * v0
-                + a1.coeff(2).to_canonical() * v1
-                + a2.coeff(2).to_canonical() * v2
-                + a3.coeff(2).to_canonical() * v3
-                + a4.coeff(2).to_canonical() * v4
-                + a5.coeff(2).to_canonical() * v5,
-        ),
-        KoalaBear::reduce(
-            a0.coeff(3).to_canonical() * v0
-                + a1.coeff(3).to_canonical() * v1
-                + a2.coeff(3).to_canonical() * v2
-                + a3.coeff(3).to_canonical() * v3
-                + a4.coeff(3).to_canonical() * v4
-                + a5.coeff(3).to_canonical() * v5,
-        ),
-    )
 }
 
 /// `p3_fri::verify_fri` loop body for one query: open the inputs, fold `num_folds` times
@@ -750,7 +761,7 @@ pub fn check_query(_ c: FriParams, _ p: MemArray<u256>, _ ch: Challenges, _ q: u
     // the whole query record and the commit-phase commitments lie inside the proof: the reads
     // below use `rd` (no per-word bounds check) on offsets inside these two ranges
     assert(base + query_words(c) <= (p.len() as u256))
-    assert(off_fri_commits() + num_folds(c) <= (p.len() as u256))
+    assert(off_fri_commits(c) + num_folds(c) <= (p.len() as u256))
     let pb = p.ptr()
     // y0 = g_{LH}^{rev(index)}. Bit i of `index` contributes g_{LH}^(2^(LH-1-i)) = g_{i+1},
     // so y0 is the product of the table entries of the set bits (no bit reversal, no pow); the
@@ -818,7 +829,7 @@ pub fn check_query(_ c: FriParams, _ p: MemArray<u256>, _ ch: Challenges, _ q: u
             leaf = leaf8(f0, f1, f2, f3, t0, t1, t2, t3)
         }
         idx = idx >> 1
-        if climb_path(leaf, idx, p, off, lhj) != rd(pb, off_fri_commits() + j) {
+        if climb_path(leaf, idx, p, off, lhj) != rd(pb, off_fri_commits(c) + j) {
             return false
         }
         off += lhj
@@ -876,19 +887,14 @@ pub fn check_query(_ c: FriParams, _ p: MemArray<u256>, _ ch: Challenges, _ q: u
 // AIR constraints at the out-of-domain point
 // ---------------------------------------------------------------------------------------
 
-/// `p3_uni_stark::verify_constraints` + `recompose_quotient_from_chunks` for the
-/// Fibonacci AIR: `folded(zeta) / Z_H(zeta) == quotient(zeta)`.
-///
-/// Constraints, in Plonky3's assertion order (folded as `acc = acc * alpha + c`):
-/// 1. first row:  `left  = a`
-/// 2. first row:  `right = b`
-/// 3. transition: `local.right = next.left`
-/// 4. transition: `local.left + local.right = next.right`
-/// 5. last row:   `local.right = x`
-pub fn check_air(
+/// `p3_uni_stark::verify_constraints` + `recompose_quotient_from_chunks` for the AIR `A`:
+/// `A::eval(..) / Z_H(zeta) == quotient(zeta)`, where `A::eval` folds the constraints with
+/// `alpha` in Plonky3's assertion order (`fri/air.fe`). The AIR sees the claimed trace rows at
+/// `zeta` and `zeta * g`, the public values and the first/last/transition selectors.
+pub fn check_air<A: Air>(
     _ c: FriParams,
     _ p: MemArray<u256>,
-    _ public: [u256; 3],
+    _ public: MemArray<u256>,
     _ ch: Challenges,
 ) -> bool {
     let zeta = ch.zeta
@@ -929,25 +935,36 @@ pub fn check_air(
     let is_last = z_h.mul(inv_last)
     let is_transition = zeta.sub(h_inv_ext)
 
-    let l0 = extw(p, off_trace_local())
-    let l1 = extw(p, off_trace_local() + 4)
-    let n0 = extw(p, off_trace_next())
-    let n1 = extw(p, off_trace_next() + 4)
-    let a = E::from_base(kb(public[0]))
-    let b = E::from_base(kb(public[1]))
-    let x = E::from_base(kb(public[2]))
-
-    var acc = E::zero()
-    acc = acc.mul(ch.alpha).add(is_first.mul(l0.sub(a)))
-    acc = acc.mul(ch.alpha).add(is_first.mul(l1.sub(b)))
-    acc = acc.mul(ch.alpha).add(is_transition.mul(l1.sub(n0)))
-    acc = acc.mul(ch.alpha).add(is_transition.mul(l0.add(l1).sub(n1)))
-    acc = acc.mul(ch.alpha).add(is_last.mul(l1.sub(x)))
+    // the claimed trace rows at zeta (local) and zeta * g (next), `A::WIDTH` columns each
+    let w = c.width
+    var local = unsafe {
+        MemArray<E>::new_uninit(w as usize)
+    }
+    var next = unsafe {
+        MemArray<E>::new_uninit(w as usize)
+    }
+    var i: u256 = 0
+    while i < w {
+        local[i as usize] = extw(p, off_trace_local() + 4 * i)
+        next[i as usize] = extw(p, off_trace_next(c) + 4 * i)
+        i += 1
+    }
+    var pubs = unsafe {
+        MemArray<E>::new_uninit(public.len())
+    }
+    i = 0
+    while i < (public.len() as u256) {
+        pubs[i as usize] = E::from_base(kb(at(public, i)))
+        i += 1
+    }
+    let acc = A::eval(
+        AirCtx { local, next, public: pubs, alpha: ch.alpha, is_first, is_last, is_transition },
+    )
 
     // quotient(zeta) = sum_i x^i * chunk_i  (the chunk is the basis decomposition: chunk_i
     // is the coefficient of x^i, a base-field-times-basis element)
     var quotient = E::zero()
-    var i: u256 = 0
+    i = 0
     while i < 4 {
         let basis = E::new(
             if i == 0 {
@@ -971,7 +988,7 @@ pub fn check_air(
                 KoalaBear::zero()
             },
         )
-        quotient = quotient.add(basis.mul(extw(p, off_quotient_chunk() + 4 * i)))
+        quotient = quotient.add(basis.mul(extw(p, off_quotient_chunk(c) + 4 * i)))
         i += 1
     }
     acc.mul(z_h_inv).eq(quotient)
@@ -981,12 +998,34 @@ pub fn check_air(
 // entry point
 // ---------------------------------------------------------------------------------------
 
-/// Verify a Fibonacci STARK proof for configuration `c`: `public = [a, b, x]`, the trace
-/// starts with `(a, b)` and its last row's right column is `x`. Returns `false` for any
-/// invalid proof, including non-canonical field elements, a proof of the wrong length or
-/// unsupported parameters.
-pub fn verify(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool {
-    if !params_valid(c) {
+/// The public values `a` as a memory array (what `verify` takes).
+pub fn public_values<const N: usize>(_ a: [u256; N]) -> MemArray<u256> {
+    var m = unsafe {
+        MemArray<u256>::new_uninit(N)
+    }
+    var i: usize = 0
+    while i < N {
+        m[i] = a[i]
+        i += 1
+    }
+    m
+}
+
+/// The configuration matches the AIR: trace width, supported constraint degree (one quotient
+/// chunk).
+pub fn air_matches<A: Air>(_ c: FriParams) -> bool {
+    c.width == A::WIDTH && A::MAX_DEGREE <= 2 && A::MAX_DEGREE >= 1
+}
+
+/// Verify a STARK proof of the AIR `A` for configuration `c`. `public` are the `A::NUM_PUBLIC`
+/// public values (canonical field elements). Returns `false` for any invalid proof, including
+/// non-canonical field elements, a proof or public-value list of the wrong length, an AIR that
+/// does not match the configuration and unsupported parameters.
+pub fn verify<A: Air>(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) -> bool {
+    if !params_valid(c) || !air_matches<A>(c) {
+        return false
+    }
+    if (public.len() as u256) != A::NUM_PUBLIC {
         return false
     }
     if (p.len() as u256) != proof_words(c) {
@@ -1004,5 +1043,5 @@ pub fn verify(_ c: FriParams, _ p: MemArray<u256>, _ public: [u256; 3]) -> bool 
         }
         q += 1
     }
-    check_air(c, p, public, ch)
+    check_air<A>(c, p, public, ch)
 }

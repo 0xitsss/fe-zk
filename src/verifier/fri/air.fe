@@ -1,0 +1,88 @@
+//! The `Air` trait: what the FRI/STARK verifier needs to know about a Plonky3 AIR, and the
+//! constraint-folding context it evaluates the AIR in.
+//!
+//! `verify<A: Air>` (and `check_air<A: Air>`) in `fri.fe` is generic over the AIR. Fe
+//! monomorphises generics, so `A::WIDTH`, `A::NUM_PUBLIC` and `A::eval` are resolved at
+//! compile time for each AIR: there is no dispatch table, no function pointer and no per-call
+//! cost for the abstraction (`docs/GAS.md`: the Fibonacci verifier costs the same as before the
+//! trait existed).
+//!
+//! `eval` mirrors Plonky3's `Air::eval` with the folder of `p3_uni_stark::verify_constraints`
+//! (`VerifierConstraintFolder`): constraints are asserted in the order the AIR lists them and
+//! folded as `acc = acc * alpha + selector * constraint`, with the selector `is_first_row`,
+//! `is_last_row`, `is_transition` or 1 ("all rows"). The context methods `assert_all`,
+//! `assert_first`, `assert_last` and `assert_transition` do exactly that, so a Fe AIR is a
+//! line-by-line transcription of the Rust one:
+//!
+//! ```ignore
+//! // Rust: builder.when_transition().assert_eq(local.right, next.left)
+//! acc = ctx.assert_transition(acc, local[1].sub(next[0]))
+//! ```
+//!
+//! Scope: base-field trace (width `WIDTH` columns, no preprocessed or permutation trace, no
+//! zero-knowledge randomisation), one quotient chunk, which holds for constraints of degree at
+//! most 2 including the selector (`MAX_DEGREE`). Higher-degree AIRs need several quotient chunks
+//! (recomposition with the chunk-domain vanishing polynomials), which is not implemented:
+//! `verify` rejects an AIR with `MAX_DEGREE > 2` instead of mis-verifying it.
+use core::ptr::MemArray
+use ingot::field::ext::KoalaBearExt4
+
+type E = KoalaBearExt4
+
+/// Everything `Air::eval` may read, all at the out-of-domain point `zeta`.
+pub struct AirCtx {
+    /// The `WIDTH` trace columns of the local row, evaluated at `zeta`.
+    pub local: MemArray<E>,
+    /// The same columns of the next row (evaluated at `zeta * g`).
+    pub next: MemArray<E>,
+    /// The `NUM_PUBLIC` public values as extension elements (canonical base-field values,
+    /// range-checked by the verifier before this context is built).
+    pub public: MemArray<E>,
+    /// The constraint-folding challenge.
+    pub alpha: E,
+    pub is_first: E,
+    pub is_last: E,
+    pub is_transition: E,
+}
+
+impl AirCtx {
+    /// Public value `i` as an extension element.
+    pub fn public_value(self, _ i: usize) -> E {
+        self.public[i]
+    }
+
+    /// `builder.assert_zero(c)`: the constraint holds on every row.
+    pub fn assert_all(self, _ acc: E, _ c: E) -> E {
+        acc.mul(self.alpha).add(c)
+    }
+
+    /// `builder.when_first_row().assert_zero(c)`.
+    pub fn assert_first(self, _ acc: E, _ c: E) -> E {
+        acc.mul(self.alpha).add(self.is_first.mul(c))
+    }
+
+    /// `builder.when_last_row().assert_zero(c)`.
+    pub fn assert_last(self, _ acc: E, _ c: E) -> E {
+        acc.mul(self.alpha).add(self.is_last.mul(c))
+    }
+
+    /// `builder.when_transition().assert_zero(c)`: every row but the last.
+    pub fn assert_transition(self, _ acc: E, _ c: E) -> E {
+        acc.mul(self.alpha).add(self.is_transition.mul(c))
+    }
+}
+
+/// A Plonky3 AIR over KoalaBear with the degree-4 extension as challenge field.
+pub trait Air {
+    /// Number of trace columns.
+    const WIDTH: u256
+    /// Number of public values (fixed by the AIR: safety rule 4).
+    const NUM_PUBLIC: u256
+    /// Maximum constraint degree including the selector polynomial (Plonky3's
+    /// `get_max_constraint_degree`); at most 2 is supported.
+    const MAX_DEGREE: u256
+
+    /// The folded constraint polynomial at `zeta`, starting from `acc = 0`, in Plonky3's
+    /// assertion order. The verifier checks `eval / Z_H(zeta) == quotient(zeta)`.
+    fn eval(_ ctx: AirCtx) -> E
+}

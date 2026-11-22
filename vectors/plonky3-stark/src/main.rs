@@ -41,6 +41,8 @@ struct Cfg {
     num_queries: usize,
     commit_pow_bits: usize,
     query_pow_bits: usize,
+    /// `fib` (default) or `mul` (see `MulAir`).
+    mul_air: bool,
 }
 
 /// Grinding bits of the scripted challenger session (independent of the proof configuration).
@@ -55,6 +57,7 @@ impl Cfg {
             num_queries: 4,
             commit_pow_bits: 0,
             query_pow_bits: 3,
+            mul_air: false,
         };
         let mut out = PathBuf::from("fib");
         let mut args = std::env::args().skip(1);
@@ -67,6 +70,11 @@ impl Cfg {
                 "--queries" => c.num_queries = num(),
                 "--commit-pow" => c.commit_pow_bits = num(),
                 "--query-pow" => c.query_pow_bits = num(),
+                "--air" => match args.next().expect("air").as_str() {
+                    "fib" => c.mul_air = false,
+                    "mul" => c.mul_air = true,
+                    other => panic!("unknown air {other}"),
+                },
                 other => out = PathBuf::from(other),
             }
         }
@@ -138,6 +146,60 @@ impl<AB: AirBuilderWithPublicValues> Air<AB> for FibonacciAir {
 
         builder.when_last_row().assert_eq(local.right.clone(), x);
     }
+}
+
+/// Plonky3's `MulAir` (p3-uni-stark `tests/mul_air.rs`) with `REPS` repetitions of the triple
+/// `(a, b, c)`, degree 2 (`a * b = c`) and the transition constraints, plus one public value
+/// (`a` of the first repetition in the first row). Width `3 * REPS`. Constraint order, per
+/// repetition `i`: `a_i * b_i - c_i = 0` (every row), `a_i + 1 - next a_i = 0` (transition);
+/// then first row: `a_0 - pv_0 = 0`.
+pub const MUL_REPS: usize = 2;
+pub struct MulAir {}
+
+impl<F> BaseAir<F> for MulAir {
+    fn width(&self) -> usize {
+        3 * MUL_REPS
+    }
+}
+
+impl<AB: AirBuilderWithPublicValues> Air<AB> for MulAir {
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let pis = builder.public_values();
+        let pv0 = pis[0];
+        let (local, next) = (
+            main.row_slice(0).expect("empty"),
+            main.row_slice(1).expect("one row"),
+        );
+        for i in 0..MUL_REPS {
+            let s = 3 * i;
+            let a = local[s].clone();
+            let b = local[s + 1].clone();
+            let c = local[s + 2].clone();
+            builder.assert_zero(a.clone() * b - c);
+            let next_a = next[s].clone();
+            builder.when_transition().assert_eq(a + AB::Expr::ONE, next_a);
+        }
+        builder.when_first_row().assert_eq(local[0].clone(), pv0);
+    }
+}
+
+/// Mul trace: repetition `r` has `a = 5 r + row + 1` (so `a + 1 = next a`), `b` a fixed
+/// pseudo-random value, `c = a * b`.
+fn generate_mul_trace(n: usize) -> RowMajorMatrix<Val> {
+    let mut values = Vec::with_capacity(3 * MUL_REPS * n);
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    for row in 0..n {
+        for r in 0..MUL_REPS {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let a = Val::from_u64((5 * r + row + 1) as u64);
+            let b = Val::from_u64((seed >> 33) % 0x7f00_0001);
+            values.push(a);
+            values.push(b);
+            values.push(a * b);
+        }
+    }
+    RowMajorMatrix::new(values, 3 * MUL_REPS)
 }
 
 pub struct FibonacciRow<F> {
@@ -342,20 +404,39 @@ fn main() {
     fs::create_dir_all(&out_dir).unwrap();
 
     let n = 1usize << cfg.log_trace_rows;
-    let trace = generate_trace(0, 1, n);
-    let x = trace.get(n - 1, 1).unwrap();
-    let pis = vec![Val::ZERO, Val::ONE, x];
-
     let config = make_config(&cfg);
-    let proof = prove(&config, &FibonacciAir {}, trace, &pis);
-    verify(&config, &FibonacciAir {}, &proof, &pis).expect("plonky3 rejects its own proof");
+    let (proof, pis, air_name, width) = if cfg.mul_air {
+        let trace = generate_mul_trace(n);
+        let pis = vec![trace.get(0, 0).unwrap()];
+        let proof = prove(&config, &MulAir {}, trace, &pis);
+        verify(&config, &MulAir {}, &proof, &pis).expect("plonky3 rejects its own proof");
+        (
+            proof,
+            pis,
+            "Mul: REPS=2 triples (a,b,c) per row, width 6; every row a*b=c; transition a'=a+1; first row a_0=pv0 (degree 2, 1 public value)",
+            3 * MUL_REPS,
+        )
+    } else {
+        let trace = generate_trace(0, 1, n);
+        let x = trace.get(n - 1, 1).unwrap();
+        let pis = vec![Val::ZERO, Val::ONE, x];
+        let proof = prove(&config, &FibonacciAir {}, trace, &pis);
+        verify(&config, &FibonacciAir {}, &proof, &pis).expect("plonky3 rejects its own proof");
+        (
+            proof,
+            pis,
+            "Fibonacci: columns (left,right); first row left=pv0,right=pv1; transition left'=right, right'=left+right; last row right=pv2",
+            2,
+        )
+    };
 
     let raw = serde_json::to_value(&proof).unwrap();
     let proof_json = normalize(&raw);
 
     let config_json = json!({
         "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.4.2 (crates.io)",
-        "air": "Fibonacci: columns (left,right); first row left=pv0,right=pv1; transition left'=right, right'=left+right; last row right=pv2",
+        "air": air_name,
+        "trace_width": width,
         "field": "KoalaBear p = 2^31 - 2^24 + 1",
         "challenge_field": "BinomialExtensionField<KoalaBear,4>, x^4 = 3",
         "hash": "Keccak256Hash over SerializingHasher (little-endian u32 bytes); compress = keccak256(left || right)",

@@ -1,0 +1,35 @@
+//! A multiplication AIR modelled on Plonky3's `MulAir` (`p3-uni-stark` `tests/mul_air.rs`):
+//! `REPS = 2` repetitions of a triple `(a, b, c)` per row (6 columns, degree 2) and one public
+//! value. The Rust definition is `MulAir` in `vectors/plonky3-stark/src/main.rs`.
+//!
+//! Constraints, in Plonky3's assertion order, for repetition `i = 0, 1` (columns `3i, 3i+1, 3i+2`):
+//! 1. every row:  `a_i * b_i - c_i = 0`
+//! 2. transition: `a_i + 1 - next.a_i = 0`
+//!
+//! then
+//! 3. first row:  `a_0 = pv_0`
+use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::air::{Air, AirCtx}
+
+type E = KoalaBearExt4
+
+pub struct MulAir {}
+
+impl Air for MulAir {
+    const WIDTH: u256 = 6
+    const NUM_PUBLIC: u256 = 1
+    const MAX_DEGREE: u256 = 2
+
+    fn eval(_ ctx: AirCtx) -> E {
+        var acc = E::zero()
+        var i: usize = 0
+        while i < 2 {
+            let s = 3 * i
+            let a = ctx.local[s]
+            acc = ctx.assert_all(acc, a.mul(ctx.local[s + 1]).sub(ctx.local[s + 2]))
+            acc = ctx.assert_transition(acc, a.add(E::one()).sub(ctx.next[s]))
+            i += 1
+        }
+        ctx.assert_first(acc, ctx.local[0].sub(ctx.public_value(0)))
+    }
+}

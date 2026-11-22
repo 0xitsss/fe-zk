@@ -1,0 +1,34 @@
+//! The Plonky3 Fibonacci AIR (`p3-uni-stark` example): 2 columns `(left, right)`, 3 public values
+//! `(a, b, x)`.
+//!
+//! Constraints, in Plonky3's assertion order:
+//! 1. first row:  `left  = a`
+//! 2. first row:  `right = b`
+//! 3. transition: `local.right = next.left`
+//! 4. transition: `local.left + local.right = next.right`
+//! 5. last row:   `local.right = x`
+use ingot::field::ext::KoalaBearExt4
+use ingot::verifier::fri::air::{Air, AirCtx}
+
+type E = KoalaBearExt4
+
+pub struct FibonacciAir {}
+
+impl Air for FibonacciAir {
+    const WIDTH: u256 = 2
+    const NUM_PUBLIC: u256 = 3
+    const MAX_DEGREE: u256 = 2
+
+    fn eval(_ ctx: AirCtx) -> E {
+        let l0 = ctx.local[0]
+        let l1 = ctx.local[1]
+        let n0 = ctx.next[0]
+        let n1 = ctx.next[1]
+        var acc = E::zero()
+        acc = ctx.assert_first(acc, l0.sub(ctx.public_value(0)))
+        acc = ctx.assert_first(acc, l1.sub(ctx.public_value(1)))
+        acc = ctx.assert_transition(acc, l1.sub(n0))
+        acc = ctx.assert_transition(acc, l0.add(l1).sub(n1))
+        ctx.assert_last(acc, l1.sub(ctx.public_value(2)))
+    }
+}

@@ -258,10 +258,38 @@ the ptau contribution and phase-2 entropy are public test values.
 
 ## FRI/STARK verifier (`src/verifier/fri.fe`)
 
-Verifies a Plonky3 0.4.2 `uni-stark` proof of a Fibonacci AIR (KoalaBear, degree-4 extension, arity 2, Keccak Merkle
-trees and challenger). The verifier logic is one piece of code; a configuration is the constants of a small module
-emitted by `vectors/plonky3-stark/emit_fe.py` from the proof's own `config.json` (`fri/config_secure.fe`,
-`fri/config_demo.fe`): `FriParams { log_n, log_blowup, log_final, num_queries, commit_pow_bits, query_pow_bits }`.
+Verifies a Plonky3 0.4.2 `uni-stark` proof (KoalaBear, degree-4 extension, arity 2, Keccak Merkle trees and challenger)
+of any AIR that implements the `Air` trait: `verify<A: Air>`. The verifier logic is one piece of code; a configuration is
+the constants of a small module emitted by `vectors/plonky3-stark/emit_fe.py` from the proof's own `config.json`
+(`fri/config_secure.fe`, `fri/config_demo.fe`, `fri/config_mul.fe`):
+`FriParams { width, log_n, log_blowup, log_final, num_queries, commit_pow_bits, query_pow_bits }`.
+
+### Adding an AIR (`fri/air.fe`)
+
+An AIR is a unit struct that implements `Air` (`fri/air_fib.fe`: Fibonacci, 2 columns, 3 public values; `fri/air_mul.fe`:
+6 columns, 1 public value):
+
+```fe
+pub trait Air {
+    const WIDTH: u256        // trace columns
+    const NUM_PUBLIC: u256   // public values (verify rejects any other count)
+    const MAX_DEGREE: u256   // constraint degree incl. selector, <= 2 (one quotient chunk)
+    fn eval(_ ctx: AirCtx) -> E   // folded constraints at zeta, Plonky3 assertion order
+}
+```
+
+`eval` reads `ctx.local[i]`, `ctx.next[i]` (columns at `zeta` and `zeta * g`) and `ctx.public_value(i)` and folds with
+`acc = ctx.assert_all|assert_first|assert_last|assert_transition(acc, constraint)`, which is
+`acc * alpha + selector * constraint`, the same as the Rust `AirBuilder` calls in the same order. Steps: (1) write the
+Rust AIR in `vectors/plonky3-stark/src/main.rs` and prove it (`--air`); (2) write the Fe `impl Air`; (3) run
+`emit_fe.py ... --air <name>` (add the module and type to its `AIRS` table); (4) run `fri_suite` on the fixture (copy
+`src/tests/fri_mul.fe`). Constraints are the only AIR-specific code: width enters the proof layout, the transcript,
+the Merkle leaf hash and the opening sums through `FriParams.width`, and `verify<A>` rejects a configuration whose width is
+not `A::WIDTH`. Fe monomorphises `verify<A>`, so `A::WIDTH` and `A::eval` are compile-time and there is no dispatch:
+the secure Fibonacci verification costs 1,366,516 gas in the test runner after the generalisation, 1,349,487 before
+(+1.3 %, the loops over columns that replaced unrolled width-2 code, not the trait). Not supported: constraint degree
+above 2 (several quotient chunks; `verify` rejects `MAX_DEGREE > 2`), preprocessed or permutation traces, zero-knowledge
+mode, other fields (the base-field arithmetic of the hot paths is KoalaBear-specific).
 The proof is one flat `MemArray<u256>` whose layout (offsets are functions of the parameters) is documented at the top
 of `fri.fe`. Queries, fold rounds and Merkle levels are loops, so the code size does not depend on the configuration.
 `params_valid` bounds every shift and table index; `verify` rejects a proof whose length is not `proof_words(params)`.

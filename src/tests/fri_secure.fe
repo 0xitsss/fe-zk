@@ -1,7 +1,8 @@
 //! The secure FRI/STARK configuration (`config_secure`): a real Plonky3 proof, at least 100
 //! conjectured bits, run through the shared suite `fri_suite.fe`. Fixture: `fri_fixture_secure.fe`.
 use std::evm::Evm
-use ingot::verifier::fri::verify
+use ingot::verifier::fri::{public_values, verify}
+use ingot::verifier::fri::air_fib::FibonacciAir
 use ingot::verifier::fri::config_secure::{CONJECTURED_BITS, PARAMS, PROOF_WORDS}
 use ingot::verifier::fri::{conjectured_bits, proof_words}
 use ingot::tests::fri_suite
@@ -33,7 +34,7 @@ fn secure_transcript_matches_plonky3() {
     fri_suite::transcript_matches(
         PARAMS,
         fib_proof(),
-        FIB_PUBLIC,
+        public_values(FIB_PUBLIC),
         TR_ALPHA,
         TR_ZETA,
         TR_FRI_ALPHA,
@@ -44,72 +45,116 @@ fn secure_transcript_matches_plonky3() {
 
 #[test]
 fn secure_accepts_plonky3_fibonacci_proof() {
-    fri_suite::accepts(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::accepts<FibonacciAir>(PARAMS, fib_proof(), public_values(FIB_PUBLIC))
 }
 
 #[test]
 fn secure_rejects_tampered_merkle_siblings() {
-    fri_suite::rejects_tampered_merkle_siblings(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_tampered_merkle_siblings<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_tampered_opened_values() {
-    fri_suite::rejects_tampered_opened_values(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_tampered_opened_values<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_tampered_final_poly() {
-    fri_suite::rejects_tampered_final_poly(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_tampered_final_poly<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_wrong_public_values() {
-    fri_suite::rejects_wrong_public_values(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_wrong_public_values<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_changed_commitments() {
-    fri_suite::rejects_changed_commitments(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_changed_commitments<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_nonzero_commit_pow_witness() {
-    fri_suite::rejects_nonzero_commit_pow_witness(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_nonzero_commit_pow_witness<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_bad_proof_of_work_witness() {
-    fri_suite::rejects_bad_proof_of_work_witness(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_bad_proof_of_work_witness<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_non_canonical_elements() {
-    fri_suite::rejects_non_canonical_elements(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_non_canonical_elements<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_rejects_wrong_configuration() {
-    fri_suite::rejects_wrong_configuration(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::rejects_wrong_configuration<FibonacciAir>(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_transcript_binds_public_values_and_trace_commitment() {
-    fri_suite::transcript_binds_public_values_and_trace_commitment(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::transcript_binds_public_values_and_trace_commitment(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[test]
 fn secure_transcript_binds_claimed_evaluations() {
-    fri_suite::transcript_binds_claimed_evaluations(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::transcript_binds_claimed_evaluations(PARAMS, fib_proof(), public_values(FIB_PUBLIC))
 }
 
 #[test]
 fn secure_transcript_binds_fri_commitments() {
-    fri_suite::transcript_binds_fri_commitments(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::transcript_binds_fri_commitments(PARAMS, fib_proof(), public_values(FIB_PUBLIC))
 }
 
 #[test]
 fn secure_transcript_binds_final_poly_and_query_pow() {
-    fri_suite::transcript_binds_final_poly_and_query_pow(PARAMS, fib_proof(), FIB_PUBLIC)
+    fri_suite::transcript_binds_final_poly_and_query_pow(
+        PARAMS,
+        fib_proof(),
+        public_values(FIB_PUBLIC),
+    )
 }
 
 #[event]
@@ -118,8 +163,9 @@ struct GasUsed { what: u256, gas: u256 }
 #[test]
 fn secure_gas_of_verification() uses (evm: mut Evm) {
     let proof = fib_proof()
+    let pubv = public_values(FIB_PUBLIC)
     let g0 = evm.gas()
-    let ok = verify(PARAMS, proof, FIB_PUBLIC)
+    let ok = verify<FibonacciAir>(PARAMS, proof, pubv)
     let used = g0 - evm.gas()
     evm.emit(GasUsed { what: 1, gas: used })
     assert(ok)

@@ -6,7 +6,7 @@ converts the output to the Fe fixtures (`src/tests/fri_fixture*.fe`) and the per
 
 - Plonky3 `p3-uni-stark`, `p3-fri`, `p3-challenger`, `p3-merkle-tree`, `p3-keccak`,
   `p3-koala-bear`, all `=0.4.2` from crates.io (versions fixed by `Cargo.lock`).
-- AIR: Fibonacci, 2 columns, 3 public values `(a, b, x)`, `(a, b) = (0, 1)`, `x` = the last row's right column.
+- AIR: Fibonacci (default, `--air fib`), 2 columns, 3 public values `(a, b, x)`, `(a, b) = (0, 1)`, `x` = the last row's right column.
 - Field KoalaBear, challenge field `BinomialExtensionField<KoalaBear, 4>` (`x^4 = 3`).
 - FRI: arity 2, one commit-phase proof of work per round (0 bits here), query proof of work.
 - Commitments: Keccak-256 over `SerializingHasher` rows, compression `keccak256(l || r)`;
@@ -16,6 +16,7 @@ converts the output to the Fe fixtures (`src/tests/fri_fixture*.fe`) and the per
 |---|---:|---:|---:|---:|---:|---:|---|
 | `fib/` | 2^4 | 2 | 1 | 4 | 3 | 11 | demo configuration (`config_demo`), carries the extension-field and challenger vectors; NOT secure |
 | `fib_secure/` | 2^10 | 4 | 3 | 20 | 20 | 100 | secure configuration (`config_secure`), the deployable contract `examples/fri_stark` |
+| `mul/` | 2^8 | 4 | 3 | 20 | 20 | 100 | second AIR (`--air mul`, `MulAir`: 6 columns, 1 public value, degree 2, modelled on Plonky3's `MulAir` test AIR), configuration `config_mul` |
 
 The crate takes `--log-trace`, `--log-blowup`, `--log-final`, `--queries`, `--commit-pow`, `--query-pow` and an output
 directory (defaults: the `fib/` row). `cargo run --release --locked -- <dir> --log-trace 10 ...`.

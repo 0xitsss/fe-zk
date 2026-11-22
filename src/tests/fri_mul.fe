@@ -1,0 +1,156 @@
+//! The secure FRI/STARK configuration (`config_mul`): a real Plonky3 proof, at least 100
+//! conjectured bits, run through the shared suite `fri_suite.fe`. Fixture: `fri_fixture_mul.fe`.
+use std::evm::Evm
+use ingot::verifier::fri::{public_values, verify}
+use ingot::verifier::fri::air_mul::MulAir
+use ingot::verifier::fri::config_mul::{CONJECTURED_BITS, PARAMS, PROOF_WORDS}
+use ingot::verifier::fri::{conjectured_bits, proof_words}
+use ingot::tests::fri_suite
+use ingot::tests::fri_fixture_mul::{
+    MUL_PROOF_WORDS,
+    MUL_PUBLIC,
+    TR_ALPHA,
+    TR_BETAS,
+    TR_FRI_ALPHA,
+    TR_INDICES,
+    TR_ZETA,
+    mul_proof,
+}
+
+#[test]
+fn mul_config_matches_fixture() {
+    assert(PROOF_WORDS == MUL_PROOF_WORDS)
+    assert(proof_words(PARAMS) == (PROOF_WORDS as u256))
+    assert(conjectured_bits(PARAMS) == CONJECTURED_BITS)
+    assert(CONJECTURED_BITS >= 100)
+    assert(
+        PARAMS.num_queries * PARAMS.log_blowup + PARAMS.query_pow_bits >= 100,
+    )
+    fri_suite::layout_is_consistent(PARAMS, mul_proof())
+}
+
+#[test]
+fn mul_transcript_matches_plonky3() {
+    fri_suite::transcript_matches(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+        TR_ALPHA,
+        TR_ZETA,
+        TR_FRI_ALPHA,
+        TR_BETAS,
+        TR_INDICES,
+    )
+}
+
+#[test]
+fn mul_accepts_plonky3_fibonacci_proof() {
+    fri_suite::accepts<MulAir>(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_rejects_tampered_merkle_siblings() {
+    fri_suite::rejects_tampered_merkle_siblings<MulAir>(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[test]
+fn mul_rejects_tampered_opened_values() {
+    fri_suite::rejects_tampered_opened_values<MulAir>(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[test]
+fn mul_rejects_tampered_final_poly() {
+    fri_suite::rejects_tampered_final_poly<MulAir>(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_rejects_wrong_public_values() {
+    fri_suite::rejects_wrong_public_values<MulAir>(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_rejects_changed_commitments() {
+    fri_suite::rejects_changed_commitments<MulAir>(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_rejects_nonzero_commit_pow_witness() {
+    fri_suite::rejects_nonzero_commit_pow_witness<MulAir>(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[test]
+fn mul_rejects_bad_proof_of_work_witness() {
+    fri_suite::rejects_bad_proof_of_work_witness<MulAir>(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[test]
+fn mul_rejects_non_canonical_elements() {
+    fri_suite::rejects_non_canonical_elements<MulAir>(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[test]
+fn mul_rejects_wrong_configuration() {
+    fri_suite::rejects_wrong_configuration<MulAir>(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_transcript_binds_public_values_and_trace_commitment() {
+    fri_suite::transcript_binds_public_values_and_trace_commitment(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[test]
+fn mul_transcript_binds_claimed_evaluations() {
+    fri_suite::transcript_binds_claimed_evaluations(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_transcript_binds_fri_commitments() {
+    fri_suite::transcript_binds_fri_commitments(PARAMS, mul_proof(), public_values(MUL_PUBLIC))
+}
+
+#[test]
+fn mul_transcript_binds_final_poly_and_query_pow() {
+    fri_suite::transcript_binds_final_poly_and_query_pow(
+        PARAMS,
+        mul_proof(),
+        public_values(MUL_PUBLIC),
+    )
+}
+
+#[event]
+struct GasUsed { what: u256, gas: u256 }
+
+#[test]
+fn mul_gas_of_verification() uses (evm: mut Evm) {
+    let proof = mul_proof()
+    let pubv = public_values(MUL_PUBLIC)
+    let g0 = evm.gas()
+    let ok = verify<MulAir>(PARAMS, proof, pubv)
+    let used = g0 - evm.gas()
+    evm.emit(GasUsed { what: 1, gas: used })
+    assert(ok)
+}

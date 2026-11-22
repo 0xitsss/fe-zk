@@ -1,0 +1,65 @@
+{
+  "air": "Mul: REPS=2 triples (a,b,c) per row, width 6; every row a*b=c; transition a'=a+1; first row a_0=pv0 (degree 2, 1 public value)",
+  "challenge_field": "BinomialExtensionField<KoalaBear,4>, x^4 = 3",
+  "challenger": "SerializingChallenger32<KoalaBear, HashChallenger<u8, Keccak256Hash, 32>>, initial state empty",
+  "commit_proof_of_work_bits": 0,
+  "degree_bits": 8,
+  "field": "KoalaBear p = 2^31 - 2^24 + 1",
+  "hash": "Keccak256Hash over SerializingHasher (little-endian u32 bytes); compress = keccak256(left || right)",
+  "log_blowup": 4,
+  "log_final_poly_len": 3,
+  "log_trace_rows": 8,
+  "num_queries": 20,
+  "num_quotient_chunks": 1,
+  "opened_trace_local": [
+    [
+      727970709,
+      761629964,
+      1211418220,
+      653265573
+    ],
+    [
+      783041067,
+      1347857384,
+      1389609711,
+      287528659
+    ],
+    [
+      1431256213,
+      1091055260,
+      1663457237,
+      773602857
+    ],
+    [
+      727970714,
+      761629964,
+      1211418220,
+      653265573
+    ],
+    [
+      1928963730,
+      1814446311,
+      678444530,
+      1464814915
+    ],
+    [
+      2059418600,
+      1284700394,
+      775356203,
+      1581710737
+    ]
+  ],
+  "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.4.2 (crates.io)",
+  "public_values": [
+    1
+  ],
+  "query_proof_of_work_bits": 20,
+  "soundness": {
+    "conjectured_bits": 100,
+    "conjectured_formula": "log_blowup * num_queries + query_proof_of_work_bits (p3_fri FriParameters::conjectured_soundness_bits)",
+    "log2_eps_commit_phase": -71.83874054126983,
+    "proven_johnson_m10_bits": 58.592065002426516,
+    "proven_unique_decoding_bits": 38.25074317488148
+  },
+  "trace_width": 6
+}
