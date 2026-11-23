@@ -3,7 +3,10 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses semantic versioning.
 
-## [Unreleased]
+## [0.4.0] - 2026-11-23
+
+Plonky3 0.8.0 for the FRI/STARK path, `fe-zk-gen plonky3`. Crate and ingot manifests and generated file headers
+now carry 0.4.0 (`fe-zk-gen 0.4.0`).
 
 ### Changed
 - FRI/STARK verifier ported from Plonky3 0.4.2 to **0.8.0** (latest stable): domain-separated transcript (three seeds

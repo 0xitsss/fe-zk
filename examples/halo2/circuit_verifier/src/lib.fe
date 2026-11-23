@@ -1,4 +1,4 @@
-//! GENERATED FILE, do not edit. Tool: fe-zk-gen 0.3.0.
+//! GENERATED FILE, do not edit. Tool: fe-zk-gen 0.4.0.
 //! vk digest (sha256 of canonical vk.json): 11450c9e44382d2de861d58dbf488435d3192de78c5fe1f2a9a323e2ac7b7afa
 //! Circuit: k=5, 3 advice / 8 fixed / 1 instance columns, 1 lookup(s), 2 permutation set(s),
 //! 4 quotient chunks. halo2-KZG verifier for BN254 with the snark-verifier EvmTranscript.

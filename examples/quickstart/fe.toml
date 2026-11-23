@@ -1,6 +1,6 @@
 [ingot]
 name = "quickstart"
-version = "0.3.0"
+version = "0.4.0"
 
 [dependencies]
 # Inside this repository: a path dependency on the fe-zk root ingot.
