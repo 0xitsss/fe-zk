@@ -321,7 +321,7 @@ pub trait Air {
 `acc = ctx.assert_all|assert_first|assert_last|assert_transition(acc, constraint)`, which is
 `acc * alpha + selector * constraint`, the same as the Rust `AirBuilder` calls in the same order. Steps: (1) write the
 Rust AIR in `vectors/plonky3-stark/src/main.rs` and prove it (`--air`); (2) write the Fe `impl Air`; (3) run
-`emit_fe.py ... --air <name>` (add the module and type to its `AIRS` table); (4) run `fri_suite` on the fixture (copy
+`fe-zk-gen plonky3 ... --air <name>` (add the module and type to `air_info` in `gen/fe-zk-gen/src/plonky3.rs` and to the `AIRS` table of `emit_fe.py`, its byte-identical twin); (4) run `fri_suite` on the fixture (copy
 `src/tests/fri_mul.fe`). Constraints are the only AIR-specific code: width enters the proof layout, the transcript,
 the Merkle leaf hash and the opening sums through `FriParams.width`, and `verify<A>` rejects a configuration whose width is
 not `A::WIDTH`. Fe monomorphises `verify<A>`, so `A::WIDTH` and `A::eval` are compile-time and there is no dispatch:

@@ -31,6 +31,7 @@ machine used for this guide (an old Xeon without AVX), and about 2.5 minutes onc
    (a) [circom + snarkjs Groth16](#a-circom--snarkjs-groth16) (b) [arkworks Groth16](#b-arkworks-groth16)
    (c) [snarkjs PLONK](#c-snarkjs-plonk) (d) [gnark PLONK](#d-gnark-plonk) (e) [halo2-KZG](#e-halo2-kzg)
    (f) [KZG openings and EIP-4844](#f-kzg-openings-and-eip-4844-point-evaluation) (g) [FRI/STARK](#g-fristark-plonky3)
+   (h) [Your own STARK AIR](#h-your-own-stark-air)
 5. [Using the library directly](#5-using-the-library-directly)
 6. [Compile, test, deploy](#6-compile-test-deploy)
 7. [Integration safety checklist](#7-integration-safety-checklist)
@@ -876,7 +877,7 @@ fe-zk-gen plonky3 fib_secure --fixture <fixture.fe> --config <config.fe> --name 
 #   same output: python3 emit_fe.py fib_secure <fixture.fe> <config.fe> secure --min-bits 100
 ```
 
-`emit_fe.py <dir> <fixture .fe> <config .fe> <name> [--vectors] [--min-bits N]` writes the flat proof words (the layout is
+`fe-zk-gen plonky3 <dir> --fixture F --config C --name N [--air fib|mul] [--vectors] [--min-bits N]` writes the flat proof words (the layout is
 documented at the top of `src/verifier/fri.fe`) and a module with `PARAMS`, `FIXED_PROOF_WORDS`, `MAX_PROOF_WORDS` and
 `verify` (a proof's length depends on how much its Merkle multi-openings were pruned); with
 `--min-bits N` it adds `static_assert(CONJECTURED_BITS >= N)`. The emitted files `use ingot::...`, which means "inside
@@ -884,7 +885,7 @@ fe_zk". **You can keep them in your own ingot**: replace `ingot::` with `fe_zk::
 separate ingot (`src/config.fe` and `src/fixture.fe`, from a fresh proof made with the commands above):
 
 ```sh
-python3 -I fe-zk/vectors/plonky3-stark/emit_fe.py <dir>/fib_secure src/fixture.fe src/config.fe secure --min-bits 100
+fe-zk-gen plonky3 <dir>/fib_secure --fixture src/fixture.fe --config src/config.fe --name secure --min-bits 100
 sed -i 's/ingot::/fe_zk::/g' src/config.fe src/fixture.fe && fe fmt
 ```
 
@@ -919,6 +920,87 @@ by `MAX_PROOF_WORDS` and `verify` checks it against the Merkle sibling counts in
 `scripts/gas-table.sh` (`docs/GAS.md`).
 
 `scripts/regen-plonky3-stark.sh` regenerates all three committed configurations with exactly these commands.
+
+### (h) Your own STARK AIR
+
+The verifier is generic: `verify<A: Air>`. Only the constraints are AIR-specific; the proof layout, transcript,
+Merkle openings and FRI folding take the trace width from the configuration. A walk-through with the shipped
+`MulAir` (6 columns, degree 2, one public value), Rust on the left of each step, Fe on the right.
+
+**1. Write the AIR in Rust and prove it.** Add it to `vectors/plonky3-stark/src/main.rs` next to `MulAir`:
+
+```rust
+impl<AB: AirBuilder> Air<AB> for MulAir {
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let pv0 = builder.public_values()[0];
+        let (local, next) = (main.current_slice(), main.next_slice());
+        for i in 0..MUL_REPS {
+            let s = 3 * i;
+            builder.assert_zero(local[s].clone() * local[s + 1].clone() - local[s + 2].clone());
+            builder.when_transition().assert_eq(local[s].clone() + AB::Expr::ONE, next[s].clone());
+        }
+        builder.when_first_row().assert_eq(local[0].clone(), pv0);
+    }
+}
+```
+
+```sh
+cd vectors/plonky3-stark
+cargo run --release --locked -- mul --air mul --log-trace 8 --log-blowup 4 --log-final 3 --queries 20 --commit-pow 0 --query-pow 20
+#   -> mul/{proof,config}.json; "proof valid in Plonky3"
+```
+
+**2. Write the same constraints in Fe**, in the same assertion order (`src/verifier/fri/air_mul.fe`):
+
+```fe
+impl Air for MulAir {
+    const WIDTH: u256 = 6
+    const NUM_PUBLIC: u256 = 1
+    const MAX_DEGREE: u256 = 2
+
+    fn eval(_ ctx: AirCtx) -> E {
+        var acc = E::zero()
+        var i: usize = 0
+        while i < 2 {
+            let s = 3 * i
+            let a = ctx.local[s]
+            acc = ctx.assert_all(acc, a.mul(ctx.local[s + 1]).sub(ctx.local[s + 2]))
+            acc = ctx.assert_transition(acc, a.add(E::one()).sub(ctx.next[s]))
+            i += 1
+        }
+        ctx.assert_first(acc, ctx.local[0].sub(ctx.public_value(0)))
+    }
+}
+```
+
+| Rust `AirBuilder` | Fe `AirCtx` |
+|---|---|
+| `builder.assert_zero(x)` | `acc = ctx.assert_all(acc, x)` |
+| `builder.when_transition().assert_eq(x, y)` | `acc = ctx.assert_transition(acc, x.sub(y))` |
+| `builder.when_first_row()` / `when_last_row()` | `ctx.assert_first` / `ctx.assert_last` |
+| `local[i]`, `next[i]` | `ctx.local[i]`, `ctx.next[i]` |
+| `builder.public_values()[i]` | `ctx.public_value(i)` |
+
+The order matters: each assertion folds as `acc * alpha + selector * constraint`, as in Plonky3, so a reordered
+constraint gives a different value at `zeta` and the proof is rejected.
+
+**3. Emit the configuration and the fixture:**
+
+```sh
+fe-zk-gen plonky3 vectors/plonky3-stark/mul --air mul --fixture src/tests/fri_fixture_mul.fe \
+  --config src/verifier/fri/config_mul.fe --name mul --min-bits 100
+```
+
+`--air` currently knows `fib` and `mul` (the `air_info` table in `gen/fe-zk-gen/src/plonky3.rs`, and the `AIRS`
+table of `emit_fe.py`). A new AIR adds one line to each: module, type name and constant prefix.
+
+**4. Test it** with the shared suite (copy `src/tests/fri_mul.fe`): the real proof is accepted; tampered openings,
+commitments, final polynomial, public values, proof of work, width and non-canonical words are rejected; changing
+any transcript input changes the challenges.
+
+Not supported yet: constraint degree above 2 (`verify` rejects `MAX_DEGREE > 2`), preprocessed and permutation
+traces, zero-knowledge mode, fields other than KoalaBear.
 
 ## 5. Using the library directly
 

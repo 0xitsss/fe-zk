@@ -49,7 +49,8 @@ cd examples/life/cli && cargo run --release -- --pattern glider --gens 200 --del
 
 The Life CLI needs `fe build` run once in `examples/life` and `examples/life/verifier` (`scripts/life-demo.sh` does
 it for you). To build an anonymous vote, claim or signal, or to verify proofs from your own circuit, start with
-[docs/USAGE.md](docs/USAGE.md).
+[docs/USAGE.md](docs/USAGE.md). All documents: [docs/README.md](docs/README.md); every example has its own README
+([examples/README.md](examples/README.md)).
 
 ## What to look at
 
