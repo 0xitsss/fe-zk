@@ -14,15 +14,23 @@
 //! - A KoalaBear element is `sample & 0x7fffffff`, resampled while `>= p` (rejection).
 //!   An extension element is 4 such samples, coefficient 0 first.
 //! - `sample_bits(n)` is `sample & (2^n - 1)` (no rejection).
+//! - Proof of work (`check_witness`, Plonky3 0.8): with `bits > 0`, squeeze one output byte
+//!   (which only matters when the output is empty: it forces a flush), observe the witness,
+//!   then require `sample_bits(bits) == 0`.
+//! - Domain separators (`observe_seed`, Plonky3 0.8 `p3_challenger::fs`): every sub-protocol
+//!   (uni-stark, the FRI PCS, FRI) first absorbs a seed byte string, packed 3 bytes per element.
 //!
 //! Every challenge depends on all earlier observations because each flush hashes the whole
 //! buffer (safety rule 5, tested in `src/tests/fri.fe`).
 use core::num::IntDowncast
+use core::ptr::{MemArray, cast, offset_bytes}
 use std::evm::packed::Packed
 use ingot::field::{Field, KoalaBear}
 use ingot::field::ext::KoalaBearExt4
 
 const KB_P: u256 = 0x7f000001
+const BYTE_MASK: u256 = 0x00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff
+const HALF_MASK: u256 = 0x0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff
 
 /// Plonky3 serializes a KoalaBear element with `to_unique_u32`, which is the Montgomery
 /// form `v * 2^32 mod p`, not the canonical value (`MontyField31::to_unique_u32`), as 4
@@ -106,11 +114,95 @@ impl Challenger {
         self.sample_u32() & ((1 << bits) - 1)
     }
 
-    /// Proof of work: with `bits == 0` nothing is observed and the check passes (as in
-    /// Plonky3). Otherwise observe the witness and require `bits` zero bits.
+    /// Proof of work (`SerializingChallenger32::check_witness`, Plonky3 0.8): with `bits == 0`
+    /// nothing is observed and the check passes. Otherwise squeeze one byte (`squeeze`: a flush
+    /// when the output is empty; the popped byte itself is discarded by the observe that
+    /// follows), observe the witness and require `bits` zero bits.
     pub fn check_witness(mut self, _ bits: u256, _ witness: KoalaBear) -> bool {
         if bits == 0 { return true }
+        if self.out_left == 0 {
+            self.flush()
+        }
         self.observe_felt(witness)
         self.sample_bits(bits) == 0
     }
+
+    /// `DomainSeparator::seed` of Plonky3 0.8 (`p3_challenger::fs`) for a `FieldUnit<KoalaBear>`
+    /// alphabet: absorb the byte string
+    /// `protocol_id(64) || pattern_hash(32) || u32be(len(label)) || label || 0x80`, as the
+    /// element `len(bytes)` followed by the bytes packed 3 per element, little-endian
+    /// (`TranscriptField::observe_seed`). `protocol_id` is `version = 1`, the `name_len`-byte
+    /// name (`name`, big-endian), zero padding and `name_len` in the last byte. `label` is the
+    /// instance label: each value as `u32be(8) || u64be(v)` (`DomainSeparator::instance`).
+    /// `pattern_hash` is Keccak-256 of the rendered interaction pattern, a configuration constant.
+    pub fn observe_seed(
+        mut self,
+        _ name: u256,
+        _ name_len: u256,
+        _ pattern_hash: u256,
+        _ label: MemArray<u256>,
+    ) {
+        let n_label = label.len() as u256
+        // the seed bytes, big-endian as written
+        var sd = Packed::with_capacity(bytes: (101 + 12 * n_label + 32) as usize)
+        sd.u8(1)
+        sd.u256(name << (8 * (32 - name_len)))
+        // 30 zero bytes: the rest of the 62-byte name field
+        sd.u128(0)
+        sd.u64(0)
+        sd.u32(0)
+        sd.u16(0)
+        sd.u8(name_len.downcast_truncate())
+        sd.u256(pattern_hash)
+        sd.u32((12 * n_label).downcast_truncate())
+        var k: usize = 0
+        while k < label.len() {
+            sd.u32(8)
+            sd.u64(label[k].downcast_truncate())
+            k += 1
+        }
+        sd.u8(0x80)
+        let total = 101 + 12 * n_label
+        self.observe_u32_le(total)
+        // 3 bytes per element, little-endian: the word read at byte offset i holds bytes
+        // i, i+1, i+2 in its top 24 bits (big-endian); the last chunk may be shorter, its
+        // missing bytes are masked to zero. Eight elements at a time are serialized into one
+        // 32-byte word and appended with a single store.
+        let base = cast<u8, u256>(sd.span().ptr())
+        var lanes: u256 = 0
+        var nl: u256 = 0
+        var i: u256 = 0
+        while i < total {
+            let w = unsafe {
+                *offset_bytes(base, i)
+            }
+            let b0 = w >> 248
+            var b1 = (w >> 240) & 0xff
+            var b2 = (w >> 232) & 0xff
+            if i + 1 >= total { b1 = 0 }
+            if i + 2 >= total { b2 = 0 }
+            // Montgomery form of the element (< 2^24 < p): v * 2^32 mod p, one 32-bit lane
+            lanes = (lanes << 32) | (((b0 | (b1 << 8) | (b2 << 16)) << 32) % KB_P)
+            nl += 1
+            if nl == 8 {
+                self.buf.u256(swap_lanes(lanes))
+                lanes = 0
+                nl = 0
+            }
+            i += 3
+        }
+        // the remaining nl < 8 lanes, one u32 each, first lane first
+        var j: u256 = nl
+        while j > 0 {
+            j -= 1
+            let m = (lanes >> (32 * j)) & 0xffffffff
+            self.buf.u32(swap_lanes(m).downcast_truncate())
+        }
+    }
+}
+
+/// Byte swap inside every 32-bit lane of `w` (the little-endian serialization of each lane).
+fn swap_lanes(_ w: u256) -> u256 {
+    let b = ((w & BYTE_MASK) << 8) | ((w >> 8) & BYTE_MASK)
+    ((b & HALF_MASK) << 16) | ((b >> 16) & HALF_MASK)
 }

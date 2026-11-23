@@ -1,6 +1,6 @@
 //! Fixture generator for the fe-zk FRI/STARK verifier.
 //!
-//! Proves a Fibonacci AIR with Plonky3 `p3-uni-stark` 0.4.2 over KoalaBear, degree-4 binomial
+//! Proves a Fibonacci AIR with Plonky3 `p3-uni-stark` 0.8.0 over KoalaBear, degree-4 binomial
 //! extension challenge field, FRI (arity 2), Keccak-256 Merkle commitments over serialized
 //! field elements, and `SerializingChallenger32<HashChallenger<u8, Keccak256Hash, 32>>`.
 //! Writes `fib/proof.json`, `fib/config.json` and `fib/vectors.json` (extension field and
@@ -10,25 +10,26 @@ use std::borrow::Borrow;
 use std::fs;
 use std::path::PathBuf;
 
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_challenger::{
-    CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger, HashChallenger,
+    CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger, HashChallenger,
     SerializingChallenger32,
 };
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{
-    BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField32, PrimeField64, TwoAdicField,
+    BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
 };
-use p3_fri::{FriParameters, TwoAdicFriPcs};
+use p3_challenger::fs::{DomainSeparator, FieldUnit};
+use p3_fri::{FriParameters, FriShape, PcsShape, TwoAdicFriPcs};
 use p3_keccak::Keccak256Hash;
 use p3_koala_bear::KoalaBear;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
-use p3_uni_stark::{prove, verify, StarkConfig};
+use p3_uni_stark::{prove, verify, StarkConfig, StarkShape};
 use serde_json::{json, Value};
 
 /// Proof configuration. Defaults are the small demo fixture (`fib/`); `--log-trace`, `--log-blowup`,
@@ -120,21 +121,21 @@ impl<F> BaseAir<F> for FibonacciAir {
     fn width(&self) -> usize {
         2
     }
+
+    fn num_public_values(&self) -> usize {
+        3
+    }
 }
 
-impl<AB: AirBuilderWithPublicValues> Air<AB> for FibonacciAir {
+impl<AB: AirBuilder> Air<AB> for FibonacciAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let pis = builder.public_values();
         let a = pis[0];
         let b = pis[1];
         let x = pis[2];
-        let (local, next) = (
-            main.row_slice(0).expect("empty"),
-            main.row_slice(1).expect("one row"),
-        );
-        let local: &FibonacciRow<AB::Var> = (*local).borrow();
-        let next: &FibonacciRow<AB::Var> = (*next).borrow();
+        let local: &FibonacciRow<AB::Var> = main.current_slice().borrow();
+        let next: &FibonacciRow<AB::Var> = main.next_slice().borrow();
 
         let mut when_first_row = builder.when_first_row();
         when_first_row.assert_eq(local.left.clone(), a);
@@ -160,17 +161,18 @@ impl<F> BaseAir<F> for MulAir {
     fn width(&self) -> usize {
         3 * MUL_REPS
     }
+
+    fn num_public_values(&self) -> usize {
+        1
+    }
 }
 
-impl<AB: AirBuilderWithPublicValues> Air<AB> for MulAir {
+impl<AB: AirBuilder> Air<AB> for MulAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let pis = builder.public_values();
         let pv0 = pis[0];
-        let (local, next) = (
-            main.row_slice(0).expect("empty"),
-            main.row_slice(1).expect("one row"),
-        );
+        let (local, next) = (main.current_slice(), main.next_slice());
         for i in 0..MUL_REPS {
             let s = 3 * i;
             let a = local[s].clone();
@@ -233,7 +235,7 @@ type Challenge = BinomialExtensionField<Val, 4>;
 type ByteHash = Keccak256Hash;
 type FieldHash = SerializingHasher<ByteHash>;
 type MyCompress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
-type ValMmcs = MerkleTreeMmcs<Val, u8, FieldHash, MyCompress, 32>;
+type ValMmcs = MerkleTreeMmcs<Val, u8, FieldHash, MyCompress, 2, 32>;
 type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
 type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
 type Dft = Radix2DitParallel<Val>;
@@ -244,12 +246,14 @@ fn make_config(c: &Cfg) -> MyConfig {
     let byte_hash = ByteHash {};
     let field_hash = FieldHash::new(byte_hash);
     let compress = MyCompress::new(byte_hash);
-    let val_mmcs = ValMmcs::new(field_hash, compress);
+    let val_mmcs = ValMmcs::new(field_hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = FriParameters {
         log_blowup: c.log_blowup,
         log_final_poly_len: c.log_final_poly_len,
+        max_log_arity: 1,
         num_queries: c.num_queries,
+        batch_proof_of_work_bits: 0,
         commit_proof_of_work_bits: c.commit_pow_bits,
         query_proof_of_work_bits: c.query_pow_bits,
         mmcs: challenge_mmcs,
@@ -360,29 +364,88 @@ fn ext_vectors() -> Value {
     })
 }
 
-/// Replay the verifier's Fiat-Shamir transcript with the real Plonky3 challenger and report
-/// every derived challenge (independent expected values for the Fe transcript test).
-fn transcript_dump(
+/// Records every base-field element observed (used to dump the domain-separator seeds).
+struct Rec(Vec<u64>);
+
+impl CanObserve<Val> for Rec {
+    fn observe(&mut self, v: Val) {
+        self.0.push(v.as_canonical_u64());
+    }
+}
+
+/// The felts a Plonky3 `DomainSeparator` absorbs (`DomainSeparator::seed`), plus its parts:
+/// the protocol id, the pattern hash and the instance label (all as byte lists).
+fn seed_dump(ds: &DomainSeparator<FieldUnit<Val>>) -> Value {
+    let mut r = Rec(vec![]);
+    ds.seed(&mut r);
+    json!({
+        "protocol_id": ds.protocol_id().to_vec(),
+        "pattern_hash": format!("0x{}", ds.pattern().pattern_hash().iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        "instance_label": ds.instance_label().to_vec(),
+        "felts": r.0,
+    })
+}
+
+/// The three transcript shapes of one proof: uni-stark, PCS (`TwoAdicFriPcs`) and FRI.
+fn shapes<A: BaseAir<Val>>(
+    cfg: &Cfg,
+    air: &A,
+    degree_bits: usize,
+    num_chunks: usize,
+) -> (StarkShape, PcsShape, FriShape) {
+    let stark = StarkShape::new::<Val, A>(air, 0, degree_bits, degree_bits, num_chunks, false, 0);
+    let w = air.width();
+    let pcs = PcsShape {
+        claimed_evaluation_counts: vec![vec![vec![w, w]], vec![vec![4]; num_chunks]],
+        batch_pow_bits: 0,
+    };
+    let folds = degree_bits - cfg.log_final_poly_len;
+    let fri = FriShape {
+        log_arities: vec![1; folds],
+        final_poly_len: 1 << cfg.log_final_poly_len,
+        commit_pow_bits: cfg.commit_pow_bits,
+        query_pow_bits: cfg.query_pow_bits,
+        num_queries: cfg.num_queries,
+        index_bits: degree_bits + cfg.log_blowup,
+        log_blowup: cfg.log_blowup,
+        max_log_arity: 1,
+    };
+    (stark, pcs, fri)
+}
+
+/// Replay the verifier's Fiat-Shamir transcript with the real Plonky3 challenger, seeded by
+/// Plonky3's own domain separators, and report every derived challenge (independent expected
+/// values for the Fe transcript test) and the three seeds.
+fn transcript_dump<A: BaseAir<Val>>(
     cfg: &Cfg,
     config: &MyConfig,
+    air: &A,
     proof: &p3_uni_stark::Proof<MyConfig>,
     pis: &[Val],
 ) -> Value {
     use p3_uni_stark::StarkGenericConfig;
+    let ov = &proof.opened_values;
+    let (stark, pcs, fri) = shapes(cfg, air, proof.degree_bits, ov.quotient_chunks.len());
+    let (ds_stark, ds_pcs, ds_fri) = (
+        stark.domain_separator::<Val, Challenge>(),
+        pcs.domain_separator::<Val, Challenge>(),
+        fri.domain_separator::<Val, Challenge>(),
+    );
     let mut c = config.initialise_challenger();
-    c.observe(Val::from_usize(proof.degree_bits));
-    c.observe(Val::from_usize(proof.degree_bits));
-    c.observe(Val::from_usize(0));
+    ds_stark.seed(&mut c);
     c.observe(proof.commitments.trace.clone());
     c.observe_slice(pis);
     let alpha: Challenge = c.sample_algebra_element();
     c.observe(proof.commitments.quotient_chunks.clone());
     let zeta: Challenge = c.sample_algebra_element();
-    let ov = &proof.opened_values;
+    ds_pcs.seed(&mut c);
     c.observe_algebra_slice(&ov.trace_local);
-    c.observe_algebra_slice(&ov.trace_next);
-    c.observe_algebra_slice(&ov.quotient_chunks[0]);
+    c.observe_algebra_slice(ov.trace_next.as_ref().expect("next row opened"));
+    for chunk in &ov.quotient_chunks {
+        c.observe_algebra_slice(chunk);
+    }
     let fri_alpha: Challenge = c.sample_algebra_element();
+    ds_fri.seed(&mut c);
     let op = &proof.opening_proof;
     let mut betas = vec![];
     for (comm, w) in op.commit_phase_commits.iter().zip(&op.commit_pow_witnesses) {
@@ -396,7 +459,8 @@ fn transcript_dump(
     let log_h = op.commit_phase_commits.len() + cfg.log_blowup + cfg.log_final_poly_len;
     let indices: Vec<usize> = (0..cfg.num_queries).map(|_| c.sample_bits(log_h)).collect();
     json!({"alpha": ext(&alpha), "zeta": ext(&zeta), "fri_alpha": ext(&fri_alpha),
-           "betas": betas, "pow_ok": pow_ok, "indices": indices})
+           "betas": betas, "pow_ok": pow_ok, "indices": indices,
+           "seeds": {"stark": seed_dump(&ds_stark), "pcs": seed_dump(&ds_pcs), "fri": seed_dump(&ds_fri)}})
 }
 
 fn main() {
@@ -405,28 +469,32 @@ fn main() {
 
     let n = 1usize << cfg.log_trace_rows;
     let config = make_config(&cfg);
-    let (proof, pis, air_name, width) = if cfg.mul_air {
+    let (proof, pis, air_name, width, transcript) = if cfg.mul_air {
         let trace = generate_mul_trace(n);
         let pis = vec![trace.get(0, 0).unwrap()];
-        let proof = prove(&config, &MulAir {}, trace, &pis);
+        let proof = prove(&config, &MulAir {}, trace, &pis).expect("prove");
         verify(&config, &MulAir {}, &proof, &pis).expect("plonky3 rejects its own proof");
+        let tr = transcript_dump(&cfg, &config, &MulAir {}, &proof, &pis);
         (
             proof,
             pis,
             "Mul: REPS=2 triples (a,b,c) per row, width 6; every row a*b=c; transition a'=a+1; first row a_0=pv0 (degree 2, 1 public value)",
             3 * MUL_REPS,
+            tr,
         )
     } else {
         let trace = generate_trace(0, 1, n);
         let x = trace.get(n - 1, 1).unwrap();
         let pis = vec![Val::ZERO, Val::ONE, x];
-        let proof = prove(&config, &FibonacciAir {}, trace, &pis);
+        let proof = prove(&config, &FibonacciAir {}, trace, &pis).expect("prove");
         verify(&config, &FibonacciAir {}, &proof, &pis).expect("plonky3 rejects its own proof");
+        let tr = transcript_dump(&cfg, &config, &FibonacciAir {}, &proof, &pis);
         (
             proof,
             pis,
             "Fibonacci: columns (left,right); first row left=pv0,right=pv1; transition left'=right, right'=left+right; last row right=pv2",
             2,
+            tr,
         )
     };
 
@@ -434,7 +502,7 @@ fn main() {
     let proof_json = normalize(&raw);
 
     let config_json = json!({
-        "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.4.2 (crates.io)",
+        "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.8.0 (crates.io)",
         "air": air_name,
         "trace_width": width,
         "field": "KoalaBear p = 2^31 - 2^24 + 1",
@@ -457,7 +525,7 @@ fn main() {
     fs::write(out_dir.join("proof.json"), serde_json::to_string_pretty(&proof_json).unwrap()).unwrap();
     fs::write(out_dir.join("config.json"), serde_json::to_string_pretty(&config_json).unwrap()).unwrap();
     let vectors = json!({"ext": ext_vectors(), "challenger": challenger_vectors(),
-        "transcript": transcript_dump(&cfg, &config, &proof, &pis)});
+        "transcript": transcript});
     fs::write(out_dir.join("vectors.json"), serde_json::to_string_pretty(&vectors).unwrap()).unwrap();
     eprintln!("wrote {} (proof valid in Plonky3)", out_dir.display());
 }

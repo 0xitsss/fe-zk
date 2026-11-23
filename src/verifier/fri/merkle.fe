@@ -9,9 +9,14 @@
 //! - a path lists siblings from the leaf up; bit k of the index (LSB first) says whether
 //!   the running node is the right child at level k.
 //!
-//! Scope: one matrix per commitment, all rows of one height (the shape of this fixture's
-//! Fibonacci proof). Plonky3's mixed-height injection is not implemented.
-use core::ptr::{MemArray, offset_bytes}
+//! Openings are Plonky3 0.8 pruned multi-openings (`MerkleTreeMmcs::verify_multi_batch`,
+//! `PrunedMerklePaths`): one list of sibling hashes shared by all queries of a commitment, with
+//! every node that the verifier can compute itself left out (`verify_pruned`).
+//!
+//! Scope: one matrix height per commitment, Merkle cap height 0 (the commitment is the root),
+//! arity 2. Plonky3's mixed-height injection is not implemented.
+use core::abi::store_word
+use core::ptr::{MemArray, cast, offset_bytes}
 use std::evm::crypto::keccak_words
 use std::evm::packed::Packed
 use ingot::field::{Field, KoalaBear}
@@ -98,4 +103,136 @@ pub fn climb_path(
         k += 1
     }
     h
+}
+
+/// Plonky3 `MerkleTreeMmcs::verify_batch_pruned` for a binary tree of depth `levels`, cap height 0:
+/// the `n` leaves `leaves[from .. from + n]` at the row indices `index_of(k)` (`indices[k] >> shift`)
+/// and the `count` sibling hashes `p[off .. off + count]` reconstruct `root`.
+///
+/// The queries are sorted by index and deduplicated (two queries of the same row must have the
+/// same leaf digest, as Plonky3 requires equal openings). Then, level by level and from the
+/// lowest index, two nodes with the same parent are compressed together, and a node whose
+/// sibling is not computed takes the next sibling hash from the proof: exactly the order in
+/// which `prune_paths` / `restore_paths` (`walk_frontier`) list them. Every supplied hash must be
+/// used (`count` exactly) and the last node must be the root (index 0).
+///
+/// Unchecked arithmetic (rule 7): `n <= 128`, `levels <= 24`, indices `< 2^24` (callers:
+/// `params_valid`), and `off + count <= p.len()` and `from + n <= leaves.len()` are asserted.
+#[arithmetic(unchecked)]
+pub fn verify_pruned(
+    _ root: u256,
+    _ leaves: MemArray<u256>,
+    _ from: u256,
+    _ indices: MemArray<u256>,
+    _ shift: u256,
+    _ n: u256,
+    _ levels: u256,
+    _ p: MemArray<u256>,
+    _ off: u256,
+    _ count: u256,
+) -> bool {
+    assert(off + count <= (p.len() as u256))
+    assert(from + n <= (leaves.len() as u256))
+    assert(n <= (indices.len() as u256))
+    var idx = unsafe {
+        MemArray<u256>::new_uninit(n as usize)
+    }
+    var dg = unsafe {
+        MemArray<u256>::new_uninit(n as usize)
+    }
+    // insertion sort by index, dropping duplicates (equal digests required). Raw pointer
+    // accesses: every position used is `< m <= n`, the length of `idx` and `dg`.
+    let ib = idx.ptr()
+    let db = dg.ptr()
+    let qb = indices.ptr()
+    let lb = leaves.ptr()
+    var m: u256 = 0
+    var k: u256 = 0
+    while k < n {
+        let i = rd(qb, k) >> shift
+        let d = rd(lb, from + k)
+        // first position whose index is >= i
+        var pos = m
+        while pos > 0 && rd(ib, pos - 1) >= i {
+            pos -= 1
+        }
+        if pos < m && rd(ib, pos) == i {
+            // duplicate row: Plonky3 requires the same opening, so the same leaf
+            if rd(db, pos) != d {
+                return false
+            }
+        } else {
+            var t = m
+            while t > pos {
+                wr(ib, t, rd(ib, t - 1))
+                wr(db, t, rd(db, t - 1))
+                t -= 1
+            }
+            wr(ib, pos, i)
+            wr(db, pos, d)
+            m += 1
+        }
+        k += 1
+    }
+    if m > 0 && (load(idx, m - 1) >> levels) != 0 {
+        return false
+    }
+    let base = p.ptr()
+    var cur = off
+    let end = off + count
+    var lvl: u256 = 0
+    while lvl < levels {
+        var out: u256 = 0
+        var i: u256 = 0
+        while i < m {
+            // i, i + 1, out < m <= n: inside both allocations
+            let a = rd(ib, i)
+            let da = rd(db, i)
+            var h: u256 = 0
+            if i + 1 < m && (rd(ib, i + 1) >> 1) == (a >> 1) {
+                // both children known (sorted and unique: a is the left one)
+                h = keccak_words([da, rd(db, i + 1)])
+                i += 2
+            } else {
+                if cur >= end { return false }
+                let sibling = rd(base, cur)
+                cur += 1
+                if a & 1 == 0 {
+                    h = keccak_words([da, sibling])
+                } else {
+                    h = keccak_words([sibling, da])
+                }
+                i += 1
+            }
+            unsafe {
+                store_word(
+                    ptr: cast<u256, u8>(offset_bytes(ib, out * 32)),
+                    value: a >> 1,
+                )
+                store_word(ptr: cast<u256, u8>(offset_bytes(db, out * 32)), value: h)
+            }
+            out += 1
+        }
+        m = out
+        lvl += 1
+    }
+    m == 1 && cur == end && load(dg, 0) == root
+}
+
+/// `p[i]` through a raw pointer, no bounds check (callers keep `i` inside the allocation).
+#[inline(always)]
+#[arithmetic(unchecked)]
+fn rd(_ p: *u256, _ i: u256) -> u256 {
+    unsafe {
+        *offset_bytes(p, i * 32)
+    }
+}
+
+/// `p[i] = v` through a raw pointer, no bounds check (callers keep `i` inside the allocation).
+#[inline(always)]
+#[arithmetic(unchecked)]
+fn wr(_ p: *u256, _ i: u256, _ v: u256) {
+    unsafe {
+        store_word(ptr: cast<u256, u8>(offset_bytes(p, i * 32)), value: v)
+    }
 }

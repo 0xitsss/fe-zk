@@ -1,14 +1,16 @@
 # Plonky3 uni-stark Fibonacci fixtures
 
-Standalone crate (not part of `gen/`). `scripts/regen-plonky3-stark.sh` runs it for two configurations and
-converts the output to the Fe fixtures (`src/tests/fri_fixture*.fe`) and the per-configuration modules
+Standalone crate (not part of `gen/`). `scripts/regen-plonky3-stark.sh` runs it for three configurations and
+converts the output with `fe-zk-gen plonky3` (checked byte for byte against `emit_fe.py`) to the Fe fixtures (`src/tests/fri_fixture*.fe`) and the per-configuration modules
 (`src/verifier/fri/config_*.fe`).
 
 - Plonky3 `p3-uni-stark`, `p3-fri`, `p3-challenger`, `p3-merkle-tree`, `p3-keccak`,
-  `p3-koala-bear`, all `=0.4.2` from crates.io (versions fixed by `Cargo.lock`).
+  `p3-koala-bear`, all `=0.8.0` from crates.io (versions fixed by `Cargo.lock`).
 - AIR: Fibonacci (default, `--air fib`), 2 columns, 3 public values `(a, b, x)`, `(a, b) = (0, 1)`, `x` = the last row's right column.
 - Field KoalaBear, challenge field `BinomialExtensionField<KoalaBear, 4>` (`x^4 = 3`).
-- FRI: arity 2, one commit-phase proof of work per round (0 bits here), query proof of work.
+- FRI: arity 2 (`max_log_arity = 1`), one commit-phase proof of work per round (0 bits here), query proof of work;
+  batch and out-of-domain proof of work 0 bits (witnesses 0).
+- Merkle trees: cap height 0; openings are 0.8 pruned multi-openings (`PrunedMerklePaths`).
 - Commitments: Keccak-256 over `SerializingHasher` rows, compression `keccak256(l || r)`;
   challenger `SerializingChallenger32<KoalaBear, HashChallenger<u8, Keccak256Hash, 32>>`.
 
@@ -39,10 +41,12 @@ Files in `fib/` and `fib_secure/`:
 - `config.json`: parameters, public values (canonical) and the soundness estimates.
 - `vectors.json`: values printed by Plonky3 itself (all canonical): extension-field
   operations, a scripted challenger session, two-adic generators, and every Fiat-Shamir
-  challenge of this proof (`transcript`). Only `fib/vectors.json` is used for the extension-field and challenger
+  challenge of this proof (`transcript`), and the three domain-separator seeds (`transcript.seeds`: protocol id,
+  pattern hash, instance label and the field elements Plonky3 absorbed). Only `fib/vectors.json` is used for the extension-field and challenger
   tests; `fib_secure/vectors.json` supplies the transcript.
 
-`emit_fe.py <dir> <fixture.fe> <config.fe> <name> [--vectors] [--min-bits N]` flattens the proof into the word layout
+`fe-zk-gen plonky3 <dir> --fixture F --config C --name N [--air fib|mul] [--vectors] [--min-bits N]` (and
+`emit_fe.py <dir> <fixture.fe> <config.fe> <name> [--air fib|mul] [--vectors] [--min-bits N]`, same output) flattens the proof into the word layout
 documented in `src/verifier/fri.fe`, asserts the length against the layout formula, and (with `--min-bits`) emits a
 compile-time `static_assert` that the configuration's conjectured soundness is at least `N`.
 

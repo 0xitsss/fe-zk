@@ -3,25 +3,26 @@
 //! configuration `fe_zk::verifier::fri::config_secure` (KoalaBear, degree-4 extension, FRI arity 2,
 //! `log_blowup = 4`, 20 queries, 20 bits of query proof of work: 100 conjectured bits).
 //!
-//! The call is `verify(uint256[2721],uint256[3])`: the proof as flat words in the layout documented
-//! in `verifier/fri.fe`, then the 3 public values, plain ABI encoding (static arrays, no offsets).
-//! The arguments are read straight from calldata into a `MemArray<u256>` with a loop. A typed
-//! `[u256; 2721]` message field or local is avoided on purpose: with Fe 26.5.0 the compile time of a
-//! contract with a large static array grows much faster than its length (N = 300: 4 s, N = 600: 15 s,
-//! N = 2721: over 4 minutes and about 100 kB of code; `docs/DESIGN.md`, "FRI/STARK verifier"). The length
-//! is fixed (safety rule 4): calldata of any other size returns `false`; canonicity, transcript,
-//! Merkle paths, proof of work, folding, final polynomial and the AIR check at the out-of-domain point
-//! all run inside `verify`. The contract is pure: it reads no storage. Runtime code size is checked by
-//! `scripts/code-size.sh`.
+//! The call is `verify(uint256[],uint256[3])`: the proof as flat words in the layout documented
+//! in `verifier/fri.fe`, then the 3 public values, standard ABI encoding (head: the offset of the
+//! proof, which must be `0x80`, and the 3 public values; tail: the proof length and words). The
+//! proof length is not one constant since Plonky3 0.8 prunes the Merkle multi-openings: the proof
+//! declares its sibling counts and `verify` checks the length against them (safety rule 4); the
+//! contract only bounds it by `MAX_PROOF_WORDS` and requires the calldata to be exactly the
+//! encoding of that length. The words are copied from calldata into a `MemArray<u256>` (a typed
+//! static array would not compile in reasonable time with Fe 26.5.0: `docs/DESIGN.md`, "FRI/STARK
+//! verifier"). Canonicity, transcript, Merkle multi-openings, proof of work, folding, final
+//! polynomial and the AIR check at the out-of-domain point all run inside `verify`. The contract
+//! is pure: it reads no storage. Runtime code size is checked by `scripts/code-size.sh`.
 use core::abi::ByteSource
-use core::num::IntDowncast
 use core::ptr::{MemArray, cast}
 use std::evm::CallData
-use fe_zk::verifier::fri::config_secure::{PROOF_WORDS, verify}
+use fe_zk::verifier::fri::config_secure::{MAX_PROOF_WORDS, verify}
 
 msg FriMsg {
-    // selector of verify(uint256[2721],uint256[3]) (solc --hashes): a typed signature would need typed fields
-    #[selector = 0x12852f9a]
+    // selector of verify(uint256[],uint256[3]) (keccak256 of the signature): a typed signature
+    // would need typed fields
+    #[selector = 0xc969d25e]
     Verify -> bool,
 }
 
@@ -29,26 +30,23 @@ pub contract FriFibVerifier {
     recv FriMsg {
         Verify {} -> bool {
             let cd = CallData::with_base(4)
-            if cd.size() != (((PROOF_WORDS + 3) * 32) as u256).downcast_truncate() {
+            let size = cd.size() as u256
+            // head: offset of the proof (4 words of head), 3 public values; tail: length, words
+            if size < 160 || cd.word_at(0) != 128 {
+                return false
+            }
+            let n = cd.word_at(128)
+            if n > (MAX_PROOF_WORDS as u256) || size != 160 + 32 * n {
                 return false
             }
             var proof = unsafe {
-                MemArray<u256>::new_uninit(PROOF_WORDS)
+                MemArray<u256>::new_uninit(n as usize)
             }
-            // one calldatacopy of the whole proof (the size was checked above), instead of a
-            // loop of PROOF_WORDS calldataloads and bounds-checked stores
+            // one calldatacopy of the whole proof (the size was checked above)
             unsafe {
-                cd.copy_to_memory(
-                    dest: cast<u256, u8>(proof.ptr()),
-                    src_offset: 0,
-                    len: (PROOF_WORDS * 32) as u256,
-                )
+                cd.copy_to_memory(dest: cast<u256, u8>(proof.ptr()), src_offset: 160, len: 32 * n)
             }
-            let base = (PROOF_WORDS * 32) as u256
-            verify(
-                proof,
-                [cd.word_at(base), cd.word_at(base + 32), cd.word_at(base + 64)],
-            )
+            verify(proof, [cd.word_at(32), cd.word_at(64), cd.word_at(96)])
         }
     }
 }

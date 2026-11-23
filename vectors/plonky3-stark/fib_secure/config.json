@@ -13,19 +13,19 @@
   "num_quotient_chunks": 1,
   "opened_trace_local": [
     [
-      54756506,
-      1735109338,
-      414029057,
-      913432927
+      1884754604,
+      178464133,
+      1363450166,
+      1299202003
     ],
     [
-      1213961010,
-      408282317,
-      78031733,
-      950498077
+      827141339,
+      482468644,
+      129499341,
+      896312211
     ]
   ],
-  "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.4.2 (crates.io)",
+  "plonky3": "p3-uni-stark / p3-fri / p3-challenger / p3-merkle-tree / p3-keccak / p3-koala-bear =0.8.0 (crates.io)",
   "public_values": [
     0,
     1,
@@ -38,5 +38,6 @@
     "log2_eps_commit_phase": -67.83874054126983,
     "proven_johnson_m10_bits": 58.58984023706375,
     "proven_unique_decoding_bits": 38.25074317320549
-  }
+  },
+  "trace_width": 2
 }

@@ -251,9 +251,10 @@ def main():
     # ---- FRI (Fe only)
     words, pub = fri_words()
     assert len(words) == int(re.search(r"FIB_PROOF_WORDS: usize = (\d+)", open(os.path.join(ROOT, "src", "tests", "fri_fixture_secure.fe")).read()).group(1)), len(words)
-    fw = words + pub
+    # ABI: head (offset of the dynamic proof array = 0x80, 3 public values), tail (length, words)
+    fw = [h32(0x80)] + pub + [h32(len(words))] + words
     fri_bin = os.path.join(a.work, "fri", "FriFibVerifier.bin")
-    f = measure(ctx, fri_bin, f"verify(uint256[{len(words)}],uint256[3])", "".join(fw), "".join(tamper(fw, len(fw) - 1)))
+    f = measure(ctx, fri_bin, "verify(uint256[],uint256[3])", "".join(fw), "".join(tamper(fw, 3)))
     fe_only.append(("FRI/STARK", "Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits)", f, "no EVM reference verifier exists"))
 
     # ---- Poseidon: Fe vs circomlibjs gencontract (optional)
@@ -336,7 +337,7 @@ def main():
     for fam, label, f, note in fe_only:
         P(f"| {fam} | {label} | {fmt(f['exec'])} | {fmt(f['tx'])} | {note} |")
     P("")
-    P("The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.4.2 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.\n")
+    P("The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.8.0 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.\n")
     P("FRI verifier generic over the AIR (`verify<A: Air>`, `src/verifier/fri/air.fe`), execution gas of `verify` in the `fe test` runner (`fe test --filter gas_of_verification --show-logs .`, the `GasUsed` events of `src/tests/fri.fe`, `fri_secure.fe`, `fri_mul.fe`; these are not the revm numbers of the table above, which add calldata and ABI decoding): Fibonacci 2^10 rows 1,366,516 (1,349,487 before the verifier was made generic, +1.3 %, the loops over trace columns that replaced unrolled width-2 code); MulAir (6 columns, 1 public value, degree 2, 2^8 rows, `log_blowup` 4, 20 queries, 20 PoW bits, 100 conjectured bits) 1,294,137; Fibonacci demo configuration (2^4 rows, 4 queries) 258,320. The second AIR is cheaper than the first despite 3x the columns because it has 2 fewer fold rounds per query (2^8 vs 2^10 rows) and the per-query cost is dominated by the Merkle paths and folds, not by the row width.\n")
 
     P("## Poseidon hash (BN254, circomlib-compatible)\n")
