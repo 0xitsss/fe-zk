@@ -15,9 +15,8 @@ that turns verifying keys into Fe verifier contracts whose keys the Fe compiler 
 operations; then one Groth16 proof of 512 generations, checked by a verifier that `fe-zk-gen` generated.*
 
 Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
-Submission: release tag [`v0.3.1`](https://github.com/0xitsss/fe-zk/releases/tag/v0.3.1) (the full commit SHA is in the submission form).
-Current version: **0.3.0** ([CHANGELOG.md](CHANGELOG.md)): gas tuning of the BN254 verifiers, a FRI/STARK verifier 70 % cheaper
-and generic over an `Air` trait (second AIR: `MulAir`). Fe 26.5.0.
+Submission: the release tag and full commit SHA are in the submission form. Changes per version: [CHANGELOG.md](CHANGELOG.md).
+Fe 26.5.0.
 
 ## For judges: one screen
 
@@ -31,9 +30,10 @@ and generic over an `Air` trait (second AIR: `MulAir`). Fe 26.5.0.
 | **Fe-specific** | Key validation at compile time (`const fn` plus `static_assert`); typed `G1` / `G2` / `Fr` so an unchecked value cannot be passed; zero-cost `verify<A: Air>` and `Field` generics; effects keep verification free of storage access. See [Fe highlight](#fe-highlight). |
 | **Safety** | [docs/SAFETY.md](docs/SAFETY.md): each of nine rules with the file:line that enforces it and the test that fails without it. |
 | **Tests** | 208 in the root ingot, 232 in the example and Semaphore ingots, 58 Rust tests in `gen/`. Real proofs from snarkjs, gnark, halo2, Plonky3 and the Semaphore SDK; tampered ones rejected. |
-| **Found in Fe** | 11 compiler and std issues with repros ([Compiler issues](#compiler-issues-found--upstream-suggestions)). Sent upstream with fixes and regression tests: PRs [argotorg/fe#2061](https://github.com/argotorg/fe/pull/2061) (std precompile wrappers fail open without the precompile), [#2062](https://github.com/argotorg/fe/pull/2062) (parser), [#2063](https://github.com/argotorg/fe/pull/2063) (`fe fmt`); issues [#2064](https://github.com/argotorg/fe/issues/2064), [#2065](https://github.com/argotorg/fe/issues/2065). |
+| **Found in Fe** | 11 compiler and std issues with repros ([Compiler issues](#compiler-issues-found--upstream-suggestions)). Six upstream PRs, each with regression tests: [argotorg/fe#2061](https://github.com/argotorg/fe/pull/2061) (std precompile wrappers fail open without the precompile), [#2062](https://github.com/argotorg/fe/pull/2062) (parser), [#2063](https://github.com/argotorg/fe/pull/2063) (`fe fmt`), [#2068](https://github.com/argotorg/fe/pull/2068) (raw staticcall into a fixed buffer), [#2069](https://github.com/argotorg/fe/pull/2069) (`assert` and `Option` in `const fn`), [#2070](https://github.com/argotorg/fe/pull/2070) (a const fault in a generic field type passed type checking). |
 | **Watch** | [Demo video, 2:57](https://youtu.be/3lFUyRV3F7Q): every number comes from a real run. |
-| **Try** | `fe test` (about 5 min) / `scripts/demo.sh` (20+ min) / `cd examples/life/cli && cargo run --release -- --prove` |
+| **Size** | About 1.5 MB of Fe, of which about 0.95 MB is generated: Poseidon round constants, proof fixtures and the verifiers `fe-zk-gen` emitted for the examples. The hand-written library is about 0.5 MB. |
+| **Try** | `fe test -f groth16` (one family) / `fe test` (all 208, about 5 min) / `scripts/demo.sh` (20+ min) / `cd examples/life/cli && cargo run --release -- --prove` |
 
 ## Try it
 
@@ -418,7 +418,13 @@ and the assumptions:
 
 ## Compiler issues found / upstream suggestions
 
-Filed upstream (from the account of this repository's author): [#2061](https://github.com/argotorg/fe/pull/2061) fixes the fixed-output precompile wrappers of `std::evm::crypto` (item 4: they returned `Ok` with zeroed output when the precompile is absent); [#2062](https://github.com/argotorg/fe/pull/2062) fixes item 1; [#2063](https://github.com/argotorg/fe/pull/2063) fixes item 9; [#2064](https://github.com/argotorg/fe/issues/2064) asks for item 2; [#2065](https://github.com/argotorg/fe/issues/2065) asks for item 8. Each PR has a regression test and passes the Fe test suite.
+Filed upstream (from the account of this repository's author):
+- [#2061](https://github.com/argotorg/fe/pull/2061) fixes the fixed-output precompile wrappers of `std::evm::crypto` (item 4: they returned `Ok` with zeroed output when the precompile is absent)
+- [#2062](https://github.com/argotorg/fe/pull/2062) fixes item 1, [#2063](https://github.com/argotorg/fe/pull/2063) fixes item 9
+- [#2068](https://github.com/argotorg/fe/pull/2068) adds item 2 (issue [#2064](https://github.com/argotorg/fe/issues/2064)), [#2069](https://github.com/argotorg/fe/pull/2069) fixes item 8 (issue [#2065](https://github.com/argotorg/fe/issues/2065))
+- [#2070](https://github.com/argotorg/fe/pull/2070): `[u256; N - 1]` at `N = 0` became an invalid type that matched any value; now reported
+
+Each PR has a regression test and passes the Fe test suite.
 
 Found with fe 26.5.0 (3dab95f):
 
@@ -426,8 +432,8 @@ Found with fe 26.5.0 (3dab95f):
    is parsed as a struct literal `a { ... }` and reports "`a` is not found". A literal before the block compiles.
    Workaround: `var s: u256 = (a)`. Repro: `scripts/probe/issue_block_after_ident.fe`.
 2. **No public raw call with a static buffer.** `Call.raw_staticcall` takes a heap `MemBuffer`; converting a static
-   `FixedMemBuffer` with `into_buffer()` makes it escape to the heap. A variant taking a pointer and length would save
-   about 200 gas per precompile call.
+   `FixedMemBuffer` with `into_buffer()` makes it escape to the heap. In a small isolated call the optimizer removes
+   the heap buffer at `-O1` (both paths 292 gas); the saving shows at `-O0` (742 vs 1085 gas) and when the buffer escapes.
 3. **Loops are not unrolled and arrays in loops are expensive.** `for i in 0..N` with constant `N` is not unrolled;
    loops over mutable memory arrays cost 5-7x more than scalar locals; checked arithmetic on counters is a large share
    (`#[arithmetic(unchecked)]` is the lever). We generate unrolled scalar code for Poseidon as a workaround.
@@ -454,7 +460,7 @@ trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforc
 - **Pre-existing work:** the repository started from the contest starter at commit
   [`0646e48`](https://github.com/0xitsss/fe-zk/commit/0646e48) (Fe Builders Challenge starter: license, CI skeleton,
   `SUBMISSION.md`). Everything else, including all Fe code, the generator, vectors tooling, examples and docs, was
-  written on November 17-22, 2026.
+  written on November 17-23, 2026.
 - **Third-party code and tools** (none is copied into `src/`; fixtures are outputs of these tools):
   - circom 2.2.2, snarkjs 0.7.6, circomlib 2.0.5, circomlibjs 0.1.7: GPL-3.0. Used as test tooling only. Their output
     files are committed as fixtures; the snarkjs-generated `Verifier.sol` files under `vectors/groth16`,
