@@ -6,7 +6,7 @@ is a reference for the field, curve and hash layer. Every command and Fe file be
 what was not).
 
 Tested with: `fe 26.5.0 (3dab95f)`, `fe-zk-gen 0.3.0`, Node 24 with `@semaphore-protocol/{group,identity,proof}` 4.14.5,
-circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go), arkworks 0.5.0, Plonky3 0.4.2, Foundry (`anvil`, `cast`) 1.8.3.
+circom 2.2.2, snarkjs 0.7.6, gnark v0.12.0 (Go), arkworks 0.5.0, Plonky3 0.8.0, Foundry (`anvil`, `cast`) 1.8.3.
 
 fe-zk has **not been audited**; read the [integration checklist](#7-integration-safety-checklist) before you deploy
 anything, and [SECURITY.md](../SECURITY.md) for the threat model.
@@ -854,28 +854,31 @@ fn eip4844_point_evaluation() uses (call: Call, ctx: Ctx) {
 
 ### (g) FRI/STARK (Plonky3)
 
-What is supported: **one family**. A Plonky3 0.4.2 `p3-uni-stark` proof of any AIR that implements the `Air` trait
+What is supported: **one family**. A Plonky3 0.8.0 `p3-uni-stark` proof of any AIR that implements the `Air` trait
 (`verify<A: Air>`; shipped: the **Fibonacci AIR** with 2 columns and public values `(a, b, x)`, and a 6-column
 multiplication AIR; constraint degree at most 2), over KoalaBear with the degree-4 extension, FRI with arity 2, Keccak-256 Merkle commitments and
 the Keccak `SerializingChallenger32`. The verifier logic is written once; what varies is a small
 configuration module (`FriParams`: trace width, trace height, blowup, final polynomial, number of queries, proof-of-work bits). Another AIR
 needs one `impl Air` (see `docs/DESIGN.md`, "Adding an AIR"), not new verifier code. The shipped secure configuration (2^10 rows, blowup 16, 20 queries, 20
 PoW bits) has 100 bits of security under Plonky3's conjecture, and about 59 bits (Johnson bound) or 38 bits (unique
-decoding) by our own estimate of what is proven; it costs about 4.3 M gas of execution. Research-grade (see the
+decoding) by our own estimate of what is proven; it costs about 1.8 M gas of execution (`fe test` runner, `docs/GAS.md` for the deployed contract). Research-grade (see the
 [checklist](#7-integration-safety-checklist)).
 
 To regenerate the configuration module and fixture for **your own** configuration or proof, run the Plonky3 prover
-crate in `vectors/plonky3-stark` and convert its output with `emit_fe.py` (Python 3, no dependencies):
+crate in `vectors/plonky3-stark` and convert its output with `fe-zk-gen plonky3` (or its byte-identical Python twin
+`emit_fe.py`, Python 3, no dependencies):
 
 ```sh
 cd fe-zk/vectors/plonky3-stark
 cargo run --release --locked -- fib_secure --log-trace 10 --log-blowup 4 --log-final 3 --queries 20 --commit-pow 0 --query-pow 20
 #   -> fib_secure/{proof,config,vectors}.json; "proof valid in Plonky3"
-python3 emit_fe.py fib_secure <fixture.fe> <config.fe> secure --min-bits 100
+fe-zk-gen plonky3 fib_secure --fixture <fixture.fe> --config <config.fe> --name secure --min-bits 100
+#   same output: python3 emit_fe.py fib_secure <fixture.fe> <config.fe> secure --min-bits 100
 ```
 
 `emit_fe.py <dir> <fixture .fe> <config .fe> <name> [--vectors] [--min-bits N]` writes the flat proof words (the layout is
-documented at the top of `src/verifier/fri.fe`) and a module with `PARAMS`, `PROOF_WORDS` and `verify`; with
+documented at the top of `src/verifier/fri.fe`) and a module with `PARAMS`, `FIXED_PROOF_WORDS`, `MAX_PROOF_WORDS` and
+`verify` (a proof's length depends on how much its Merkle multi-openings were pruned); with
 `--min-bits N` it adds `static_assert(CONJECTURED_BITS >= N)`. The emitted files `use ingot::...`, which means "inside
 fe_zk". **You can keep them in your own ingot**: replace `ingot::` with `fe_zk::` and format. I did exactly this in a
 separate ingot (`src/config.fe` and `src/fixture.fe`, from a fresh proof made with the commands above):
@@ -888,12 +891,12 @@ sed -i 's/ingot::/fe_zk::/g' src/config.fe src/fixture.fe && fe fmt
 `src/tests.fe`:
 
 ```fe
-use super::config::{PARAMS, PROOF_WORDS, verify}
+use super::config::{MAX_PROOF_WORDS, verify}
 use super::fixture::{FIB_PROOF_WORDS, FIB_PUBLIC, fib_proof}
 
 #[test]
 fn accepts_the_plonky3_proof() {
-    assert(PROOF_WORDS == FIB_PROOF_WORDS)
+    assert(FIB_PROOF_WORDS <= MAX_PROOF_WORDS)
     assert(verify(fib_proof(), FIB_PUBLIC))
 }
 
@@ -908,17 +911,14 @@ fe test       # rejects_wrong_public_values, accepts_the_plonky3_proof: 2 passed
 ```
 
 As a contract, copy `examples/fri_stark`: it reads the proof from calldata into a `MemArray<u256>` instead of a
-typed `[u256; 2721]` array (a typed array of that size takes minutes to compile, [section 8](#8-troubleshooting)).
-Its selector is `0x12852f9a` (`verify(uint256[2721],uint256[3])`), the runtime code is 18,009 bytes (I built it:
-`fe build` prints a harmless `skipping recv arm 'Verify'` warning and writes no ABI file). The calldata is the
-proof words in the order of `fib_proof()` in the fixture, then the three public values. The deployed code path
-was not exercised on a node here.
+typed array (a typed array of thousands of words takes minutes to compile, [section 8](#8-troubleshooting)).
+Its selector is `0xc969d25e` (`verify(uint256[],uint256[3])`, standard ABI: the offset `0x80`, the three public values,
+then the proof length and the proof words in the order of `fib_proof()` in the fixture); the contract bounds the length
+by `MAX_PROOF_WORDS` and `verify` checks it against the Merkle sibling counts in the proof. `fe build` prints a harmless
+`skipping recv arm 'Verify'` warning and writes no ABI file. The deployed code is measured in revm by
+`scripts/gas-table.sh` (`docs/GAS.md`).
 
-**Warning:** `scripts/regen-plonky3-stark.sh` at this commit does not regenerate the committed secure
-configuration: it runs the prover with `--log-trace 8 --log-blowup 3 --log-final 1 --queries 27`
-(101 conjectured bits), while the committed `fib_secure` and `src/verifier/fri/config_secure.fe` are
-`--log-trace 10 --log-blowup 4 --log-final 3 --queries 20` (100 bits). Use the explicit command above, which
-reproduces the committed `config_secure.fe` byte for byte except for the path in its header comment (checked).
+`scripts/regen-plonky3-stark.sh` regenerates all three committed configurations with exactly these commands.
 
 ## 5. Using the library directly
 

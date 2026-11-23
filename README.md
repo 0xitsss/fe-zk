@@ -27,7 +27,7 @@ and generic over an `Air` trait (second AIR: `MulAir`). Fe 26.5.0.
 | **Proof systems** | Groth16 (snarkjs, arkworks); PLONK (snarkjs and gnark); halo2-KZG (SHPLONK and GWC); KZG with EIP-4844; FRI/STARK of Plonky3 with a generic `Air` trait (`verify<A: Air>`). |
 | **Generator** | [`fe-zk-gen`](gen/fe-zk-gen/src) validates the key (on curve, subgroup, digest), emits a contract and tests with a real proof and invalid ones. No flag skips a check; a corrupted key does not compile. |
 | **Real-world** | Semaphore v4 ceremony keys, depth 1..10, cross-checked with Semaphore's own Solidity verifier. Tornado Cash `withdraw` on real mainnet proofs. Anonymous vote, claim and signal examples. |
-| **Gas vs Solidity** | Same proof, same revm ([docs/GAS.md](docs/GAS.md)): Groth16 1.02-1.03x, snarkjs PLONK 1.05x, gnark PLONK 1.10-1.11x, halo2 1.17x. Poseidon is cheaper than circomlibjs (25,400 vs 29,005, t = 3). FRI/STARK 4.67 M to 1.41 M. |
+| **Gas vs Solidity** | Same proof, same revm ([docs/GAS.md](docs/GAS.md)): Groth16 1.02-1.03x, snarkjs PLONK 1.05x, gnark PLONK 1.10-1.11x, halo2 1.17x. Poseidon is cheaper than circomlibjs (25,400 vs 29,005, t = 3). FRI/STARK 1.81 M (Plonky3 0.8.0). |
 | **Fe-specific** | Key validation at compile time (`const fn` plus `static_assert`); typed `G1` / `G2` / `Fr` so an unchecked value cannot be passed; zero-cost `verify<A: Air>` and `Field` generics; effects keep verification free of storage access. See [Fe highlight](#fe-highlight). |
 | **Safety** | [docs/SAFETY.md](docs/SAFETY.md): each of nine rules with the file:line that enforces it and the test that fails without it. |
 | **Tests** | 208 in the root ingot, 232 in the example and Semaphore ingots, 58 Rust tests in `gen/`. Real proofs from snarkjs, gnark, halo2, Plonky3 and the Semaphore SDK; tampered ones rejected. |
@@ -75,7 +75,7 @@ Gas is execution gas in revm, Fe vs the Solidity verifier of the reference tool 
 | PLONK | gnark v0.12.0 | [`gnark.fe`](src/verifier/gnark.fe) | `fe-zk-gen gnark` | `vectors/gnark` | `src/tests/gnark.fe` | 287,328 / 261,868 |
 | halo2-KZG | halo2-axiom 0.5.3 (SHPLONK, GWC) | [`halo2/`](src/verifier/halo2) | `fe-zk-gen halo2` | `vectors/halo2` | `src/tests/halo2.fe` | 375,982 / 322,590 (SHPLONK) |
 | KZG | arkworks 0.5.0, EIP-4844 | [`kzg.fe`](src/verifier/kzg.fe) | none | `vectors/kzg` | `src/tests/kzg.fe` | 130,161 single opening, no reference |
-| FRI/STARK | Plonky3 `uni-stark` Fibonacci (+ 6-column mul AIR), 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe`, `fri_mul.fe` | 1.41 M as a contract (generic `verify<A: Air>`), no reference exists |
+| FRI/STARK | Plonky3 `uni-stark` Fibonacci (+ 6-column mul AIR), 2^10 rows, 100 conjectured bits, contract [`examples/fri_stark`](examples/fri_stark) | [`fri.fe`](src/verifier/fri.fe) | none | `vectors/plonky3-stark` | `src/tests/fri.fe`, `fri_secure.fe`, `fri_mul.fe` | 1.81 M as a contract (generic `verify<A: Air>`, Plonky3 0.8.0), no reference exists |
 | Poseidon (BN254) | circomlibjs 0.1.7 | [`src/hash/`](src/hash) | none | `vectors/poseidon` | `src/tests/hash.fe` | 25,400 / 29,005 (t=3) |
 | Anonymous kit: `LeanImt`, `Nullifiers`, Semaphore v4 (depth 1..10) | `@semaphore-protocol` 4.14.5 SDK, ceremony keys | [`src/anon/`](src/anon), [`semaphore/`](semaphore) | `fe-zk-gen groth16 --lib-module` | `vectors/semaphore` | `src/tests/anon.fe`, `semaphore/src/tests.fe`, `examples/anon_*` | about 216k per proof; a vote 266k (execution) |
 | Tornado Cash `withdraw` | real mainnet proofs | [`examples/tornado`](examples/tornado) | `fe-zk-gen groth16` | `vectors/tornado` | `examples/tornado/verifier/src` | 231,117 / 236,365 (Verifier.sol, solc 0.7.6) |
@@ -362,9 +362,9 @@ and the assumptions:
   verifier and example contract fits the EIP-170 limit of 24,576 bytes (guard: `scripts/code-size.sh`, run by
   `scripts/demo.sh`; ignored test `gen/fe-zk-gen/tests/code_size.rs`). `fe-zk-gen halo2` emits one contract per multiopen
   scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 22.1 kB, GWC 21.4 kB, both together would be over. The FRI
-  contract (`examples/fri_stark`, about 13 kB) fits as well.
+  contract (`examples/fri_stark`, about 16 kB) fits as well.
 - **FRI/STARK.** Generic over the AIR (`verify<A: Air>`; Fibonacci and a 6-column multiplication AIR are proved by Plonky3 and
-  verified), constraint degree at most 2 (one quotient chunk), Plonky3 0.4.2 `uni-stark`, KoalaBear with a degree-4 extension, Keccak commitments,
+  verified), constraint degree at most 2 (one quotient chunk), Plonky3 0.8.0 `uni-stark` (pruned Merkle multi-openings and domain-separated transcript; Merkle cap height 0, no zk mode, arity 2 only), KoalaBear with a degree-4 extension, Keccak commitments,
   arity 2. Query count, blowup, PoW bits and trace height are constants of a per-configuration module
   (`src/verifier/fri/config_secure.fe`, emitted from the proof). The secure configuration (2^10 rows, `log_blowup` 4,
   20 queries, 20 query-PoW bits) has 100 bits under Plonky3's conjecture (`log_blowup * queries + pow bits`); our estimate
@@ -464,7 +464,7 @@ trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforc
     `scripts/gen-poseidon-constants.js`.
   - HorizenLabs/poseidon2 at 055bde3: dual-licensed MIT / Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE` in the
     repository); BN254 Poseidon2 constants and the known-answer vector.
-  - Plonky3 (`p3-*` 0.4.2 and 0.9.0-rc.2): MIT OR Apache-2.0 (crate metadata); KoalaBear Poseidon2 constants, STARK
+  - Plonky3 (`p3-*` 0.8.0 and 0.9.0-rc.2): MIT OR Apache-2.0 (crate metadata); KoalaBear Poseidon2 constants, STARK
     fixture.
   - arkworks 0.5.0 (`ark-bn254`, `ark-groth16`, `ark-ec`, `ark-poly`): MIT OR Apache-2.0.
   - gnark v0.12.0: Apache-2.0 (`LICENSE` in the module); it pulls in gnark-crypto (license not checked). gnark's Solidity verifiers are committed as

@@ -12,7 +12,7 @@ same proof and the same words of calldata the reference verifier expects. Nothin
 - **exec**: gas spent by the top-level call frame (the contract's own execution including every precompile and sub-call; it excludes the 21,000 intrinsic cost and the calldata cost). Measured with an inspector on the frame, so it is exact even when the EIP-7623 floor decides the receipt.
 - **tx**: `gas_used` of the receipt: 21,000 + calldata (4 gas per zero byte, 16 per non-zero byte) + exec, raised to the EIP-7623 floor when that is larger. This is what a user pays for the call (before any refund; there are none here).
 - Every verifier is also run on a copy of the same calldata with one input word changed; the script asserts it is not accepted (revert or `false`) before it reports a number.
-- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `e764a975c72e`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.3.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
+- Fe: `fe 26.5.0 (3dab95f)`, build `fe build -O 1` (backend sonatina), `fe_zk` at commit `087bd367db58`. Groth16 verifiers are the output of `fe-zk-gen groth16 --snarkjs` (fe-zk-gen 0.3.0); other Fe rows are the tiny wrapper contracts in `vectors/gas-fe/` that call the `fe_zk` library verifier with the fixture's constants (they add one ABI decode, no other logic).
 - Solidity: `Version: 0.8.24+commit.e11b9ed9.Linux.g++`, `--optimize --optimize-runs 200`, default EVM version, the committed `Verifier.sol` of each fixture (snarkjs 0.7.6 `zkey export solidityverifier`, gnark v0.12.0 `ExportSolidity`, snark-verifier 0.2.7 for halo2). Exception: the snark-verifier (halo2) verifiers are compiled **without the optimizer**: with `--optimize` solc 0.8.24 fails with "Stack too deep", and with `--via-ir` the contract's own `mload(0x40) == 0x80` memory-layout check reverts. They pin `pragma solidity 0.8.19`; the script relaxes the pragma to `^0.8.19` in a scratch copy (no code change).
 - Deployed code size is the size of the runtime code stored on chain. EIP-170 limits it to 24,576 bytes.
 
@@ -40,11 +40,11 @@ Calldata sizes (bytes), Fe / Solidity: Groth16 (snarkjs) multiplier: 292/292; Gr
 | KZG | single opening | 130,161 | 153,949 | no Solidity reference |
 | KZG | GWC, 3 polynomials at 1 point | 148,634 | 175,494 | no Solidity reference |
 | KZG | SHPLONK, 3 polynomials at 2 points | 162,122 | 190,622 | no Solidity reference |
-| FRI/STARK | Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 1,407,935 | 2,864,620 | no EVM reference verifier exists |
+| FRI/STARK | Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 1,812,924 | 2,520,732 | no EVM reference verifier exists |
 
-The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.4.2 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.
+The KZG rows check opening proofs over the test-only SRS of `vectors/kzg` (arkworks 0.5.0 fixtures); there is no widely used Solidity KZG opening verifier with a fixed interface to compare against, so no reference is invented. The FRI row verifies a Plonky3 `p3-uni-stark` 0.8.0 proof of a Fibonacci AIR; no EVM verifier for Plonky3 proofs exists in any language to compare with.
 
-FRI verifier generic over the AIR (`verify<A: Air>`, `src/verifier/fri/air.fe`), execution gas of `verify` in the `fe test` runner (`fe test --filter gas_of_verification --show-logs .`, the `GasUsed` events of `src/tests/fri.fe`, `fri_secure.fe`, `fri_mul.fe`; these are not the revm numbers of the table above, which add calldata and ABI decoding): Fibonacci 2^10 rows 1,366,516 (1,349,487 before the verifier was made generic, +1.3 %, the loops over trace columns that replaced unrolled width-2 code); MulAir (6 columns, 1 public value, degree 2, 2^8 rows, `log_blowup` 4, 20 queries, 20 PoW bits, 100 conjectured bits) 1,294,137; Fibonacci demo configuration (2^4 rows, 4 queries) 258,320. The second AIR is cheaper than the first despite 3x the columns because it has 2 fewer fold rounds per query (2^8 vs 2^10 rows) and the per-query cost is dominated by the Merkle paths and folds, not by the row width.
+FRI verifier generic over the AIR (`verify<A: Air>`, `src/verifier/fri/air.fe`), execution gas of `verify` in the `fe test` runner (`fe test --filter gas_of_verification --show-logs .`, the `GasUsed` events of `src/tests/fri.fe`, `fri_secure.fe`, `fri_mul.fe`; these are not the revm numbers of the table above, which add calldata and ABI decoding): Fibonacci 2^10 rows 1,782,844 (Plonky3 0.4.2 proofs: 1,366,516; the 0.8 transcript seeds and pruned Merkle multi-openings cost more execution but shrink the proof from 2,721 to 1,844 words, so the transaction is cheaper, see `docs/DESIGN.md`, "Plonky3 0.8 port"); MulAir (6 columns, 1 public value, degree 2, 2^8 rows, `log_blowup` 4, 20 queries, 20 PoW bits, 100 conjectured bits) 1,564,584; Fibonacci demo configuration (2^4 rows, 4 queries) 387,106. The second AIR is cheaper than the first despite 3x the columns because it has 2 fewer fold rounds per query (2^8 vs 2^10 rows) and the per-query cost is dominated by the Merkle paths and folds, not by the row width.
 
 ## Poseidon hash (BN254, circomlib-compatible)
 
@@ -83,7 +83,7 @@ One `step()` call: exec 657, tx 21,897. Deployed `Life` code: 15,296 bytes (the 
 | KZG, single opening | 1,708 | n/a | 422,615 | n/a |
 | KZG, GWC, 3 polynomials at 1 point | 2,781 | n/a | 654,514 | n/a |
 | KZG, SHPLONK, 3 polynomials at 2 points | 3,599 | n/a | 831,216 | n/a |
-| FRI/STARK, Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 12,943 | n/a | 2,843,812 | n/a |
+| FRI/STARK, Plonky3 Fibonacci, KoalaBear, 20 queries, log_blowup 4 (log2 trace 10, 100 conjectured bits) | 16,287 | n/a | 3,564,482 | n/a |
 
 Fe bytes include the verifying-key constants and, for the generated Groth16 contracts, nothing else but the call into the library; Solidity bytes are the compiler output of the reference verifier (key constants included).
 
