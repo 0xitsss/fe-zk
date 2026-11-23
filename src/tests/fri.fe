@@ -1,13 +1,13 @@
 //! Tests for the extension field, the Keccak challenger and the FRI/STARK verifier on the small demo
 //! configuration (`config_demo`); the secure configuration is in `fri_secure.fe`, both run `fri_suite.fe`.
-//! All expected values and the proof come from Plonky3 (`vectors/plonky3-stark`, p3 0.4.2), never
+//! All expected values and the proof come from Plonky3 (`vectors/plonky3-stark`, p3 0.8.0), never
 //! from this repository's code; see `fri_fixture.fe` (generated).
 use ingot::field::{Field, KoalaBear}
 use ingot::field::ext::{Ext4, KoalaBearExt4}
 use std::evm::Evm
 use ingot::verifier::fri::{public_values, verify}
 use ingot::verifier::fri::air_fib::FibonacciAir
-use ingot::verifier::fri::config_demo::{CONJECTURED_BITS, PARAMS, PROOF_WORDS}
+use ingot::verifier::fri::config_demo::{CONJECTURED_BITS, MAX_PROOF_WORDS, PARAMS}
 use ingot::verifier::fri::{conjectured_bits, proof_words}
 use ingot::tests::fri_suite
 use ingot::verifier::fri::challenger::Challenger
@@ -125,8 +125,10 @@ fn challenger_matches_plonky3() {
 
 #[test]
 fn config_matches_fixture() {
-    assert(PROOF_WORDS == FIB_PROOF_WORDS)
-    assert(proof_words(PARAMS) == (PROOF_WORDS as u256))
+    assert(FIB_PROOF_WORDS <= MAX_PROOF_WORDS)
+    assert(
+        proof_words(PARAMS, fib_proof()) == (FIB_PROOF_WORDS as u256),
+    )
     assert(conjectured_bits(PARAMS) == CONJECTURED_BITS)
     // 2 * 4 + 3: not a secure configuration (see the module doc of `verifier/fri.fe`)
     assert(CONJECTURED_BITS == 11)

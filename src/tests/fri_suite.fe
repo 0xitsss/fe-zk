@@ -13,7 +13,11 @@ use ingot::verifier::fri::{
     FriParams,
     check_air,
     air_matches,
-    check_query,
+    check_queries,
+    mp_off,
+    num_multiproofs,
+    off_mp_counts,
+    off_mp_hashes,
     num_folds,
     off_commit_pow,
     off_final_poly,
@@ -25,11 +29,8 @@ use ingot::verifier::fri::{
     params_valid,
     proof_is_canonical,
     proof_words,
-    q_fold_paths,
     q_fold_sibling,
-    q_quotient_path,
     q_quotient_row,
-    q_trace_path,
     q_trace_row,
     query_base,
     query_words,
@@ -129,10 +130,12 @@ fn challenges_after(
 
 pub fn layout_is_consistent(_ c: FriParams, _ p: MemArray<u256>) {
     assert(params_valid(c))
-    assert((p.len() as u256) == proof_words(c))
-    // the last query record ends exactly at the end of the proof
-    assert(query_base(c, c.num_queries) == proof_words(c))
+    assert((p.len() as u256) == proof_words(c, p))
+    // the query records end where the sibling counts start; the hashes fill the rest
+    assert(query_base(c, c.num_queries) == off_mp_counts(c))
     assert(query_base(c, 1) - query_base(c, 0) == query_words(c))
+    assert(mp_off(c, p, num_multiproofs(c)) == proof_words(c, p))
+    assert(off_mp_hashes(c) == off_mp_counts(c) + num_multiproofs(c))
 }
 
 pub fn accepts<A: Air>(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u256>) {
@@ -141,11 +144,7 @@ pub fn accepts<A: Air>(_ c: FriParams, _ p: MemArray<u256>, _ public: MemArray<u
     assert(ch.pow_ok)
     assert(air_matches<A>(c))
     assert(check_air<A>(c, p, public, ch))
-    var q: u256 = 0
-    while q < c.num_queries {
-        assert(check_query(c, p, ch, q))
-        q += 1
-    }
+    assert(check_queries(c, p, ch))
     assert(verify<A>(c, p, public))
 }
 
@@ -183,33 +182,39 @@ pub fn rejects_tampered_merkle_siblings<A: Air>(
     _ p: MemArray<u256>,
     _ public: MemArray<u256>,
 ) {
-    let last = c.num_queries - 1
-    let lh = c.log_n + c.log_blowup
-    let fp = q_fold_paths(c)
-    let n_fp = query_words(c) - fp
-    // trace and quotient input paths: first, middle and last sibling, first, middle and last query
-    assert(
-        rejects_all<A>(
-            c,
-            p,
-            public,
-            public_values(
-                [
-                    query_base(c, 1) + q_trace_path(c) + 3,
-                    query_base(c, last) + q_trace_path(c),
-                    query_base(c, 0) + q_trace_path(c) + lh - 1,
-                    query_base(c, 2) + q_quotient_path(c),
-                    query_base(c, 1) + q_quotient_path(c) + lh - 1,
-                    // commit-phase openings: first, a middle and the last sibling of the concatenated paths
-                    query_base(c, 0) + fp,
-                    query_base(c, last) + fp + n_fp / 2,
-                    query_base(c, last) + fp + n_fp - 1,
-                ],
+    // pruned sibling hashes: first, middle and last of every multi-opening (trace, quotient and
+    // each fold round)
+    let nm = num_multiproofs(c)
+    var k: u256 = 0
+    while k < nm {
+        let lo = mp_off(c, p, k)
+        let hi = mp_off(c, p, k + 1)
+        assert(hi > lo)
+        assert(
+            rejects_all<A>(
+                c,
+                p,
+                public,
+                public_values([lo, lo + (hi - lo) / 2, hi - 1]),
+                FLIP,
+                0,
             ),
-            FLIP,
-            0,
-        ),
-    )
+        )
+        k += 1
+    }
+    // sibling counts: one more or one fewer hash claimed (the length check or the multi-opening
+    // walk rejects; the last count shifts nothing but the end)
+    var cnt = clone_words(p)
+    let last = off_mp_counts(c) + nm - 1
+    cnt[last as usize] = p[last as usize] - 1
+    assert(!verify<A>(c, cnt, public))
+    // move one hash from the trace multi-opening to the quotient one: same total length
+    var mv = clone_words(p)
+    let c0 = off_mp_counts(c)
+    mv[c0 as usize] = p[c0 as usize] - 1
+    mv[(c0 + 1) as usize] = p[(c0 + 1) as usize] + 1
+    assert((mv.len() as u256) == proof_words(c, mv))
+    assert(!verify<A>(c, mv, public))
     // the input is untouched
     assert(verify<A>(c, p, public))
 }
@@ -422,7 +427,7 @@ pub fn rejects_wrong_configuration<A: Air>(
     assert(!verify<A>(c2, p, public))
     c2 = c
     c2.query_pow_bits = 0
-    assert(proof_words(c2) == proof_words(c))
+    assert(proof_words(c2, p) == proof_words(c, p))
     assert(!verify<A>(c2, p, public))
     // a configuration whose trace width is not the AIR's is rejected
     c2 = c

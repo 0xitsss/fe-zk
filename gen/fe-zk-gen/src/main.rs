@@ -7,6 +7,7 @@ use fe_zk_gen::{
     parse_plonk_snarkjs, parse_plonk_snarkjs_proof, parse_public, parse_snarkjs,
     parse_snarkjs_proof, plonk_key_digest, EmitOptions, EmittedIngot, Groth16Proof, Groth16Vk,
     Halo2EmitOptions, Halo2Scheme, PlonkEmitOptions, PlonkFixture, TestFixture, TOOL_VERSION,
+    emit_plonky3_dir, Plonky3EmitOptions,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -33,6 +34,67 @@ enum Cmd {
     Halo2(Halo2Args),
     /// PLONK (gnark v0.12.0) over BN254 with KZG, ABI of gnark's Solidity verifier
     Gnark(GnarkArgs),
+    /// Plonky3 p3-uni-stark 0.8.0 FRI/STARK proof (KoalaBear, Keccak): configuration module + fixture
+    Plonky3(Plonky3Args),
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum AirArg {
+    Fib,
+    Mul,
+}
+
+#[derive(Args)]
+struct Plonky3Args {
+    /// Directory with proof.json, config.json and vectors.json written by vectors/plonky3-stark
+    dir: String,
+    /// Output: Fe test fixture (flat proof words, public values, Plonky3's challenges)
+    #[arg(long, value_name = "FILE")]
+    fixture: String,
+    /// Output: per-configuration module (`PARAMS`, proof lengths, `verify`) for src/verifier/fri/
+    #[arg(long, value_name = "FILE")]
+    config: String,
+    /// Configuration name (comments only)
+    #[arg(long)]
+    name: String,
+    /// AIR of src/verifier/fri/air_*.fe
+    #[arg(long, value_enum, default_value = "fib")]
+    air: AirArg,
+    /// Also emit the extension-field and challenger vectors into the fixture
+    #[arg(long)]
+    vectors: bool,
+    /// Refuse a configuration below N conjectured bits and emit `static_assert(CONJECTURED_BITS >= N)`
+    #[arg(long, value_name = "N")]
+    min_bits: Option<u64>,
+}
+
+fn run_plonky3(a: Plonky3Args) -> ExitCode {
+    let opts = Plonky3EmitOptions {
+        dir: a.dir.clone(),
+        name: a.name.clone(),
+        air: match a.air {
+            AirArg::Fib => "fib".into(),
+            AirArg::Mul => "mul".into(),
+        },
+        vectors: a.vectors,
+        min_bits: a.min_bits,
+    };
+    let out = match emit_plonky3_dir(Path::new(&a.dir), &opts) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    for (path, text) in [(&a.config, &out.config_fe), (&a.fixture, &out.fixture_fe)] {
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!("error: {path}: {e}");
+            return ExitCode::from(2);
+        }
+    }
+    println!("fe-zk-gen {TOOL_VERSION}: plonky3 uni-stark 0.8.0 proof {}: VALID shape", a.dir);
+    println!("  emitted       : {} (configuration), {} (fixture)", a.config, a.fixture);
+    ExitCode::SUCCESS
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -427,6 +489,7 @@ fn main() -> ExitCode {
         Cmd::Plonk(a) => return run_plonk(a),
         Cmd::Halo2(a) => return run_halo2(a),
         Cmd::Gnark(a) => return run_gnark(a),
+        Cmd::Plonky3(a) => return run_plonky3(a),
     };
     let (vk, src, src_path) = match load(&args) {
         Ok(x) => x,

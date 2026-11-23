@@ -258,11 +258,50 @@ the ptau contribution and phase-2 entropy are public test values.
 
 ## FRI/STARK verifier (`src/verifier/fri.fe`)
 
-Verifies a Plonky3 0.4.2 `uni-stark` proof (KoalaBear, degree-4 extension, arity 2, Keccak Merkle trees and challenger)
+Verifies a Plonky3 0.8.0 `uni-stark` proof (KoalaBear, degree-4 extension, arity 2, Keccak Merkle trees and challenger)
 of any AIR that implements the `Air` trait: `verify<A: Air>`. The verifier logic is one piece of code; a configuration is
-the constants of a small module emitted by `vectors/plonky3-stark/emit_fe.py` from the proof's own `config.json`
+the constants of a small module emitted by `fe-zk-gen plonky3` (Rust; `vectors/plonky3-stark/emit_fe.py` is the
+byte-identical Python cross-check) from the proof's own `config.json`
 (`fri/config_secure.fe`, `fri/config_demo.fe`, `fri/config_mul.fe`):
-`FriParams { width, log_n, log_blowup, log_final, num_queries, commit_pow_bits, query_pow_bits }`.
+`FriParams { width, log_n, log_blowup, log_final, num_queries, commit_pow_bits, query_pow_bits, stark_pattern,
+pcs_pattern, fri_pattern }` (the last three are the Keccak hashes of Plonky3's transcript interaction patterns, see
+"Plonky3 0.8 port" below).
+
+### Plonky3 0.8 port (from 0.4.2)
+
+Diff of the 0.4.2 and 0.8.0 sources of `p3-uni-stark`, `p3-fri`, `p3-challenger`, `p3-merkle-tree`, `p3-commit`; what
+changed for a verifier of this shape (no zk, no preprocessed trace, arity 2, cap height 0):
+
+- **Transcript domain separators** (`p3_challenger::fs`): uni-stark, the FRI PCS and FRI each open a
+  `VerifierState` that first absorbs a seed: `protocol_id (version 1, name, length) || pattern_hash || u32be(len) ||
+  instance label || 0x80`, packed 3 bytes per field element after a length element. The instance label carries the
+  shape (uni-stark: degree bits, width, preprocessed width, periodic columns, quotient chunks, next-row flags; PCS:
+  commitments / matrices / points; FRI: `log_blowup`, `max_log_arity`, each round's arity). The pattern hash is Keccak-256
+  of the rendered interaction pattern and depends on the counts (public values, opened widths, final polynomial length,
+  queries, PoW bits); the Fe verifier rebuilds the whole seed from `FriParams` and takes only the three pattern hashes as
+  configuration constants (the generator checks the seed against the elements Plonky3 itself absorbed). The old
+  explicit observations of `degree_bits` and the preprocessed width are gone (they are now in the label).
+- **Proof of work**: `check_witness` first squeezes one challenger byte (a flush when the output is empty), and a
+  zero-bit site requires the witness to be zero (`check_canonical_pow_witnesses`; also new: batch PoW and out-of-domain
+  PoW sites, both 0 bits here, their witnesses must be 0).
+- **Merkle openings**: per-query authentication paths are replaced by one pruned multi-opening per commitment
+  (`PrunedMerklePaths`: the siblings the verifier cannot compute, in `walk_frontier` order) for the input batches and
+  for every FRI round (`CommitPhaseMultiStep`, `BatchMultiOpening`); duplicate query rows must open identically.
+  Commitments are `MerkleCap`s (cap height 0 here: one root). The tree, leaf hash and compression are unchanged.
+  `fri/merkle.fe` `verify_pruned` implements the walk (sort and deduplicate the query rows, then per level compress
+  known pairs or take the next supplied sibling).
+- **Proof format**: `Proof` gains `ood_pow_witness`, `Commitments.random`, an optional `trace_next`; `FriProof` gains
+  `batch_pow_witness`; `FriParameters` gains `max_log_arity` (higher-arity folding; we use 1) and
+  `batch_proof_of_work_bits`. Folding, the reduced openings (alpha powers per height), the final-polynomial check and
+  `SerializingChallenger32` sampling are unchanged.
+
+The proof is shorter (secure configuration: 2,721 words with per-query paths, 1,844 pruned) but verification costs more
+in the test runner (Fibonacci secure: 1,366,516 to 1,782,844 gas; MulAir 1,294,137 to 1,564,584; demo 258,320 to
+387,106): three seeds (about 33 k gas each), the sort of the query rows per multi-opening, and the leaf digests kept in
+memory between the queries and the multi-openings, against fewer Keccak hashes. As a deployed contract (`docs/GAS.md`, revm): execution 1,407,935 to 1,812,924 gas,
+transaction 2,864,620 to 2,520,732 (the EIP-7623 calldata floor falls with the shorter proof), runtime code 12,943 to
+16,287 bytes. 0.9.0 was a release candidate and was
+not used.
 
 ### Adding an AIR (`fri/air.fe`)
 
@@ -292,12 +331,13 @@ above 2 (several quotient chunks; `verify` rejects `MAX_DEGREE > 2`), preprocess
 mode, other fields (the base-field arithmetic of the hot paths is KoalaBear-specific).
 The proof is one flat `MemArray<u256>` whose layout (offsets are functions of the parameters) is documented at the top
 of `fri.fe`. Queries, fold rounds and Merkle levels are loops, so the code size does not depend on the configuration.
-`params_valid` bounds every shift and table index; `verify` rejects a proof whose length is not `proof_words(params)`.
+`params_valid` bounds every shift and table index; `verify` rejects a proof whose length is not `proof_words(params, proof)`
+(the fixed part plus the Merkle sibling counts the proof declares).
 The secure module carries `static_assert(CONJECTURED_BITS >= 100)`.
 
 ### Security parameters
 
-Plonky3 0.4.2 states `FriParameters::conjectured_soundness_bits = log_blowup * num_queries + query_proof_of_work_bits`
+Plonky3 (0.4.2 and 0.8.0 alike) states `FriParameters::conjectured_soundness_bits = log_blowup * num_queries + query_proof_of_work_bits`
 (the ethSTARK conjecture: capacity-bound proximity gaps for Reed-Solomon codes). It says itself that proven soundness
 "isn't currently supported by this crate". We therefore also compute our own estimates (`Cfg::soundness` in
 `vectors/plonky3-stark/src/main.rs`, written to `config.json`): per-query error `(1 + rho)/2` (unique decoding) or

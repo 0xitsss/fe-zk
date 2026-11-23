@@ -11,6 +11,7 @@ pub mod halo2;
 pub mod model;
 pub mod parse;
 pub mod plonk;
+pub mod plonky3;
 pub mod validate;
 
 pub use digest::{key_digest, DIGEST_DOMAIN};
@@ -23,6 +24,7 @@ pub use halo2::{
     emit_halo2_ingot, emit_halo2_module, halo2_key_digest, parse_halo2_proof, parse_halo2_vk,
     Halo2EmitOptions, Halo2Fixture, Halo2Layout, Halo2Scheme, Halo2Vk,
 };
+pub use plonky3::{emit_plonky3, emit_plonky3_dir, Plonky3EmitOptions, Plonky3Emitted};
 pub use model::{Groth16Proof, Groth16Vk, VkError, G1, G2};
 pub use parse::{
     parse_arkworks, parse_arkworks_proof, parse_public, parse_snarkjs, parse_snarkjs_proof,

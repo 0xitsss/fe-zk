@@ -6,7 +6,8 @@ Usage: emit_fe.py <dir> <fixture .fe> <config .fe> <name> [--vectors] [--min-bit
   fixture .fe   the flat proof words (`<air>_proof()`), the public values and the Fiat-Shamir
                 challenges printed by Plonky3 (`TR_*`); with --vectors also the extension-field and
                 challenger vectors (only the small demo fixture carries them).
-  config .fe    the per-configuration module: `PARAMS` (FriParams), `PROOF_WORDS`, `verify`.
+  config .fe    the per-configuration module: `PARAMS` (FriParams), `FIXED_PROOF_WORDS`,
+                `MAX_PROOF_WORDS`, `verify`.
                 With --min-bits N it also asserts at compile time that the conjectured soundness
                 (Plonky3's `log_blowup * num_queries + query_pow_bits`) is at least N.
 
@@ -38,6 +39,22 @@ def mont(x):
     """serde_json of a Plonky3 KoalaBear is its Montgomery form (value * 2^32 mod p)."""
     assert 0 <= x < P
     return x * R_INV % P
+
+
+def root(com):
+    """A Merkle commitment (`MerkleCap`, cap height 0): its single root."""
+    cap = com["cap"]
+    assert len(cap) == 1, "only Merkle cap height 0 is supported"
+    return cap[0]
+
+
+def seed_felts(name, pattern_hash, label):
+    """Plonky3 0.8 `DomainSeparator::seed` for a KoalaBear alphabet: the field elements absorbed
+    (length, then the seed bytes packed 3 per element, little-endian)."""
+    pid = bytes([1]) + name + bytes(62 - len(name)) + bytes([len(name)])
+    lab = b"".join((8).to_bytes(4, "big") + v.to_bytes(8, "big") for v in label)
+    seed = pid + pattern_hash + len(lab).to_bytes(4, "big") + lab + bytes([0x80])
+    return [len(seed)] + [int.from_bytes(seed[i:i + 3], "little") for i in range(0, len(seed), 3)]
 
 
 def ext_list(xs):
@@ -85,9 +102,13 @@ def main():
     assert ov["preprocessed_local"] is None and ov["preprocessed_next"] is None
     assert ov["random"] is None and len(ov["quotient_chunks"]) == 1
     assert proof["degree_bits"] == log_n
-    assert len(op["commit_phase_commits"]) == f and len(op["query_proofs"]) == nq
+    # zero-bit grinding sites of this configuration: Plonky3 pins the witnesses to zero
+    assert proof["ood_pow_witness"] == 0 and op["batch_pow_witness"] == 0
+    assert len(op["commit_phase_commits"]) == f and len(op["commit_phase_openings"]) == f
     assert len(op["final_poly"]) == 1 << log_f
     assert len(op["commit_pow_witnesses"]) == f
+    ins = op["input_openings"]
+    assert len(ins) == 2
 
     # ---- flat proof words, in the layout documented in src/verifier/fri.fe
     words = []
@@ -100,36 +121,59 @@ def main():
             assert len(e) == 4
             felts(e)
 
-    words.append(hx(proof["commitments"]["trace"]["value"]))
-    words.append(hx(proof["commitments"]["quotient_chunks"]["value"]))
+    words.append(hx(root(proof["commitments"]["trace"])))
+    words.append(hx(root(proof["commitments"]["quotient_chunks"])))
     exts(ov["trace_local"])
     exts(ov["trace_next"])
     exts(ov["quotient_chunks"][0])
-    words.extend(hx(c["value"]) for c in op["commit_phase_commits"])
+    words.extend(hx(root(c)) for c in op["commit_phase_commits"])
     felts(op["commit_pow_witnesses"])
     exts(op["final_poly"])
     felts([op["query_pow_witness"]])
-    for q in op["query_proofs"]:
-        ip = q["input_proof"]
-        assert len(ip) == 2 and len(ip[0]["opened_values"]) == 1 and len(ip[1]["opened_values"]) == 1
-        cpo = q["commit_phase_openings"]
-        assert len(cpo) == f
-        assert len(ip[0]["opened_values"][0]) == width and len(ip[1]["opened_values"][0]) == 4
-        assert len(ip[0]["opening_proof"]) == lh and len(ip[1]["opening_proof"]) == lh
-        felts(ip[0]["opened_values"][0])
-        words.extend(hx(s) for s in ip[0]["opening_proof"])
-        felts(ip[1]["opened_values"][0])
-        words.extend(hx(s) for s in ip[1]["opening_proof"])
-        exts([c["sibling_value"] for c in cpo])
-        for j, c in enumerate(cpo):
-            assert len(c["opening_proof"]) == lh - 1 - j
-            words.extend(hx(s) for s in c["opening_proof"])
+    for b in ins:
+        assert len(b["opened_values"]) == nq
+    for r in op["commit_phase_openings"]:
+        assert len(r["sibling_values"]) == nq
+    for q in range(nq):
+        tr_row, = ins[0]["opened_values"][q]
+        qu_row, = ins[1]["opened_values"][q]
+        assert len(tr_row) == width and len(qu_row) == 4
+        felts(tr_row)
+        felts(qu_row)
+        for r in op["commit_phase_openings"]:
+            sib, = r["sibling_values"][q]
+            exts([sib])
+    # pruned Merkle multi-openings: trace, quotient, then one per fold round
+    mps = [ins[0]["opening_proof"], ins[1]["opening_proof"]] + [r["opening_proof"] for r in op["commit_phase_openings"]]
+    counts = []
+    for k, mp in enumerate(mps):
+        hs = mp["sibling_hashes"]
+        levels = lh if k < 2 else lh - 1 - (k - 2)
+        assert len(hs) <= nq * levels
+        counts.append(len(hs))
+    words.extend(str(n) for n in counts)
+    for mp in mps:
+        words.extend(hx(h) for h in mp["sibling_hashes"])
 
     # proof length from the layout formula (must equal src/verifier/fri.fe `proof_words`)
-    fold_paths = f * (lh - 1) - f * (f - 1) // 2
-    qw = width + lh + 4 + lh + 4 * f + fold_paths
-    total = 18 + 8 * width + 2 * f + 4 * (1 << log_f) + 1 + nq * qw
+    qw = width + 4 + 4 * f
+    total = 18 + 8 * width + 2 * f + 4 * (1 << log_f) + 1 + nq * qw + (2 + f) + sum(counts)
     assert len(words) == total, (len(words), total)
+    fixed = total - sum(counts)
+    maxw = fixed + nq * (2 * lh + sum(lh - 1 - j for j in range(f)))
+
+    # ---- transcript patterns (domain separators), checked against Plonky3's own seed elements
+    seeds = vec["transcript"]["seeds"]
+    labels = {
+        "stark": (b"p3-uni-stark", [log_n, log_n, width, 0, 0, 1, 1, 0]),
+        "pcs": (b"p3-fri-pcs", [2, 1, 2, 1, 1]),
+        "fri": (b"p3-fri", [log_b, 1] + [1] * f),
+    }
+    patterns = {}
+    for key, (pname, label) in labels.items():
+        sd = seeds[key]
+        patterns[key] = hx(sd["pattern_hash"])
+        assert seed_felts(pname, bytes.fromhex(sd["pattern_hash"][2:]), label) == sd["felts"], key
 
     conj = cfg["soundness"]["conjectured_bits"]
     assert conj == log_b * nq + cfg["query_proof_of_work_bits"]
@@ -139,7 +183,7 @@ def main():
     # ---- configuration module
     c = []
     w = c.append
-    w(f"//! GENERATED by vectors/plonky3-stark/emit_fe.py from {d.rstrip('/')}/config.json. Do not edit.")
+    w(f"//! GENERATED by fe-zk-gen plonky3 (vectors/plonky3-stark/emit_fe.py) from {d.rstrip('/')}/config.json. Do not edit.")
     w(f"//! FRI/STARK configuration `{name}`: trace 2^{log_n} rows, log_blowup {log_b}, final polynomial")
     w(f"//! 2^{log_f} coefficients, {nq} queries, commit PoW {cfg['commit_proof_of_work_bits']} bits, query PoW")
     w(f"//! {cfg['query_proof_of_work_bits']} bits. Conjectured soundness (Plonky3 `log_blowup * num_queries + query_pow_bits`):")
@@ -158,14 +202,22 @@ def main():
     w(f"    num_queries: {nq},")
     w(f"    commit_pow_bits: {cfg['commit_proof_of_work_bits']},")
     w(f"    query_pow_bits: {cfg['query_proof_of_work_bits']},")
+    w(f"    stark_pattern: {patterns['stark']},")
+    w(f"    pcs_pattern: {patterns['pcs']},")
+    w(f"    fri_pattern: {patterns['fri']},")
     w("}")
-    w(f"pub const PROOF_WORDS: usize = {total}")
+    w("/// Proof length without the pruned Merkle siblings, and the largest valid length (every")
+    w("/// multi-opening unpruned). The length of a proof is fixed by the sibling counts it declares")
+    w("/// (`ingot::verifier::fri::proof_words`).")
+    w(f"pub const FIXED_PROOF_WORDS: usize = {fixed}")
+    w(f"pub const MAX_PROOF_WORDS: usize = {maxw}")
     w("/// Plonky3 `FriParameters::conjectured_soundness_bits` of this configuration.")
     w(f"pub const CONJECTURED_BITS: u256 = {conj}")
     if min_bits is not None:
         w(f"static_assert(CONJECTURED_BITS >= {min_bits})")
     w("")
-    w("/// `proof` is `PROOF_WORDS` words (`MemArray`, not `[u256; PROOF_WORDS]`: see `docs/DESIGN.md`).")
+    w("/// `proof` is `proof_words(PARAMS, proof)` words, at most `MAX_PROOF_WORDS` (`MemArray`: see")
+    w("/// `docs/DESIGN.md`).")
     w(f"pub fn verify(_ proof: MemArray<u256>, _ public: [u256; {npub}]) -> bool {{")
     w(f"    verify_with<{air_ty}>(PARAMS, proof, public_values(public))")
     w("}")
@@ -174,8 +226,8 @@ def main():
     # ---- fixture module
     o = []
     w = o.append
-    w(f"//! GENERATED by vectors/plonky3-stark/emit_fe.py from {d.rstrip('/')}/*.json. Do not edit.")
-    w(f"//! Plonky3 p3-uni-stark 0.4.2 proof of the {air_ty} (flat words), values printed by Plonky3.")
+    w(f"//! GENERATED by fe-zk-gen plonky3 (vectors/plonky3-stark/emit_fe.py) from {d.rstrip('/')}/*.json. Do not edit.")
+    w(f"//! Plonky3 p3-uni-stark 0.8.0 proof of the {air_ty} (flat words), values printed by Plonky3.")
     w("use core::ptr::MemArray")
     w("")
     if with_vectors:

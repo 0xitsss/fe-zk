@@ -17,13 +17,21 @@ pub const PARAMS: FriParams = FriParams {
     num_queries: 20,
     commit_pow_bits: 0,
     query_pow_bits: 20,
+    stark_pattern: 0x700a1a8d7206d402f3f359b6e7e70cf3a35d243a5f0c6008177397323a0f31db,
+    pcs_pattern: 0xbd9d221ba4e6e6eb650bc7f276e978235713c5f0b4c3ac683f1bffc86573045e,
+    fri_pattern: 0x2eff6731f97d3edb34e228ae1487f0d24e22ee621c4c5e8f84b02e352f0e794f,
 }
-pub const PROOF_WORDS: usize = 2089
+/// Proof length without the pruned Merkle siblings, and the largest valid length (every
+/// multi-opening unpruned). The length of a proof is fixed by the sibling counts it declares
+/// (`ingot::verifier::fri::proof_words`).
+pub const FIXED_PROOF_WORDS: usize = 716
+pub const MAX_PROOF_WORDS: usize = 2096
 /// Plonky3 `FriParameters::conjectured_soundness_bits` of this configuration.
 pub const CONJECTURED_BITS: u256 = 100
 static_assert(CONJECTURED_BITS >= 100)
 
-/// `proof` is `PROOF_WORDS` words (`MemArray`, not `[u256; PROOF_WORDS]`: see `docs/DESIGN.md`).
+/// `proof` is `proof_words(PARAMS, proof)` words, at most `MAX_PROOF_WORDS` (`MemArray`: see
+/// `docs/DESIGN.md`).
 pub fn verify(_ proof: MemArray<u256>, _ public: [u256; 1]) -> bool {
     verify_with<MulAir>(PARAMS, proof, public_values(public))
 }

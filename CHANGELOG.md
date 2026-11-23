@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed
+- FRI/STARK verifier ported from Plonky3 0.4.2 to **0.8.0** (latest stable): domain-separated transcript (three seeds
+  rebuilt from the configuration), squeezing proof of work, zero witnesses at zero-bit PoW sites, pruned Merkle
+  multi-openings (`fri/merkle.fe` `verify_pruned`), `MerkleCap` commitments. Fixtures (`fib`, `fib_secure`, `mul`)
+  re-proved with 0.8.0. The proof length now depends on the pruning: configuration modules export
+  `FIXED_PROOF_WORDS` / `MAX_PROOF_WORDS` instead of `PROOF_WORDS`, `proof_words(params, proof)` takes the proof, and
+  `examples/fri_stark` takes `verify(uint256[],uint256[3])`. Secure Fibonacci proof 2,721 to 1,844 words; execution gas
+  in the test runner 1,366,516 to 1,782,844 (seeds and the multi-opening walk; see `docs/DESIGN.md`).
+
+### Added
+- `fe-zk-gen plonky3`: Rust port of `vectors/plonky3-stark/emit_fe.py` (configuration module + fixture), snapshot
+  tests, and a byte-identical cross-check against the Python emitter (`gen/fe-zk-gen/tests/plonky3.rs`,
+  `scripts/regen-plonky3-stark.sh`).
+
 ## [0.3.0] - 2026-11-22
 
 Fe 26.5.0. Cheaper verifiers and a FRI/STARK verifier generic over the AIR. Crate and ingot manifests and generated
