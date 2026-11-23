@@ -103,3 +103,34 @@ such entry for those families.
 * The quick mode in CI uses the committed fixtures only (no circom, no snarkjs) plus 12 fresh seeded arkworks proofs and
   ~230-380 mutations per family (2870 in total), ~155 s on 16 cores, dominated by the single `fe build`. CI downloads the static `solc` 0.8.24 release binary from the Solidity GitHub release page
   (pinned by version tag, hash not pinned).
+
+## Toolchain and regenerating fixtures
+
+CPUs without AVX: the prebuilt binary stops with `Illegal instruction`. Build the tag from source with
+`cargo build --release -p fe`; the build needs the `tree-sitter` CLI on `PATH` (`npm ci` in
+`crates/tree-sitter-fe`). The result is the same version (`docs/DESIGN.md`, "Local build"). CI uses the prebuilt binary.
+
+Other tools (only needed to regenerate vectors, not to run tests):
+
+| Tool | Version | Pinned in |
+|---|---|---|
+| circom | 2.2.2 (commit e410b0d5) | `scripts/setup-tools.sh` |
+| snarkjs | 0.7.6 | `vectors/js/package-lock.json` |
+| circomlib | 2.0.5 | `vectors/js/package-lock.json` |
+| circomlibjs | 0.1.7 | `vectors/js/package-lock.json` |
+| ethers | 5.8.0 (transcript vectors) | `vectors/js/package-lock.json` |
+| gnark | v0.12.0 (gnark-crypto v0.15.0) | `vectors/gnark/go.mod` |
+| halo2-axiom | 0.5.3 (snark-verifier 0.2.7) | `vectors/halo2/Cargo.lock` |
+| Plonky3 | 0.8.0 (STARK fixture), 0.9.0-rc.2 (Poseidon2 KoalaBear vectors) | `vectors/plonky3-stark/Cargo.lock`, `vectors/plonky3/Cargo.lock` |
+| HorizenLabs/poseidon2 | commit 055bde3f4782731ba5f5ce5888a440a94327eaf3 | `scripts/regen-vectors.sh` |
+| arkworks | 0.5.0 | `gen/Cargo.lock`, `vectors/kzg/Cargo.lock` |
+| revm | 33.1.0 (Life CLI, gas runners); 27.1.0 inside the halo2 vector crate | `Cargo.lock` files |
+| solc | 0.8.24 (reference Solidity gas baselines only) | `docs/GAS.md` |
+| py_ecc | 8.0.0 (EC vectors) | `docs/AI_LOG.md` |
+
+Regenerate: `scripts/setup-tools.sh` (circom, npm packages), `scripts/regen-vectors.sh` (hash vectors),
+`scripts/regen-groth16-fixtures.sh`, `scripts/regen-plonk-fixtures.sh`, `scripts/regen-gnark-fixtures.sh` (Go),
+`scripts/regen-halo2.sh` (needs `solc`; real PSE ptau SRS), `scripts/regen-kzg.sh` + `scripts/gen-kzg-fe-fixtures.py`,
+`scripts/regen-real-semaphore.sh` (real Semaphore v4 key and ceremony zkey), `scripts/regen-plonky3-stark.sh`,
+`scripts/life-prove.sh <pattern> <N>` (about 30 min and 1.2 GB of ptau for N = 512). Fixtures from circom/snarkjs are
+randomised, so a regeneration changes every value.

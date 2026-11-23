@@ -261,34 +261,7 @@ Install Fe (the exact version used for everything here is v26.5.0):
 curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version v26.5.0
 ```
 
-CPUs without AVX: the prebuilt binary stops with `Illegal instruction`. Build the tag from source with
-`cargo build --release -p fe`; the build needs the `tree-sitter` CLI on `PATH` (`npm ci` in
-`crates/tree-sitter-fe`). The result is the same version (`docs/DESIGN.md`, "Local build"). CI uses the prebuilt binary.
-
-Other tools (only needed to regenerate vectors, not to run tests):
-
-| Tool | Version | Pinned in |
-|---|---|---|
-| circom | 2.2.2 (commit e410b0d5) | `scripts/setup-tools.sh` |
-| snarkjs | 0.7.6 | `vectors/js/package-lock.json` |
-| circomlib | 2.0.5 | `vectors/js/package-lock.json` |
-| circomlibjs | 0.1.7 | `vectors/js/package-lock.json` |
-| ethers | 5.8.0 (transcript vectors) | `vectors/js/package-lock.json` |
-| gnark | v0.12.0 (gnark-crypto v0.15.0) | `vectors/gnark/go.mod` |
-| halo2-axiom | 0.5.3 (snark-verifier 0.2.7) | `vectors/halo2/Cargo.lock` |
-| Plonky3 | 0.8.0 (STARK fixture), 0.9.0-rc.2 (Poseidon2 KoalaBear vectors) | `vectors/plonky3-stark/Cargo.lock`, `vectors/plonky3/Cargo.lock` |
-| HorizenLabs/poseidon2 | commit 055bde3f4782731ba5f5ce5888a440a94327eaf3 | `scripts/regen-vectors.sh` |
-| arkworks | 0.5.0 | `gen/Cargo.lock`, `vectors/kzg/Cargo.lock` |
-| revm | 33.1.0 (Life CLI, gas runners); 27.1.0 inside the halo2 vector crate | `Cargo.lock` files |
-| solc | 0.8.24 (reference Solidity gas baselines only) | `docs/GAS.md` |
-| py_ecc | 8.0.0 (EC vectors) | `docs/AI_LOG.md` |
-
-Regenerate: `scripts/setup-tools.sh` (circom, npm packages), `scripts/regen-vectors.sh` (hash vectors),
-`scripts/regen-groth16-fixtures.sh`, `scripts/regen-plonk-fixtures.sh`, `scripts/regen-gnark-fixtures.sh` (Go),
-`scripts/regen-halo2.sh` (needs `solc`; real PSE ptau SRS), `scripts/regen-kzg.sh` + `scripts/gen-kzg-fe-fixtures.py`,
-`scripts/regen-real-semaphore.sh` (real Semaphore v4 key and ceremony zkey), `scripts/regen-plonky3-stark.sh`,
-`scripts/life-prove.sh <pattern> <N>` (about 30 min and 1.2 GB of ptau for N = 512). Fixtures from circom/snarkjs are
-randomised, so a regeneration changes every value.
+CPUs without AVX, tool versions and how to regenerate every fixture: [docs/TESTING.md](docs/TESTING.md#toolchain-and-regenerating-fixtures).
 
 ## Use fe-zk in your Fe project
 
@@ -305,166 +278,36 @@ from `fe-zk/gen` (or `plonk`, `gnark`, `halo2`), depend on the generated ingot a
 
 ## Demo
 
-Reproducible CLI examples; commands are in "Try it in 60 seconds" above.
+[Demo video, 2:57](https://youtu.be/3lFUyRV3F7Q). Reproducible from the command line; full output and gas tables in
+[docs/DEMO.md](docs/DEMO.md).
 
-### Membership and generated verifiers (`scripts/demo.sh`)
-
-1. `fe-zk-gen groth16 --snarkjs vectors/groth16/membership/verification_key.json --proof ... --public ...` validates
-   the key and emits `examples/membership/verifier` (contract, key constants, tests with the real snarkjs proof).
-2. `fe test` there: valid proof accepted; tampered `A`/`B`/`C`, tampered / non-canonical / swapped public inputs,
-   off-curve and non-subgroup points all rejected.
-3. `fe test` in `examples/membership`: a Poseidon incremental Merkle tree (depth 10, roots checked against circomlibjs)
-   and `prove(root, nullifierHash, ...)`, which checks the root, the nullifier, then calls the generated verifier.
-4. The same pipeline for a snarkjs PLONK key (`fe-zk-gen plonk`) and a halo2-KZG key (`fe-zk-gen halo2`).
-
-CI runs it in its own job (`demos`) and checks that no generated file changed (`git diff --exit-code`); the anonymous
-examples and the Tornado verifier run there too.
-
-### zk Game of Life (`scripts/life-demo.sh`, about 5 minutes)
-
-`examples/life/cli` (`life-cli`, Rust, revm) executes the compiled Fe `Life` contract: each generation is one
-`step(board)` call, compared with a per-cell Rust reference. The circuit (`examples/life/circuit/life.circom`, 7
-constraints per cell) proves that 512 generations were computed from a private start board whose Poseidon commitment
-is public, ending at a board with the second public commitment. The verifier is the `fe-zk-gen` output
-`Life512Verifier`; `advanceProven(endLo, endHi, proof)` recomputes both commitments on chain and stores the end board.
-`life-cli --frames-json PATH` dumps the boards and gas that drive the animation at the top.
-
-Output of `life-cli --pattern glider --gens 64 --check` (excerpt) and `life-cli --prove`:
-
-```
-gen    0  alive   5  start
-gen   16  alive   5  step gas 657 (tx 21885)
-...
-check: OK, 64 generations match the per-cell reference
-gas, 64 separate step() calls: 42048 execution, 1400880 with tx overhead
-gas, one run(board, 64) call:  34246 execution, 55614 with tx overhead
-
-fixture vectors/groth16/life_512  proven generations 512
-tampered proof:    REJECTED
-wrong end board:   REJECTED
-wrong start board: REJECTED
-
-gas (revm, Osaka)                                 execution      with tx
-512 separate step() calls                            336393     11205525
-one run(board, 512) call                             271686       293066
-one proveRun (verify proof of the same run)          207758       234394
-one advanceProven (verify + 2 Poseidon + store)       264127       289579
-
-break-even: a proof pays off above about 392 generations (531 gas per on-chain generation)
-```
-
-Three measurements of Life gas exist and differ slightly: `life-cli` calls the `Life` contract, which forwards to the
-verifier (so `proveRun` includes the extra call); `docs/GAS.md` calls the verifier directly (199,593 Fe, 195,613
-Solidity; break-even about 385 generations against `run`); and `fe test --show-logs` prints `GasUsed` events
-(`evm.gas()` around the call), a few percent off. The method of each is stated where it is reported.
+- `scripts/demo.sh`: `fe-zk-gen` validates real keys and emits verifiers (Groth16, PLONK, gnark, halo2, Semaphore), their
+  tests run, then the membership contract, the anonymous examples and the size guard. CI checks that no generated file changed.
+- `scripts/life-demo.sh` (about 5 min): the Fe `Life` contract steps a board on chain (657 gas per generation), and one
+  Groth16 proof of 512 generations is verified for about 208k gas; break-even about 392 generations.
 
 ## Limitations
 
-What works: everything listed under Approach is implemented and tested against real reference proofs. What does not,
-and the assumptions:
+Full list with details: [docs/LIMITATIONS.md](docs/LIMITATIONS.md). The ones that matter most:
 
-- **Gas.** Fe verifiers cost 1.02-1.03x the Solidity ones for Groth16, 1.04-1.05x for snarkjs PLONK, 1.10-1.11x for
-  gnark PLONK and 1.17x for halo2 (`docs/GAS.md`, revm, same proofs). Both sides are dominated by the same precompiles;
-  the difference is per-call overhead: each precompile call costs about 300 gas of wrapper code in Fe (a heap
-  `MemBuffer` from `Call.raw_staticcall`, a checked returndata length and the typed `G1` result, all of which keep the
-  safety checks) against about 100 in hand-written Solidity assembly, and the typed field code is not unrolled
-  (`docs/DESIGN.md`). Groth16 makes few calls, the PLONK family dozens. Deployed code is 1.31-1.98x the size of the
-  Solidity versions (`docs/GAS.md`). Every generated
-  verifier and example contract fits the EIP-170 limit of 24,576 bytes (guard: `scripts/code-size.sh`, run by
-  `scripts/demo.sh`; ignored test `gen/fe-zk-gen/tests/code_size.rs`). `fe-zk-gen halo2` emits one contract per multiopen
-  scheme (`--scheme shplonk|gwc|both`, default shplonk): SHPLONK 22.1 kB, GWC 21.4 kB, both together would be over. The FRI
-  contract (`examples/fri_stark`, about 16 kB) fits as well.
-- **FRI/STARK.** Generic over the AIR (`verify<A: Air>`; Fibonacci and a 6-column multiplication AIR are proved by Plonky3 and
-  verified), constraint degree at most 2 (one quotient chunk), Plonky3 0.8.0 `uni-stark` (pruned Merkle multi-openings and domain-separated transcript; Merkle cap height 0, no zk mode, arity 2 only), KoalaBear with a degree-4 extension, Keccak commitments,
-  arity 2. Query count, blowup, PoW bits and trace height are constants of a per-configuration module
-  (`src/verifier/fri/config_secure.fe`, emitted from the proof). The secure configuration (2^10 rows, `log_blowup` 4,
-  20 queries, 20 query-PoW bits) has 100 bits under Plonky3's conjecture (`log_blowup * queries + pow bits`); our estimate
-  of what is *proven* is about 59 bits (Johnson bound) or 38 (unique decoding), see `docs/DESIGN.md`. The 4-query
-  `config_demo` (about 11 bits) is only a second test configuration. Research-grade, not audited. A new AIR needs one `impl Air`
-  (no verifier changes); higher-degree AIRs (several quotient chunks), other fields and preprocessed traces are not supported.
-- **halo2.** One circuit shape: single phase, one instance column, uncommitted instances, no challenges. The emitter
-  rejects duplicate commitments. The generated module is circuit-specific.
-- **G2 points in proofs.** The subgroup check for a G2 point taken from a proof (`G2Proof`, e.g. Groth16 `B`) relies on
-  the EIP-197 rule enforced by the pairing precompile, not on Fe code. It is tested against the test EVM (revm), not
-  against every client. Key G2 points are fully checked (in Fe, at compile time).
-- **`false` is not a verdict if your contract swallows reverts.** The verifiers return `false` for an invalid proof and
-  revert when the forwarded gas is below what the next precompile call needs (the failure rule, `docs/SAFETY.md`
-  section 10). A contract that turns any failed inner call into "invalid" (for example in a slashing rule) turns a
-  starved call into a verdict; forward ample gas.
-- **Example groups are capped at 32 members.** `anon_vote`, `anon_claim` and `anon_signal` use `verify_proof_low`
-  (tree depth 1..5) so that the tree and the verifier fit one contract under EIP-170. Bigger groups need a separate
-  verifier contract using `verify_proof_high` (`docs/USAGE.md`, "Beyond 32 members").
-- **Semaphore: depth 1..10 only.** The ingot ships the ceremony keys for tree depth 1 to 10 (up to 1,024 members), not
-  up to 32; a deeper group has no verifier here. The ingot verifies proofs only: the caller checks the root and spends
-  the nullifier. `LeanImt` is insert-only (no update, no remove).
-- **Tornado is verifier-only.** `examples/tornado` is not a mixer: no pool, no deposits, no Merkle tree, no funds.
-- **Gas caps.** Precompile calls carry hard-coded gas caps set just above the current prices (EIP-1108, EIP-2565). A
-  repricing makes the calls fail closed (revert or `false`), never open.
-- **Setup provenance (what is real and what is not).** Real ceremony material: the halo2-KZG fixtures and the KZG
-  fixtures use the PSE Perpetual Powers of Tau (`ppot_0080_05`, nobody knows tau; commitments are MSMs over the ceremony
-  points); the snarkjs PLONK fixtures are universal and use `ppot_0080_14`; and `vectors/groth16/real_semaphore_d10` is
-  the production Semaphore v4 key (public multi-party ceremony) with a proof we generated against its real zkey, run
-  through `fe-zk-gen` into `examples/real_semaphore/verifier` (Semaphore's own Solidity verifier accepts the same proof
-  in revm). Still test-only: **the Groth16 phase 2 of our own demo circuits** (`multiplier*`, `membership`, `life_*`)
-  is a single contribution with a public entropy string, so the delta toxic waste is known and those keys are insecure
-  even though phase 1 is the real ceremony; the arkworks Groth16 setup uses a fixed RNG seed. The gnark PLONK fixtures are no longer on a
-  known-tau SRS: `vectors/gnark` converts the real PSE `ppot_0080_05` (sha256 pinned) to gnark's canonical and Lagrange
-  SRS instead of using `unsafekzg`. Do not deploy any of the demo keys; deploy your own ceremony's key.
-- **Malleability.** Groth16 proofs are malleable (rule 8); the examples never use a proof or its hash as an id.
-- **Membership demo.** The tree is permissionless (anyone can insert) and has 1024 leaves; a deployment can bootstrap
-  a root of an earlier tree (`bootstrap_root`) that the contract cannot verify. Proofs are not bound to `msg.sender`,
-  so a front-runner can submit someone's proof first and burn the nullifier (the proof still verifies for the
-  intended statement). The external nullifier is fixed per contract (the scope).
-- **gnark keys.** gnark keys with an all-zero (infinity) selector commitment are refused (the generator refuses them
-  too). This is a liveness limitation, not a soundness one. The generated contract returns `false` for a wrong proof or
-  input length where gnark's Solidity verifier reverts.
-- **Game of Life.** The stored board is public (the demo shows succinctness, not privacy); `N` = 512 is fixed by the
-  key; the circuit setup needs a 2^20 ptau and 9 GB of RAM to prove.
-- **Generated code style.** The emitters write valid but not `fe fmt`-clean code; `scripts/demo.sh` runs `fe fmt` on
-  the output. The gnark generator reads the JSON that `vectors/gnark` exports (key fields as 0x words), not gnark's
-  binary `vk` serialisation.
-- **BLS12-381.** The EIP-2537 wrappers and the point-evaluation wrapper are tested on the test EVM (Prague/Osaka); no
-  verifier is built on them yet beyond the KZG tests.
-- **Not audited.** No external review. See `docs/SAFETY.md` for what is enforced and tested.
+- **Not audited.** Research-grade; read [docs/SAFETY.md](docs/SAFETY.md) and the [integration checklist](docs/USAGE.md#7-integration-safety-checklist) first.
+- **Gas.** 1.02-1.17x of the reference Solidity verifiers; deployed code is larger.
+- **FRI/STARK.** Plonky3 0.8.0 `uni-stark`, KoalaBear, constraint degree at most 2; 100 bits conjectured, about 59 proven.
+- **halo2.** One circuit shape (single phase, one instance column, no challenges).
+- **G2 points in proofs.** The subgroup check of a proof's G2 point relies on the EIP-197 pairing precompile, tested on revm.
+- **`false` is not a verdict if your contract swallows reverts.** Too little gas reverts instead of returning `false`.
+- **Malleability.** Groth16 proofs are malleable; never use a proof or its hash as a nullifier.
 
 ## Compiler issues found / upstream suggestions
 
-Filed upstream (from the account of this repository's author):
-- [#2061](https://github.com/argotorg/fe/pull/2061) fixes the fixed-output precompile wrappers of `std::evm::crypto` (item 4: they returned `Ok` with zeroed output when the precompile is absent)
-- [#2062](https://github.com/argotorg/fe/pull/2062) fixes item 1, [#2063](https://github.com/argotorg/fe/pull/2063) fixes item 9
-- [#2068](https://github.com/argotorg/fe/pull/2068) adds item 2 (issue [#2064](https://github.com/argotorg/fe/issues/2064)), [#2069](https://github.com/argotorg/fe/pull/2069) fixes item 8 (issue [#2065](https://github.com/argotorg/fe/issues/2065))
-- [#2070](https://github.com/argotorg/fe/pull/2070): `[u256; N - 1]` at `N = 0` became an invalid type that matched any value; now reported
+11 compiler and std issues with repros: [docs/FE_ISSUES.md](docs/FE_ISSUES.md). Sent upstream, each with a regression test:
 
-Each PR has a regression test and passes the Fe test suite.
-
-Found with fe 26.5.0 (3dab95f):
-
-1. **Parse error: identifier at the end of a line, block on the next.** `var s: u256 = a` followed by a line `{ ... }`
-   is parsed as a struct literal `a { ... }` and reports "`a` is not found". A literal before the block compiles.
-   Workaround: `var s: u256 = (a)`. Repro: `scripts/probe/issue_block_after_ident.fe`.
-2. **No public raw call with a static buffer.** `Call.raw_staticcall` takes a heap `MemBuffer`; converting a static
-   `FixedMemBuffer` with `into_buffer()` makes it escape to the heap. In a small isolated call the optimizer removes
-   the heap buffer at `-O1` (both paths 292 gas); the saving shows at `-O0` (742 vs 1085 gas) and when the buffer escapes.
-3. **Loops are not unrolled and arrays in loops are expensive.** `for i in 0..N` with constant `N` is not unrolled;
-   loops over mutable memory arrays cost 5-7x more than scalar locals; checked arithmetic on counters is a large share
-   (`#[arithmetic(unchecked)]` is the lever). We generate unrolled scalar code for Poseidon as a workaround.
-4. **`std::evm::crypto::ec_pairing` returns `word != 0` and does not check the returndata length.** The module comment
-   says the fixed-output wrappers intentionally skip the length check. fe-zk does not use them for that reason.
-5. **Prebuilt binary crashes with `Illegal instruction` on CPUs without AVX.**
-6. **`allow_unsafe = true` is required in a dependent's `[dependencies]` entry** when a dependency reaches `unsafe`
-   (our precompile wrappers set buffer lengths in `unsafe` blocks).
-7. **Absolute dependency paths are rejected** ("invalid path"); only relative paths work.
-8. **Const contexts reject `assert` and `Option` methods.** Validity functions must return `bool`; constant
-   constructors map invalid input to infinity.
-9. **`fe fmt` moves a trailing `//` comment inside an argument list.** Put comments above the call.
-10. **Optimizer drops unused test results.** Gas measurements must emit the result in an event.
-11. **Hidden per-call and per-access costs in hot code** (found while taking the FRI verifier from 4.67 M to 1.38 M gas, `docs/DESIGN.md`):
-    a struct with inline array fields passed by value is copied at every call (use `MemArray` fields); `MemArray` indexing and
-    `core::ptr::offset` carry a bounds check and a checked multiplication (about 100 gas per access; `offset_bytes(ptr, i * 32)`
-    in `#[arithmetic(unchecked)]` after one range assert avoids it); loops cost 100-400 gas per iteration at `-O1`.
-
-Works well (and was a pleasant surprise): associated consts in traits, const generics over `u256`, generics over
-trait bounds, `const fn` evaluation of 254-iteration loops, private-field enforcement, `uses` effect checking.
+- [argotorg/fe#2061](https://github.com/argotorg/fe/pull/2061): fixed-output precompile wrappers of `std::evm::crypto` returned `Ok` with zeroed output when the precompile is absent
+- [#2062](https://github.com/argotorg/fe/pull/2062): identifier at the end of a line followed by a block parsed as a struct literal
+- [#2063](https://github.com/argotorg/fe/pull/2063): `fe fmt` moved a trailing `//` comment off its list element
+- [#2068](https://github.com/argotorg/fe/pull/2068): raw staticcall into a fixed buffer (issue [#2064](https://github.com/argotorg/fe/issues/2064))
+- [#2069](https://github.com/argotorg/fe/pull/2069): `assert` and `Option` methods in `const fn` (issue [#2065](https://github.com/argotorg/fe/issues/2065))
+- [#2070](https://github.com/argotorg/fe/pull/2070): `[u256; N - 1]` at `N = 0` became an invalid type that matched any value
 
 ## Declaration
 
