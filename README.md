@@ -18,6 +18,16 @@ Built for the [Fe Builders Challenge 2026](https://fe-lang.org/contest/).
 Submission: the release tag and full commit SHA are in the submission form. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 Fe 26.5.0.
 
+## Contents
+
+- [For judges: one screen](#for-judges-one-screen)
+- [Try it](#try-it) · [What to look at](#what-to-look-at) · [What's in the box](#whats-in-the-box)
+- [The problem](#the-problem) · [Approach](#approach) · [Fe highlight](#fe-highlight) · [Architecture](#architecture)
+- [Build and test](#build-and-test) · [Use fe-zk in your Fe project](#use-fe-zk-in-your-fe-project) · [Demo](#demo)
+- [Limitations](#limitations) · [Compiler issues found / upstream suggestions](#compiler-issues-found--upstream-suggestions)
+- [Declaration](#declaration) · [Team](#team) · [License](#license) · [Project policy](#project-policy)
+- Docs: [docs/README.md](docs/README.md) · Examples: [examples/README.md](examples/README.md)
+
 ## For judges: one screen
 
 | | |
